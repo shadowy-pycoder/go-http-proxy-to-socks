@@ -1,0 +1,33 @@
+# Binaries, plugins, libs
+*.dll
+*.dylib
+*.exe
+*.exe~
+*.so
+bin/
+
+# Testing
+*.test
+*.tmp
+
+# local
+.idea
+.DS_Store
+*.gob
+
+# Environments
+.env
+.envrc
+env/
+ENV/
+env.bak/
+
+# https/tls
+tls/
+
+*.prof
+
+# llm stuff
+models/**/*
+*.model
+*.vocab

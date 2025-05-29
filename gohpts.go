@@ -122,9 +122,9 @@ func (app *app) handleForward(w http.ResponseWriter, r *http.Request) {
 	}
 	var written string
 	if n < 1000 {
-		written = fmt.Sprintf("%d Bytes", n)
+		written = fmt.Sprintf("%dB", n)
 	} else {
-		written = fmt.Sprintf("%d KB", n)
+		written = fmt.Sprintf("%dKB", n/1000)
 	}
 	app.logger.Debug().Msgf("%s - %s - %s - %d - %s", r.Proto, r.Method, r.Host, resp.StatusCode, written)
 }
@@ -175,11 +175,17 @@ func (app *app) handleTunnel(w http.ResponseWriter, r *http.Request) {
 
 func (app *app) transfer(wg *sync.WaitGroup, destination io.Writer, source io.Reader, destName, srcName string) {
 	defer wg.Done()
-	written, err := io.Copy(destination, source)
+	n, err := io.Copy(destination, source)
 	if err != nil {
 		app.logger.Error().Err(err).Msgf("Error during copy from %s to %s: %v", srcName, destName, err)
 	}
-	app.logger.Debug().Msgf("copied %d bytes from %s to %s", written, srcName, destName)
+	var written string
+	if n < 1000 {
+		written = fmt.Sprintf("%dB", n)
+	} else {
+		written = fmt.Sprintf("%dKB", n/1000)
+	}
+	app.logger.Debug().Msgf("copied %s from %s to %s", written, srcName, destName)
 }
 
 func (app *app) handler() http.HandlerFunc {

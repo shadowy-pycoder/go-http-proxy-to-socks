@@ -49,9 +49,23 @@ func appendHostToXForwardHeader(header http.Header, host string) {
 	header.Set("X-Forwarded-For", host)
 }
 
+func isLocalAddress(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	if ip != nil {
+		return ip.IsLoopback()
+	}
+	host = strings.ToLower(host)
+	return strings.HasSuffix(host, ".local") || host == "localhost"
+}
+
 type app struct {
 	hs     *http.Server
 	sc     *http.Client
+	hc     *http.Client
 	dialer proxy.Dialer
 	logger *zerolog.Logger
 }
@@ -69,36 +83,67 @@ func (app *app) handleForward(w http.ResponseWriter, r *http.Request) {
 	if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
 		appendHostToXForwardHeader(req.Header, clientIP)
 	}
-	resp, err := app.sc.Do(req)
-	if err != nil {
-		app.logger.Error().Err(err).Msg("Connection to SOCKS5 server closed")
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	if resp == nil {
-		app.logger.Error().Err(err).Msg("Connection to SOCKS5 server closed")
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+	var resp *http.Response
+	if isLocalAddress(r.Host) {
+		resp, err = app.hc.Do(req)
+		if err != nil {
+			app.logger.Error().Err(err).Msg("Connection failed")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if resp == nil {
+			app.logger.Error().Err(err).Msg("Connection failed")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+	} else {
+		resp, err = app.sc.Do(req)
+		if err != nil {
+			app.logger.Error().Err(err).Msg("Connection to SOCKS5 server failed")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if resp == nil {
+			app.logger.Error().Err(err).Msg("Connection to SOCKS5 server failed")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 	}
 	defer resp.Body.Close()
 
 	delHopHeaders(resp.Header)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	written, err := io.Copy(w, resp.Body)
+	n, err := io.Copy(w, resp.Body)
 	if err != nil {
 		app.logger.Error().Err(err).Msgf("Error during Copy() %s: %s", r.URL.String(), err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	app.logger.Debug().Msgf("%s - %s - %s - %d - %dKB", r.Proto, r.Method, r.Host, resp.StatusCode, written/1000)
+	var written string
+	if n < 1000 {
+		written = fmt.Sprintf("%d Bytes", n)
+	} else {
+		written = fmt.Sprintf("%d KB", n)
+	}
+	app.logger.Debug().Msgf("%s - %s - %s - %d - %s", r.Proto, r.Method, r.Host, resp.StatusCode, written)
 }
 
 func (app *app) handleTunnel(w http.ResponseWriter, r *http.Request) {
-	dstConn, err := app.dialer.Dial("tcp", r.Host)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
+	var dstConn net.Conn
+	var err error
+	if isLocalAddress(r.Host) {
+		dstConn, err = net.DialTimeout("tcp", r.Host, 10*time.Second)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+	} else {
+		dstConn, err = app.dialer.Dial("tcp", r.Host)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 	}
 	defer dstConn.Close()
 	w.WriteHeader(http.StatusOK)
@@ -188,6 +233,7 @@ func New(conf *Config) *app {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+		Timeout: 10 * time.Second,
 	}
 	hs := &http.Server{
 		Addr:           conf.AddrHTTP,
@@ -195,7 +241,13 @@ func New(conf *Config) *app {
 		WriteTimeout:   10 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
+	hc := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Timeout: 10 * time.Second,
+	}
 	logger.Info().Msgf("SOCKS5 Proxy: %s", conf.AddrSOCKS)
 	logger.Info().Msgf("HTTP Proxy: %s", conf.AddrHTTP)
-	return &app{hs: hs, sc: socks, dialer: dialer, logger: &logger}
+	return &app{hs: hs, sc: socks, hc: hc, dialer: dialer, logger: &logger}
 }

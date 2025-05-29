@@ -185,6 +185,9 @@ func New(conf *Config) *app {
 		Transport: &http.Transport{
 			Dial: dialer.Dial,
 		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 	hs := &http.Server{
 		Addr:           conf.AddrHTTP,

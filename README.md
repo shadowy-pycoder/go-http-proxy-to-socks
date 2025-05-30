@@ -68,14 +68,16 @@ GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 Usage: gohpts [OPTIONS]
 Options:
   -h    Show this help message and exit.
-  -d    Show logs in DEBUG mode
-  -j    Show logs in JSON format
+  -d	Show logs in DEBUG mode
+  -j	Show logs in JSON format
   -l value
-        Address of HTTP proxy server (Default: localhost:8080)
+    	Address of HTTP proxy server (Default: localhost:8080)
+  -p	Password for SOCKS5 proxy (not echoed to terminal)
   -s value
-        Address of SOCKS5 proxy server (Default: localhost:1080)
-  -v    print version
-
+    	Address of SOCKS5 proxy server (Default: localhost:1080)
+  -u string
+    	User for SOCKS5 proxy
+  -v	print version
 ```
 
 ## Example
@@ -90,6 +92,13 @@ Output:
 {"level":"info","time":"2025-05-28T06:15:18+00:00","message":"SOCKS5 Proxy: :1080"}
 {"level":"info","time":"2025-05-28T06:15:18+00:00","message":"HTTP Proxy: :8080"}
 {"level":"debug","time":"2025-05-28T06:15:22+00:00","message":"HTTP/1.1 - CONNECT - www.google.com:443"}
+```
+
+Specify username and password fo SOCKS5 proxy server:
+
+```shell
+gohpts -s 1080 -l 8080 -d -j -u user -p
+SOCKS5 Password: #you will be prompted for password input here
 ```
 
 ## License

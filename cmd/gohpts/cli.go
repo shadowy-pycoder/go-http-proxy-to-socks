@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	gohpts "github.com/shadowy-pycoder/go-http-proxy-to-socks"
+	"golang.org/x/term"
 )
 
 const (
@@ -40,6 +41,17 @@ func root(args []string) error {
 		} else {
 			conf.AddrSOCKS = flagValue
 		}
+		return nil
+	})
+	flags.StringVar(&conf.User, "u", "", "User for SOCKS5 proxy")
+	flags.BoolFunc("p", "Password for SOCKS5 proxy (not echoed to terminal)", func(flagValue string) error {
+		fmt.Print("SOCKS5 Password: ")
+		bytepw, err := term.ReadPassword(int(os.Stdin.Fd()))
+		if err != nil {
+			os.Exit(1)
+		}
+		conf.Pass = string(bytepw)
+		fmt.Println()
 		return nil
 	})
 	flags.Func("l", "Address of HTTP proxy server (Default: localhost:8080)", func(flagValue string) error {

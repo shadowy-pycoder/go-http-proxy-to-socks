@@ -210,6 +210,8 @@ type Config struct {
 	AddrSOCKS string
 	Debug     bool
 	Json      bool
+	User      string
+	Pass      string
 }
 
 func New(conf *Config) *app {
@@ -228,7 +230,11 @@ func New(conf *Config) *app {
 	if conf.Debug {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
-	dialer, err := proxy.SOCKS5("tcp", conf.AddrSOCKS, nil, nil)
+	auth := proxy.Auth{
+		User:     conf.User,
+		Password: conf.Pass,
+	}
+	dialer, err := proxy.SOCKS5("tcp", conf.AddrSOCKS, &auth, nil)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("Unable to create SOCKS5 client")
 	}

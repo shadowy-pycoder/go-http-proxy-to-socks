@@ -1,6 +1,7 @@
 package gohpts
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -42,6 +43,18 @@ func delHopHeaders(header http.Header) {
 	}
 }
 
+// delConnectionHeaders removes hop-by-hop headers listed in the "Connection" header
+// https://datatracker.ietf.org/doc/html/rfc7230#section-6.1
+func delConnectionHeaders(h http.Header) {
+	for _, f := range h["Connection"] {
+		for _, sf := range strings.Split(f, ",") {
+			if sf = strings.TrimSpace(sf); sf != "" {
+				h.Del(sf)
+			}
+		}
+	}
+}
+
 func appendHostToXForwardHeader(header http.Header, host string) {
 	if prior, ok := header["X-Forwarded-For"]; ok {
 		host = strings.Join(prior, ", ") + ", " + host
@@ -78,6 +91,8 @@ func (app *app) handleForward(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	req.RequestURI = ""
+	delConnectionHeaders(r.Header)
 	delHopHeaders(r.Header)
 	copyHeader(req.Header, r.Header)
 	if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
@@ -111,6 +126,7 @@ func (app *app) handleForward(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	delConnectionHeaders(resp.Header)
 	delHopHeaders(resp.Header)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
@@ -254,6 +270,9 @@ func New(conf *Config) *app {
 		MaxHeaderBytes: 1 << 20,
 	}
 	hc := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

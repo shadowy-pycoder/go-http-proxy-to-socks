@@ -51,7 +51,7 @@ func root(args []string) error {
 			os.Exit(1)
 		}
 		conf.Pass = string(bytepw)
-		fmt.Println()
+		fmt.Print("\033[2K\r")
 		return nil
 	})
 	flags.Func("l", "Address of HTTP proxy server (Default: localhost:8080)", func(flagValue string) error {

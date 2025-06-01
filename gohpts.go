@@ -15,6 +15,13 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+const (
+	readTimeout  time.Duration = 10 * time.Second
+	writeTimeout time.Duration = 10 * time.Second
+	timeout      time.Duration = 10 * time.Second
+	kbSize       int64         = 1000
+)
+
 // Hop-by-hop headers
 // https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1
 var hopHeaders = []string{
@@ -137,10 +144,10 @@ func (app *app) handleForward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var written string
-	if n < 1000 {
+	if n < kbSize {
 		written = fmt.Sprintf("%dB", n)
 	} else {
-		written = fmt.Sprintf("%dKB", n/1000)
+		written = fmt.Sprintf("%dKB", n/kbSize)
 	}
 	app.logger.Debug().Msgf("%s - %s - %s - %d - %s", r.Proto, r.Method, r.Host, resp.StatusCode, written)
 }
@@ -149,7 +156,7 @@ func (app *app) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	var dstConn net.Conn
 	var err error
 	if isLocalAddress(r.Host) {
-		dstConn, err = net.DialTimeout("tcp", r.Host, 10*time.Second)
+		dstConn, err = net.DialTimeout("tcp", r.Host, timeout)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
@@ -196,10 +203,10 @@ func (app *app) transfer(wg *sync.WaitGroup, destination io.Writer, source io.Re
 		app.logger.Error().Err(err).Msgf("Error during copy from %s to %s: %v", srcName, destName, err)
 	}
 	var written string
-	if n < 1000 {
+	if n < kbSize {
 		written = fmt.Sprintf("%dB", n)
 	} else {
-		written = fmt.Sprintf("%dKB", n/1000)
+		written = fmt.Sprintf("%dKB", n/kbSize)
 	}
 	app.logger.Debug().Msgf("copied %s from %s to %s", written, srcName, destName)
 }
@@ -250,9 +257,9 @@ func New(conf *Config) *app {
 		User:     conf.User,
 		Password: conf.Pass,
 	}
-	dialer, err := proxy.SOCKS5("tcp", conf.AddrSOCKS, &auth, nil)
+	dialer, err := proxy.SOCKS5("tcp", conf.AddrSOCKS, &auth, &net.Dialer{Timeout: timeout})
 	if err != nil {
-		logger.Fatal().Err(err).Msg("Unable to create SOCKS5 client")
+		logger.Fatal().Err(err).Msg("Unable to create SOCKS5 dialer")
 	}
 	socks := &http.Client{
 		Transport: &http.Transport{
@@ -261,12 +268,12 @@ func New(conf *Config) *app {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Timeout: 10 * time.Second,
+		Timeout: timeout,
 	}
 	hs := &http.Server{
 		Addr:           conf.AddrHTTP,
-		ReadTimeout:    10 * time.Second,
-		WriteTimeout:   10 * time.Second,
+		ReadTimeout:    readTimeout,
+		WriteTimeout:   writeTimeout,
 		MaxHeaderBytes: 1 << 20,
 	}
 	hc := &http.Client{
@@ -276,7 +283,7 @@ func New(conf *Config) *app {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Timeout: 10 * time.Second,
+		Timeout: timeout,
 	}
 	logger.Info().Msgf("SOCKS5 Proxy: %s", conf.AddrSOCKS)
 	logger.Info().Msgf("HTTP Proxy: %s", conf.AddrHTTP)

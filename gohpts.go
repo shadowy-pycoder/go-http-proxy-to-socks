@@ -82,19 +82,19 @@ func isLocalAddress(addr string) bool {
 	return strings.HasSuffix(host, ".local") || host == "localhost"
 }
 
-type app struct {
-	hs     *http.Server
-	sc     *http.Client
-	hc     *http.Client
-	dialer proxy.Dialer
-	logger *zerolog.Logger
+type proxyApp struct {
+	httpServer *http.Server
+	sockServer *http.Client
+	httpClient *http.Client
+	sockDialer proxy.Dialer
+	logger     *zerolog.Logger
 }
 
-func (app *app) handleForward(w http.ResponseWriter, r *http.Request) {
+func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 
 	req, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
 	if err != nil {
-		app.logger.Error().Err(err).Msgf("Error during NewRequest() %s: %s", r.URL.String(), err)
+		p.logger.Error().Err(err).Msgf("Error during NewRequest() %s: %s", r.URL.String(), err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -107,26 +107,26 @@ func (app *app) handleForward(w http.ResponseWriter, r *http.Request) {
 	}
 	var resp *http.Response
 	if isLocalAddress(r.Host) {
-		resp, err = app.hc.Do(req)
+		resp, err = p.httpClient.Do(req)
 		if err != nil {
-			app.logger.Error().Err(err).Msg("Connection failed")
+			p.logger.Error().Err(err).Msg("Connection failed")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		if resp == nil {
-			app.logger.Error().Err(err).Msg("Connection failed")
+			p.logger.Error().Err(err).Msg("Connection failed")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 	} else {
-		resp, err = app.sc.Do(req)
+		resp, err = p.sockServer.Do(req)
 		if err != nil {
-			app.logger.Error().Err(err).Msg("Connection to SOCKS5 server failed")
+			p.logger.Error().Err(err).Msg("Connection to SOCKS5 server failed")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		if resp == nil {
-			app.logger.Error().Err(err).Msg("Connection to SOCKS5 server failed")
+			p.logger.Error().Err(err).Msg("Connection to SOCKS5 server failed")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -139,7 +139,7 @@ func (app *app) handleForward(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	n, err := io.Copy(w, resp.Body)
 	if err != nil {
-		app.logger.Error().Err(err).Msgf("Error during Copy() %s: %s", r.URL.String(), err)
+		p.logger.Error().Err(err).Msgf("Error during Copy() %s: %s", r.URL.String(), err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -149,10 +149,10 @@ func (app *app) handleForward(w http.ResponseWriter, r *http.Request) {
 	} else {
 		written = fmt.Sprintf("%dKB", n/kbSize)
 	}
-	app.logger.Debug().Msgf("%s - %s - %s - %d - %s", r.Proto, r.Method, r.Host, resp.StatusCode, written)
+	p.logger.Debug().Msgf("%s - %s - %s - %d - %s", r.Proto, r.Method, r.Host, resp.StatusCode, written)
 }
 
-func (app *app) handleTunnel(w http.ResponseWriter, r *http.Request) {
+func (p *proxyApp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	var dstConn net.Conn
 	var err error
 	if isLocalAddress(r.Host) {
@@ -162,7 +162,7 @@ func (app *app) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		dstConn, err = app.dialer.Dial("tcp", r.Host)
+		dstConn, err = p.sockDialer.Dial("tcp", r.Host)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
@@ -186,21 +186,21 @@ func (app *app) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	dstConnStr := fmt.Sprintf("%s->%s->%s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), r.Host)
 	srcConnStr := fmt.Sprintf("%s->%s", srcConn.LocalAddr().String(), srcConn.RemoteAddr().String())
 
-	app.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
-	app.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
+	p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
+	p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go app.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr)
-	go app.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr)
+	go p.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr)
+	go p.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr)
 	wg.Wait()
 }
 
-func (app *app) transfer(wg *sync.WaitGroup, destination io.Writer, source io.Reader, destName, srcName string) {
+func (p *proxyApp) transfer(wg *sync.WaitGroup, destination io.Writer, source io.Reader, destName, srcName string) {
 	defer wg.Done()
 	n, err := io.Copy(destination, source)
 	if err != nil {
-		app.logger.Error().Err(err).Msgf("Error during copy from %s to %s: %v", srcName, destName, err)
+		p.logger.Error().Err(err).Msgf("Error during copy from %s to %s: %v", srcName, destName, err)
 	}
 	var written string
 	if n < kbSize {
@@ -208,23 +208,23 @@ func (app *app) transfer(wg *sync.WaitGroup, destination io.Writer, source io.Re
 	} else {
 		written = fmt.Sprintf("%dKB", n/kbSize)
 	}
-	app.logger.Debug().Msgf("copied %s from %s to %s", written, srcName, destName)
+	p.logger.Debug().Msgf("copied %s from %s to %s", written, srcName, destName)
 }
 
-func (app *app) handler() http.HandlerFunc {
+func (p *proxyApp) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
-			app.handleTunnel(w, r)
+			p.handleTunnel(w, r)
 		} else {
-			app.handleForward(w, r)
+			p.handleForward(w, r)
 		}
 	}
 }
 
-func (app *app) Run() {
-	app.hs.Handler = app.handler()
-	if err := app.hs.ListenAndServe(); err != nil {
-		app.logger.Fatal().Err(err).Msg("Unable to start HTTP server")
+func (p *proxyApp) Run() {
+	p.httpServer.Handler = p.handler()
+	if err := p.httpServer.ListenAndServe(); err != nil {
+		p.logger.Fatal().Err(err).Msg("Unable to start HTTP server")
 	}
 }
 
@@ -237,7 +237,7 @@ type Config struct {
 	Pass      string
 }
 
-func New(conf *Config) *app {
+func New(conf *Config) *proxyApp {
 	var logger zerolog.Logger
 	if conf.Json {
 		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
@@ -275,7 +275,10 @@ func New(conf *Config) *app {
 		ReadTimeout:    readTimeout,
 		WriteTimeout:   writeTimeout,
 		MaxHeaderBytes: 1 << 20,
+		Protocols:      new(http.Protocols),
 	}
+	hs.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
+	hs.Protocols.SetHTTP1(true)
 	hc := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -287,5 +290,5 @@ func New(conf *Config) *app {
 	}
 	logger.Info().Msgf("SOCKS5 Proxy: %s", conf.AddrSOCKS)
 	logger.Info().Msgf("HTTP Proxy: %s", conf.AddrHTTP)
-	return &app{hs: hs, sc: socks, hc: hc, dialer: dialer, logger: &logger}
+	return &proxyApp{httpServer: hs, sockServer: socks, httpClient: hc, sockDialer: dialer, logger: &logger}
 }

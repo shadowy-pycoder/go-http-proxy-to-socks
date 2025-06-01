@@ -85,7 +85,7 @@ func root(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	app := gohpts.New(&conf)
-	app.Run()
+	p := gohpts.New(&conf)
+	p.Run()
 	return nil
 }

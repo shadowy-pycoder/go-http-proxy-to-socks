@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ const (
 	readTimeout  time.Duration = 10 * time.Second
 	writeTimeout time.Duration = 10 * time.Second
 	timeout      time.Duration = 10 * time.Second
+	flushTimeout time.Duration = 10 * time.Millisecond
 	kbSize       int64         = 1000
 )
 
@@ -84,10 +86,38 @@ func isLocalAddress(addr string) bool {
 
 type proxyApp struct {
 	httpServer *http.Server
-	sockServer *http.Client
+	sockClient *http.Client
 	httpClient *http.Client
 	sockDialer proxy.Dialer
 	logger     *zerolog.Logger
+}
+
+func (p *proxyApp) doReq(w http.ResponseWriter, r *http.Request, socks bool) *http.Response {
+	var (
+		resp   *http.Response
+		err    error
+		msg    string
+		client *http.Client
+	)
+	if socks {
+		client = p.sockClient
+		msg = "Connection to SOCKS5 server failed"
+	} else {
+		client = p.httpClient
+		msg = "Connection failed"
+	}
+	resp, err = client.Do(r)
+	if err != nil {
+		p.logger.Error().Err(err).Msg(msg)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return nil
+	}
+	if resp == nil {
+		p.logger.Error().Msg(msg)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return nil
+	}
+	return resp
 }
 
 func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
@@ -106,33 +136,69 @@ func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 		appendHostToXForwardHeader(req.Header, clientIP)
 	}
 	var resp *http.Response
+	var chunked bool
+	p.httpClient.Timeout = timeout
+	p.sockClient.Timeout = timeout
 	if isLocalAddress(r.Host) {
-		resp, err = p.httpClient.Do(req)
-		if err != nil {
-			p.logger.Error().Err(err).Msg("Connection failed")
-			w.WriteHeader(http.StatusServiceUnavailable)
+		resp = p.doReq(w, req, false)
+		if resp == nil {
 			return
 		}
-		if resp == nil {
-			p.logger.Error().Err(err).Msg("Connection failed")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
+		if slices.Contains(resp.TransferEncoding, "chunked") {
+			chunked = true
+			p.httpClient.Timeout = 0
+			p.sockClient.Timeout = 0
+			resp.Body.Close()
+			resp = p.doReq(w, req, false)
+			if resp == nil {
+				return
+			}
 		}
 	} else {
-		resp, err = p.sockServer.Do(req)
-		if err != nil {
-			p.logger.Error().Err(err).Msg("Connection to SOCKS5 server failed")
-			w.WriteHeader(http.StatusServiceUnavailable)
+		resp = p.doReq(w, req, true)
+		if resp == nil {
 			return
 		}
-		if resp == nil {
-			p.logger.Error().Err(err).Msg("Connection to SOCKS5 server failed")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
+		if slices.Contains(resp.TransferEncoding, "chunked") {
+			chunked = true
+			p.httpClient.Timeout = 0
+			p.sockClient.Timeout = 0
+			resp.Body.Close()
+			resp = p.doReq(w, req, true)
+			if resp == nil {
+				return
+			}
 		}
 	}
 	defer resp.Body.Close()
-
+	done := make(chan struct{})
+	if chunked {
+		rc := http.NewResponseController(w)
+		go func() {
+			for {
+				select {
+				case <-time.Tick(flushTimeout):
+					err := rc.Flush()
+					if err != nil {
+						p.logger.Error().Err(err)
+						return
+					}
+					err = rc.SetReadDeadline(time.Now().Add(readTimeout))
+					if err != nil {
+						p.logger.Error().Err(err)
+						return
+					}
+					err = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+					if err != nil {
+						p.logger.Error().Err(err)
+						return
+					}
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
 	delConnectionHeaders(resp.Header)
 	delHopHeaders(resp.Header)
 	copyHeader(w.Header(), resp.Header)
@@ -149,7 +215,12 @@ func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 	} else {
 		written = fmt.Sprintf("%dKB", n/kbSize)
 	}
+	if chunked {
+		written = fmt.Sprintf("%s - chunked", written)
+	}
 	p.logger.Debug().Msgf("%s - %s - %s - %d - %s", r.Proto, r.Method, r.Host, resp.StatusCode, written)
+	done <- struct{}{}
+	close(done)
 }
 
 func (p *proxyApp) handleTunnel(w http.ResponseWriter, r *http.Request) {
@@ -268,7 +339,6 @@ func New(conf *Config) *proxyApp {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Timeout: timeout,
 	}
 	hs := &http.Server{
 		Addr:           conf.AddrHTTP,
@@ -286,9 +356,8 @@ func New(conf *Config) *proxyApp {
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Timeout: timeout,
 	}
 	logger.Info().Msgf("SOCKS5 Proxy: %s", conf.AddrSOCKS)
 	logger.Info().Msgf("HTTP Proxy: %s", conf.AddrHTTP)
-	return &proxyApp{httpServer: hs, sockServer: socks, httpClient: hc, sockDialer: dialer, logger: &logger}
+	return &proxyApp{httpServer: hs, sockClient: socks, httpClient: hc, sockDialer: dialer, logger: &logger}
 }

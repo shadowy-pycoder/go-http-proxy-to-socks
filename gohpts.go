@@ -214,6 +214,8 @@ func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 	n, err := io.Copy(w, resp.Body)
 	if err != nil {
 		p.logger.Error().Err(err).Msgf("Error during Copy() %s: %s", r.URL.String(), err)
+		done <- struct{}{}
+		close(done)
 		return
 	}
 	var written string

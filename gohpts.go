@@ -199,6 +199,14 @@ func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
+	announcedTrailers := len(resp.Trailer)
+	if announcedTrailers > 0 {
+		trailerKeys := make([]string, 0, announcedTrailers)
+		for k := range resp.Trailer {
+			trailerKeys = append(trailerKeys, k)
+		}
+		w.Header().Add("Trailer", strings.Join(trailerKeys, ", "))
+	}
 	delConnectionHeaders(resp.Header)
 	delHopHeaders(resp.Header)
 	copyHeader(w.Header(), resp.Header)
@@ -219,6 +227,15 @@ func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 		written = fmt.Sprintf("%s - chunked", written)
 	}
 	p.logger.Debug().Msgf("%s - %s - %s - %d - %s", r.Proto, r.Method, r.Host, resp.StatusCode, written)
+	if len(resp.Trailer) == announcedTrailers {
+		copyHeader(w.Header(), resp.Trailer)
+	}
+	for key, values := range resp.Trailer {
+		key = http.TrailerPrefix + key
+		for _, v := range values {
+			w.Header().Add(key, v)
+		}
+	}
 	done <- struct{}{}
 	close(done)
 }

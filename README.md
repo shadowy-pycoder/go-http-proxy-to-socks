@@ -29,6 +29,29 @@ gohpts -s :1080 -l :8080
 
 Specify http server in proxy configuration of Postman
 
+## Features
+
+- **DNS Leak Protection**  
+  DNS resolution occurs on SOCKS5 server side.
+
+- **CONNECT Method Support**  
+  Supports HTTP CONNECT tunneling, enabling HTTPS and other TCP-based protocols.
+
+- **Trailer Headers Support**  
+  Handles HTTP trailer headers
+
+- **Chunked Transfer Encoding**  
+  Handles chunked and streaming responses
+
+- **SOCKS5 Authentication Support**  
+  Supports username/password authentication for SOCKS5 proxies.
+
+- **Lightweight and Fast**  
+  Designed with minimal overhead and efficient request handling.
+
+- **Cross-Platform**  
+  Compatible with all major operating systems.
+
 ## Installation
 
 You can download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page.

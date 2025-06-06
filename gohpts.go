@@ -90,6 +90,8 @@ type proxyApp struct {
 	httpClient *http.Client
 	sockDialer proxy.Dialer
 	logger     *zerolog.Logger
+	certFile   string
+	keyFile    string
 }
 
 func (p *proxyApp) doReq(w http.ResponseWriter, r *http.Request, socks bool) *http.Response {
@@ -312,8 +314,14 @@ func (p *proxyApp) handler() http.HandlerFunc {
 
 func (p *proxyApp) Run() {
 	p.httpServer.Handler = p.handler()
-	if err := p.httpServer.ListenAndServe(); err != nil {
-		p.logger.Fatal().Err(err).Msg("Unable to start HTTP server")
+	if p.certFile != "" && p.keyFile != "" {
+		if err := p.httpServer.ListenAndServeTLS(p.certFile, p.keyFile); err != nil {
+			p.logger.Fatal().Err(err).Msg("Unable to start HTTPS server")
+		}
+	} else {
+		if err := p.httpServer.ListenAndServe(); err != nil {
+			p.logger.Fatal().Err(err).Msg("Unable to start HTTP server")
+		}
 	}
 }
 
@@ -324,6 +332,8 @@ type Config struct {
 	Json      bool
 	User      string
 	Pass      string
+	CertFile  string
+	KeyFile   string
 }
 
 func New(conf *Config) *proxyApp {
@@ -364,6 +374,16 @@ func New(conf *Config) *proxyApp {
 		WriteTimeout:   writeTimeout,
 		MaxHeaderBytes: 1 << 20,
 		Protocols:      new(http.Protocols),
+		TLSConfig: &tls.Config{
+			MinVersion:       tls.VersionTLS12,
+			CurvePreferences: []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
+			CipherSuites: []uint16{
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+				tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+			},
+		},
 	}
 	hs.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
 	hs.Protocols.SetHTTP1(true)
@@ -376,6 +396,18 @@ func New(conf *Config) *proxyApp {
 		},
 	}
 	logger.Info().Msgf("SOCKS5 Proxy: %s", conf.AddrSOCKS)
-	logger.Info().Msgf("HTTP Proxy: %s", conf.AddrHTTP)
-	return &proxyApp{httpServer: hs, sockClient: socks, httpClient: hc, sockDialer: dialer, logger: &logger}
+	if conf.CertFile != "" && conf.KeyFile != "" {
+		logger.Info().Msgf("HTTPS Proxy: %s", conf.AddrHTTP)
+	} else {
+		logger.Info().Msgf("HTTP Proxy: %s", conf.AddrHTTP)
+	}
+	return &proxyApp{
+		httpServer: hs,
+		sockClient: socks,
+		httpClient: hc,
+		sockDialer: dialer,
+		logger:     &logger,
+		certFile:   conf.CertFile,
+		keyFile:    conf.KeyFile,
+	}
 }

@@ -63,6 +63,8 @@ func root(args []string) error {
 		}
 		return nil
 	})
+	flags.StringVar(&conf.CertFile, "c", "", "Path to certificate PEM encoded file ")
+	flags.StringVar(&conf.KeyFile, "k", "", "Path to private key PEM encoded file ")
 	flags.BoolFunc("d", "Show logs in DEBUG mode", func(flagValue string) error {
 		conf.Debug = true
 		return nil

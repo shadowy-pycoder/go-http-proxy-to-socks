@@ -97,8 +97,12 @@ GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 Usage: gohpts [OPTIONS]
 Options:
   -h    Show this help message and exit.
+  -c string
+    	Path to certificate PEM encoded file
   -d	Show logs in DEBUG mode
   -j	Show logs in JSON format
+  -k string
+    	Path to private key PEM encoded file
   -l value
     	Address of HTTP proxy server (Default: localhost:8080)
   -p	Password for SOCKS5 proxy (not echoed to terminal)
@@ -128,6 +132,12 @@ Specify username and password fo SOCKS5 proxy server:
 ```shell
 gohpts -s 1080 -l 8080 -d -j -u user -p
 SOCKS5 Password: #you will be prompted for password input here
+```
+
+Run http proxy over TLS connection
+
+```shell
+gohpts -s 1080 -l 8080 -c "path/to/certificate" -k "path/to/private/key"
 ```
 
 ## License

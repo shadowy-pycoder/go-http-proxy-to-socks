@@ -1,6 +1,7 @@
 package gohpts
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"slices"
 	"strings"
 	"sync"
@@ -174,7 +176,7 @@ func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer resp.Body.Close()
-	done := make(chan struct{})
+	done := make(chan bool)
 	if chunked {
 		rc := http.NewResponseController(w)
 		go func() {
@@ -217,7 +219,6 @@ func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 	n, err := io.Copy(w, resp.Body)
 	if err != nil {
 		p.logger.Error().Err(err).Msgf("Error during Copy() %s: %s", r.URL.String(), err)
-		done <- struct{}{}
 		close(done)
 		return
 	}
@@ -240,7 +241,6 @@ func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(key, v)
 		}
 	}
-	done <- struct{}{}
 	close(done)
 }
 
@@ -318,16 +318,33 @@ func (p *proxyApp) handler() http.HandlerFunc {
 }
 
 func (p *proxyApp) Run() {
+	done := make(chan bool)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt)
+	go func() {
+		<-quit
+		p.logger.Info().Msg("Server is shutting down...")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+		defer cancel()
+		p.httpServer.SetKeepAlivesEnabled(false)
+		if err := p.httpServer.Shutdown(ctx); err != nil {
+			p.logger.Fatal().Err(err).Msg("Could not gracefully shutdown the server")
+		}
+		close(done)
+	}()
 	p.httpServer.Handler = p.handler()
 	if p.certFile != "" && p.keyFile != "" {
-		if err := p.httpServer.ListenAndServeTLS(p.certFile, p.keyFile); err != nil {
+		if err := p.httpServer.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
 			p.logger.Fatal().Err(err).Msg("Unable to start HTTPS server")
 		}
 	} else {
-		if err := p.httpServer.ListenAndServe(); err != nil {
+		if err := p.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			p.logger.Fatal().Err(err).Msg("Unable to start HTTP server")
 		}
 	}
+	<-done
+	p.logger.Info().Msg("Server stopped")
 }
 
 type Config struct {

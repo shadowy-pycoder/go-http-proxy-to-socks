@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -182,17 +183,17 @@ func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 				case <-time.Tick(flushTimeout):
 					err := rc.Flush()
 					if err != nil {
-						p.logger.Error().Err(err)
+						p.logger.Error().Err(err).Msg("Failed flushing buffer")
 						return
 					}
 					err = rc.SetReadDeadline(time.Now().Add(readTimeout))
 					if err != nil {
-						p.logger.Error().Err(err)
+						p.logger.Error().Err(err).Msg("Failed setting read deadline")
 						return
 					}
 					err = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
 					if err != nil {
-						p.logger.Error().Err(err)
+						p.logger.Error().Err(err).Msg("Failed setting write deadline")
 						return
 					}
 				case <-done:
@@ -249,12 +250,14 @@ func (p *proxyApp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	if isLocalAddress(r.Host) {
 		dstConn, err = net.DialTimeout("tcp", r.Host, timeout)
 		if err != nil {
+			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 	} else {
 		dstConn, err = p.sockDialer.Dial("tcp", r.Host)
 		if err != nil {
+			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
@@ -264,11 +267,13 @@ func (p *proxyApp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
+		p.logger.Error().Msg("webserver doesn't support hijacking")
 		http.Error(w, "webserver doesn't support hijacking", http.StatusInternalServerError)
 		return
 	}
 	srcConn, _, err := hj.Hijack()
 	if err != nil {
+		p.logger.Error().Err(err).Msg("Failed hijacking src connection")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -335,12 +340,30 @@ type Config struct {
 	CertFile  string
 	KeyFile   string
 }
+type logWriter struct {
+}
+
+func (writer logWriter) Write(bytes []byte) (int, error) {
+	return fmt.Print(fmt.Sprintf("%s | ERROR | %s", time.Now().Format(time.RFC3339), string(bytes)))
+}
+
+type jsonLogWriter struct {
+}
+
+func (writer jsonLogWriter) Write(bytes []byte) (int, error) {
+	return fmt.Print(fmt.Sprintf("{\"level\":\"error\",\"time\":\"%s\",\"message\":\"%s\"}\n",
+		time.Now().Format(time.RFC3339), strings.TrimRight(string(bytes), "\n")))
+}
 
 func New(conf *Config) *proxyApp {
 	var logger zerolog.Logger
 	if conf.Json {
+		log.SetFlags(0)
+		log.SetOutput(new(jsonLogWriter))
 		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
 	} else {
+		log.SetFlags(0)
+		log.SetOutput(new(logWriter))
 		output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339, NoColor: true}
 		output.FormatLevel = func(i interface{}) string {
 			return strings.ToUpper(fmt.Sprintf("| %-6s|", i))

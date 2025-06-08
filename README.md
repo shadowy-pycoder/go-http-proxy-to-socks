@@ -9,8 +9,8 @@
 
 ## Introduction
 
-`GoHPTS` CLI tool is a bridge between HTTP clients and a SOCKS5 proxy server. It listens locally as an HTTP proxy, accepts standard HTTP
-or HTTPS (via CONNECT) requests and forwards the connection through a SOCKS5 proxy. Inspired by [http-proxy-to-socks](https://github.com/oyyd/http-proxy-to-socks)
+`GoHPTS` CLI tool is a bridge between HTTP clients and a SOCKS5 proxy server or multiple servers (chain). It listens locally as an HTTP proxy, accepts standard HTTP
+or HTTPS (via CONNECT) requests and forwards the connection through a SOCKS5 proxy. Inspired by [http-proxy-to-socks](https://github.com/oyyd/http-proxy-to-socks) and [Proxychains](https://github.com/rofl0r/proxychains-ng)
 
 Possible use case: you need to connect to external API via Postman, but this API only available from some remote server.
 The following commands will help you to perform such a task:
@@ -144,7 +144,7 @@ Run http proxy over TLS connection
 gohpts -s 1080 -l 8080 -c "path/to/certificate" -k "path/to/private/key"
 ```
 
-Run http proxy with chain of SOCKS5 proxy
+Run http proxy in SOCKS5 proxy chain mode
 
 ```shell
 gohpts -f "path/to/proxychain/config" -d

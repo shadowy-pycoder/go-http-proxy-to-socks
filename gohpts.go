@@ -137,15 +137,11 @@ func (p *proxyApp) updateSocksList() {
 	failed := 0
 	chainType := p.proxychain.Chain.Type
 	for _, pr := range p.proxychain.ProxyList {
-		if pr.Username != "" && pr.Password != "" {
-			auth := proxy.Auth{
-				User:     pr.Username,
-				Password: pr.Password,
-			}
-			dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, base)
-		} else {
-			dialer, err = proxy.SOCKS5("tcp", pr.Address, nil, base)
+		auth := proxy.Auth{
+			User:     pr.Username,
+			Password: pr.Password,
 		}
+		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, base)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("[%s] Unable to create SOCKS5 dialer %s", chainType, pr.Address)
 			failed++
@@ -172,15 +168,11 @@ func (p *proxyApp) updateSocksList() {
 	}
 	currentDialer := dialer
 	for _, pr := range p.proxychain.ProxyList[failed+1:] {
-		if pr.Username != "" && pr.Password != "" {
-			auth := proxy.Auth{
-				User:     pr.Username,
-				Password: pr.Password,
-			}
-			dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, currentDialer)
-		} else {
-			dialer, err = proxy.SOCKS5("tcp", pr.Address, nil, currentDialer)
+		auth := proxy.Auth{
+			User:     pr.Username,
+			Password: pr.Password,
 		}
+		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, currentDialer)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("[%s] Unable to create SOCKS5 dialer %s", chainType, pr.Address)
 			continue
@@ -265,15 +257,11 @@ func (p *proxyApp) getSocks() (proxy.Dialer, *http.Client, error) {
 	var dialer proxy.Dialer = &net.Dialer{Timeout: timeout}
 	var err error
 	for _, pr := range copyProxyList {
-		if pr.Username != "" && pr.Password != "" {
-			auth := proxy.Auth{
-				User:     pr.Username,
-				Password: pr.Password,
-			}
-			dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, dialer)
-		} else {
-			dialer, err = proxy.SOCKS5("tcp", pr.Address, nil, dialer)
+		auth := proxy.Auth{
+			User:     pr.Username,
+			Password: pr.Password,
 		}
+		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, dialer)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("[%s] Unable to create SOCKS5 dialer %s", &chainType, pr.Address)
 			return nil, nil, err
@@ -666,17 +654,11 @@ func New(conf *Config) *proxyApp {
 		}
 		p.rrIndexReset = rrIndexMax
 	} else {
-		var dialer proxy.Dialer
-		var err error
-		if conf.User != "" && conf.Pass != "" {
-			auth := proxy.Auth{
-				User:     conf.User,
-				Password: conf.Pass,
-			}
-			dialer, err = proxy.SOCKS5("tcp", conf.AddrSOCKS, &auth, &net.Dialer{Timeout: timeout})
-		} else {
-			dialer, err = proxy.SOCKS5("tcp", conf.AddrSOCKS, nil, &net.Dialer{Timeout: timeout})
+		auth := proxy.Auth{
+			User:     conf.User,
+			Password: conf.Pass,
 		}
+		dialer, err := proxy.SOCKS5("tcp", conf.AddrSOCKS, &auth, &net.Dialer{Timeout: timeout})
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("Unable to create SOCKS5 dialer")
 		}

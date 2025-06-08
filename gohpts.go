@@ -226,11 +226,14 @@ func (p *proxyApp) getSocks() (proxy.Dialer, *http.Client, error) {
 		chainLength = p.proxychain.Chain.Length
 	}
 	copyProxyList := make([]proxyEntry, 0, len(p.availProxyList))
-	if chainType == "random" {
+	switch chainType {
+	case "strict", "dynamic":
+		copyProxyList = p.availProxyList
+	case "random":
 		copy(copyProxyList, p.availProxyList)
 		shuffle(copyProxyList)
 		copyProxyList = copyProxyList[:chainLength]
-	} else if chainType == "round_robin" {
+	case "round_robin":
 		var start uint32
 		for {
 			start = atomic.LoadUint32(&p.rrIndex)
@@ -248,8 +251,8 @@ func (p *proxyApp) getSocks() (proxy.Dialer, *http.Client, error) {
 			idx := (startIdx + i) % len(p.availProxyList)
 			copyProxyList = append(copyProxyList, p.availProxyList[idx])
 		}
-	} else {
-		copyProxyList = p.availProxyList
+	default:
+		p.logger.Fatal().Msg("Unreachable")
 	}
 	if len(copyProxyList) == 0 {
 		p.logger.Error().Msgf("[%s] No SOCKS5 Proxy available", chainType)

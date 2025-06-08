@@ -1,4 +1,4 @@
-# GoHPTS - HTTP proxy to SOCKS5 proxy written in Go
+# GoHPTS - HTTP(S) proxy to SOCKS5 proxy (chain) written in Go
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Reference](https://pkg.go.dev/badge/github.com/shadowy-pycoder/go-http-proxy-to-socks.svg)](https://pkg.go.dev/github.com/shadowy-pycoder/go-http-proxy-to-socks)

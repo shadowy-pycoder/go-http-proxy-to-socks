@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/goccy/go-yaml"
@@ -31,9 +32,10 @@ const (
 	flushTimeout             time.Duration = 10 * time.Millisecond
 	availProxyUpdateInterval time.Duration = 30 * time.Second
 	kbSize                   int64         = 1000
+	rrIndexMax               uint32        = 1_000_000
 )
 
-var supportedChainTypes = []string{"strict", "dynamic", "random"} // TODO: round_robin chain
+var supportedChainTypes = []string{"strict", "dynamic", "random", "round_robin"}
 
 // Hop-by-hop headers
 // https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1
@@ -105,6 +107,8 @@ type proxyApp struct {
 	keyFile        string
 	httpServerAddr string
 	proxychain     *proxyChainConfig
+	rrIndex        uint32
+	rrIndexReset   uint32
 
 	mu             sync.RWMutex
 	availProxyList []proxyEntry
@@ -215,17 +219,35 @@ func (p *proxyApp) getSocks() (proxy.Dialer, *http.Client, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	chainType := p.proxychain.Chain.Type
-	copyProxyList := make([]proxyEntry, len(p.availProxyList))
+	var chainLength int
+	if p.proxychain.Chain.Length > len(p.availProxyList) || p.proxychain.Chain.Length <= 0 {
+		chainLength = len(p.availProxyList)
+	} else {
+		chainLength = p.proxychain.Chain.Length
+	}
+	copyProxyList := make([]proxyEntry, 0, len(p.availProxyList))
 	if chainType == "random" {
 		copy(copyProxyList, p.availProxyList)
 		shuffle(copyProxyList)
-		var chainLength int
-		if p.proxychain.Chain.Length > len(copyProxyList) || p.proxychain.Chain.Length <= 0 {
-			chainLength = len(copyProxyList)
-		} else {
-			chainLength = p.proxychain.Chain.Length
-		}
 		copyProxyList = copyProxyList[:chainLength]
+	} else if chainType == "round_robin" {
+		var start uint32
+		for {
+			start = atomic.LoadUint32(&p.rrIndex)
+			next := start + 1
+			if start >= p.rrIndexReset {
+				p.logger.Debug().Msg("Resetting round robin index")
+				next = 0
+			}
+			if atomic.CompareAndSwapUint32(&p.rrIndex, start, next) {
+				break
+			}
+		}
+		startIdx := int(start % uint32(len(p.availProxyList)))
+		for i := 0; i < chainLength; i++ {
+			idx := (startIdx + i) % len(p.availProxyList)
+			copyProxyList = append(copyProxyList, p.availProxyList[idx])
+		}
 	} else {
 		copyProxyList = p.availProxyList
 	}
@@ -639,6 +661,7 @@ func New(conf *Config) *proxyApp {
 		if !slices.Contains(supportedChainTypes, chainType) {
 			p.logger.Fatal().Msgf("[proxychain config] Chain type `%s` is not supported", chainType)
 		}
+		p.rrIndexReset = rrIndexMax
 	} else {
 		var dialer proxy.Dialer
 		var err error

@@ -32,7 +32,7 @@ Specify http server in proxy configuration of Postman
 ## Features
 
 - **Proxy Chain functionality**  
-  Supports `strict`, `dynamic`, `random` chains of SOCKS5 proxy
+  Supports `strict`, `dynamic`, `random`, `round_robin` chains of SOCKS5 proxy
 
 - **DNS Leak Protection**  
   DNS resolution occurs on SOCKS5 server side.
@@ -168,11 +168,20 @@ Config example:
 # (or proxy chain, see  chain_len) from the list.
 # this option is good to test your IDS :)
 
-# round_robin - Not supported
+# round_robin - Each connection will be done via chained proxies
+# of chain_len length
+# all proxies chained in the order as they appear in the list
+# at least one proxy must be online to play in chain
+# (dead proxies are skipped).
+# the start of the current proxy chain is the proxy after the last
+# proxy in the previously invoked proxy chain.
+# if the end of the proxy chain is reached while looking for proxies
+# start at the beginning again.
+# These semantics are not guaranteed in a multithreaded environment.
 
 chain:
-  type: strict # dynamic, strict, random
-  length: 2 # maximum number of proxy in a chain (works only for random chain)
+  type: strict # dynamic, strict, random, round_robin
+  length: 2 # maximum number of proxy in a chain (works only for random chain and round_robin chain)
 proxy_list:
   - address: 127.0.0.1:1080
     username: username # username and password are optional

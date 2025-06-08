@@ -222,7 +222,7 @@ func (p *proxyApp) getSocks() (proxy.Dialer, *http.Client, error) {
 	case "strict", "dynamic":
 		copyProxyList = p.availProxyList
 	case "random":
-		copy(copyProxyList, p.availProxyList)
+		copyProxyList = append(copyProxyList, p.availProxyList...)
 		shuffle(copyProxyList)
 		copyProxyList = copyProxyList[:chainLength]
 	case "round_robin":

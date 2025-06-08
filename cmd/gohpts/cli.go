@@ -65,6 +65,7 @@ func root(args []string) error {
 	})
 	flags.StringVar(&conf.CertFile, "c", "", "Path to certificate PEM encoded file ")
 	flags.StringVar(&conf.KeyFile, "k", "", "Path to private key PEM encoded file ")
+	flags.StringVar(&conf.ProxyChainPath, "f", "", "Path to proxychain YAML configuration file")
 	flags.BoolFunc("d", "Show logs in DEBUG mode", func(flagValue string) error {
 		conf.Debug = true
 		return nil
@@ -86,6 +87,15 @@ func root(args []string) error {
 
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	seen := make(map[string]bool)
+	flags.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+	if seen["f"] {
+		for _, da := range []string{"s", "u", "p"} {
+			if seen[da] {
+				return fmt.Errorf("specify either -f or -s -u -p flags")
+			}
+		}
 	}
 	p := gohpts.New(&conf)
 	p.Run()

@@ -31,6 +31,9 @@ Specify http server in proxy configuration of Postman
 
 ## Features
 
+- **Proxy Chain functionality**  
+  Supports `strict`, `dynamic`, `random` chains of SOCKS5 proxy
+
 - **DNS Leak Protection**  
   DNS resolution occurs on SOCKS5 server side.
 
@@ -59,7 +62,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.4.1; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.5.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -83,7 +86,6 @@ make build
 
 ```shell
 gohpts -h
-
     _____       _    _ _____ _______ _____
   / ____|     | |  | |  __ \__   __/ ____|
  | |  __  ___ | |__| | |__) | | | | (___
@@ -98,19 +100,21 @@ Usage: gohpts [OPTIONS]
 Options:
   -h    Show this help message and exit.
   -c string
-    	Path to certificate PEM encoded file
-  -d	Show logs in DEBUG mode
-  -j	Show logs in JSON format
+        Path to certificate PEM encoded file
+  -d    Show logs in DEBUG mode
+  -f string
+        Path to proxychain YAML configuration file
+  -j    Show logs in JSON format
   -k string
-    	Path to private key PEM encoded file
+        Path to private key PEM encoded file
   -l value
-    	Address of HTTP proxy server (Default: localhost:8080)
-  -p	Password for SOCKS5 proxy (not echoed to terminal)
+        Address of HTTP proxy server (Default: localhost:8080)
+  -p    Password for SOCKS5 proxy (not echoed to terminal)
   -s value
-    	Address of SOCKS5 proxy server (Default: localhost:1080)
+        Address of SOCKS5 proxy server (Default: localhost:1080)
   -u string
-    	User for SOCKS5 proxy
-  -v	print version
+        User for SOCKS5 proxy
+  -v    print version
 ```
 
 ## Example
@@ -139,6 +143,45 @@ Run http proxy over TLS connection
 ```shell
 gohpts -s 1080 -l 8080 -c "path/to/certificate" -k "path/to/private/key"
 ```
+
+Run http proxy with chain of SOCKS5 proxy
+
+```shell
+gohpts -f "path/to/proxychain/config" -d
+```
+
+Config example:
+
+```yaml
+# Explanations for chains taken from /etc/proxychains4.conf
+
+# strict - Each connection will be done via chained proxies
+# all proxies chained in the order as they appear in the list
+# all proxies must be online to play in chain
+
+# dynamic - Each connection will be done via chained proxies
+# all proxies chained in the order as they appear in the list
+# at least one proxy must be online to play in chain
+# (dead proxies are skipped)
+
+# random - Each connection will be done via random proxy
+# (or proxy chain, see  chain_len) from the list.
+# this option is good to test your IDS :)
+
+# round_robin - Not supported
+
+chain:
+  type: strict # dynamic, strict, random
+  length: 2 # maximum number of proxy in a chain (works only for random chain)
+proxy_list:
+  - address: 127.0.0.1:1080
+    username: username # username and password are optional
+    password: password
+  - address: 127.0.0.1:1081
+  - address: :1082 # empty host means localhost
+```
+
+To learn more about proxy chains visit [Proxychains Github](https://github.com/rofl0r/proxychains-ng)
 
 ## License
 

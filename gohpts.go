@@ -621,6 +621,20 @@ func New(conf *Config) *proxyApp {
 		if len(p.proxychain.ProxyList) == 0 {
 			p.logger.Fatal().Msg("[proxychain config] Proxy list is empty")
 		}
+		seen := make(map[string]struct{})
+		for _, pr := range p.proxychain.ProxyList {
+			var addr string
+			if strings.HasPrefix(pr.Address, ":") {
+				addr = fmt.Sprintf("127.0.0.1%s", pr.Address)
+			} else {
+				addr = pr.Address
+			}
+			if _, ok := seen[addr]; !ok {
+				seen[addr] = struct{}{}
+			} else {
+				p.logger.Fatal().Msgf("[proxychain config] Duplicate entry `%s`", addr)
+			}
+		}
 		chainType := p.proxychain.Chain.Type
 		if !slices.Contains(supportedChainTypes, chainType) {
 			p.logger.Fatal().Msgf("[proxychain config] Chain type `%s` is not supported", chainType)

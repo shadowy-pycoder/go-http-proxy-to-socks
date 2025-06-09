@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -275,7 +276,7 @@ func (p *proxyApp) getSocks() (proxy.Dialer, *http.Client, error) {
 			return http.ErrUseLastResponse
 		},
 	}
-	p.logger.Debug().Msgf("[%s] Current chain: %s", chainType, p.printProxyChain(copyProxyList))
+	p.logger.Debug().Msgf("[%s] Request chain: %s", chainType, p.printProxyChain(copyProxyList))
 	return dialer, socks, nil
 }
 
@@ -635,15 +636,19 @@ func New(conf *Config) *proxyApp {
 			p.logger.Fatal().Msg("[proxychain config] Proxy list is empty")
 		}
 		seen := make(map[string]struct{})
-		for _, pr := range p.proxychain.ProxyList {
+		for idx, pr := range p.proxychain.ProxyList {
 			var addr string
-			if strings.HasPrefix(pr.Address, ":") {
+			i, err := strconv.Atoi(pr.Address)
+			if err == nil {
+				addr = fmt.Sprintf("127.0.0.1:%d", i)
+			} else if strings.HasPrefix(pr.Address, ":") {
 				addr = fmt.Sprintf("127.0.0.1%s", pr.Address)
 			} else {
 				addr = pr.Address
 			}
 			if _, ok := seen[addr]; !ok {
 				seen[addr] = struct{}{}
+				p.proxychain.ProxyList[idx].Address = addr
 			} else {
 				p.logger.Fatal().Msgf("[proxychain config] Duplicate entry `%s`", addr)
 			}
@@ -694,9 +699,6 @@ func New(conf *Config) *proxyApp {
 	hs.Protocols.SetHTTP1(true)
 	p.httpServer = hs
 	p.httpServerAddr = conf.AddrHTTP
-	if strings.HasPrefix(p.httpServerAddr, ":") {
-		p.httpServerAddr = fmt.Sprintf("127.0.0.1%s", p.httpServerAddr)
-	}
 	hc := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -707,7 +709,7 @@ func New(conf *Config) *proxyApp {
 	}
 	p.httpClient = hc
 	if p.proxychain != nil {
-		p.logger.Info().Msgf("SOCKS5 proxy chain [%s]: %s", p.proxychain.Chain.Type, p.printProxyChain(p.proxychain.ProxyList))
+		p.logger.Info().Msgf("SOCKS5 Proxy [%s] chain: %s", p.proxychain.Chain.Type, p.printProxyChain(p.proxychain.ProxyList))
 	} else {
 		p.logger.Info().Msgf("SOCKS5 Proxy: %s", conf.AddrSOCKS)
 	}

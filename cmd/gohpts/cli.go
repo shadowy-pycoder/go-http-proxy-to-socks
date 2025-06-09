@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	gohpts "github.com/shadowy-pycoder/go-http-proxy-to-socks"
 	"golang.org/x/term"
@@ -12,8 +13,8 @@ import (
 
 const (
 	app       string = "gohpts"
-	addrSOCKS        = ":1080"
-	addrHTTP         = ":8080"
+	addrSOCKS        = "127.0.0.1:1080"
+	addrHTTP         = "127.0.0.1:8080"
 )
 const usagePrefix string = `                                                                  
     _____       _    _ _____ _______ _____ 
@@ -35,12 +36,16 @@ func root(args []string) error {
 	conf := gohpts.Config{AddrSOCKS: addrSOCKS, AddrHTTP: addrHTTP}
 	flags := flag.NewFlagSet(app, flag.ExitOnError)
 	flags.Func("s", "Address of SOCKS5 proxy server (Default: localhost:1080)", func(flagValue string) error {
+		var addr string
 		i, err := strconv.Atoi(flagValue)
 		if err == nil {
-			conf.AddrSOCKS = fmt.Sprintf(":%d", i)
+			addr = fmt.Sprintf("127.0.0.1:%d", i)
+		} else if strings.HasPrefix(flagValue, ":") {
+			addr = fmt.Sprintf("127.0.0.1%s", flagValue)
 		} else {
-			conf.AddrSOCKS = flagValue
+			addr = flagValue
 		}
+		conf.AddrSOCKS = addr
 		return nil
 	})
 	flags.StringVar(&conf.User, "u", "", "User for SOCKS5 proxy")
@@ -55,12 +60,16 @@ func root(args []string) error {
 		return nil
 	})
 	flags.Func("l", "Address of HTTP proxy server (Default: localhost:8080)", func(flagValue string) error {
+		var addr string
 		i, err := strconv.Atoi(flagValue)
 		if err == nil {
-			conf.AddrHTTP = fmt.Sprintf(":%d", i)
+			addr = fmt.Sprintf("127.0.0.1:%d", i)
+		} else if strings.HasPrefix(flagValue, ":") {
+			addr = fmt.Sprintf("127.0.0.1%s", flagValue)
 		} else {
-			conf.AddrHTTP = flagValue
+			addr = flagValue
 		}
+		conf.AddrHTTP = addr
 		return nil
 	})
 	flags.StringVar(&conf.CertFile, "c", "", "Path to certificate PEM encoded file ")

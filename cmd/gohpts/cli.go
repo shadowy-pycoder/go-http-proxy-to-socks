@@ -4,8 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
 
 	gohpts "github.com/shadowy-pycoder/go-http-proxy-to-socks"
 	"golang.org/x/term"
@@ -24,7 +22,7 @@ const usagePrefix string = `
  | |__| | (_) | |  | | |      | |  ____) |
   \_____|\___/|_|  |_|_|      |_| |_____/ 
                                           
-GoHPTS (HTTP Proxy to SOCKS5) by shadowy-pycoder                         
+GoHPTS (HTTP(S) Proxy to SOCKS5 proxy) by shadowy-pycoder                         
 GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 
 Usage: gohpts [OPTIONS] 
@@ -33,48 +31,15 @@ Options:
 `
 
 func root(args []string) error {
-	conf := gohpts.Config{AddrSOCKS: addrSOCKS, AddrHTTP: addrHTTP}
+	conf := gohpts.Config{}
 	flags := flag.NewFlagSet(app, flag.ExitOnError)
-	flags.Func("s", "Address of SOCKS5 proxy server (Default: localhost:1080)", func(flagValue string) error {
-		var addr string
-		i, err := strconv.Atoi(flagValue)
-		if err == nil {
-			addr = fmt.Sprintf("127.0.0.1:%d", i)
-		} else if strings.HasPrefix(flagValue, ":") {
-			addr = fmt.Sprintf("127.0.0.1%s", flagValue)
-		} else {
-			addr = flagValue
-		}
-		conf.AddrSOCKS = addr
-		return nil
-	})
-	flags.StringVar(&conf.User, "u", "", "User for SOCKS5 proxy")
-	flags.BoolFunc("p", "Password for SOCKS5 proxy (not echoed to terminal)", func(flagValue string) error {
-		fmt.Print("SOCKS5 Password: ")
-		bytepw, err := term.ReadPassword(int(os.Stdin.Fd()))
-		if err != nil {
-			os.Exit(1)
-		}
-		conf.Pass = string(bytepw)
-		fmt.Print("\033[2K\r")
-		return nil
-	})
-	flags.Func("l", "Address of HTTP proxy server (Default: localhost:8080)", func(flagValue string) error {
-		var addr string
-		i, err := strconv.Atoi(flagValue)
-		if err == nil {
-			addr = fmt.Sprintf("127.0.0.1:%d", i)
-		} else if strings.HasPrefix(flagValue, ":") {
-			addr = fmt.Sprintf("127.0.0.1%s", flagValue)
-		} else {
-			addr = flagValue
-		}
-		conf.AddrHTTP = addr
-		return nil
-	})
-	flags.StringVar(&conf.CertFile, "c", "", "Path to certificate PEM encoded file ")
-	flags.StringVar(&conf.KeyFile, "k", "", "Path to private key PEM encoded file ")
-	flags.StringVar(&conf.ProxyChainPath, "f", "", "Path to proxychain YAML configuration file")
+	flags.StringVar(&conf.AddrSOCKS, "s", addrSOCKS, "Address of SOCKS5 proxy server")
+	flags.StringVar(&conf.User, "u", "", "User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)")
+	flags.StringVar(&conf.AddrHTTP, "l", addrHTTP, "Address of HTTP proxy server")
+	flags.StringVar(&conf.ServerUser, "U", "", "User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)")
+	flags.StringVar(&conf.CertFile, "c", "", "Path to certificate PEM encoded file")
+	flags.StringVar(&conf.KeyFile, "k", "", "Path to private key PEM encoded file")
+	flags.StringVar(&conf.ServerConfPath, "f", "", "Path to server configuration file in YAML format")
 	flags.BoolFunc("d", "Show logs in DEBUG mode", func(flagValue string) error {
 		conf.Debug = true
 		return nil
@@ -100,11 +65,29 @@ func root(args []string) error {
 	seen := make(map[string]bool)
 	flags.Visit(func(f *flag.Flag) { seen[f.Name] = true })
 	if seen["f"] {
-		for _, da := range []string{"s", "u", "p"} {
+		for _, da := range []string{"s", "u", "U", "c", "k", "l"} {
 			if seen[da] {
-				return fmt.Errorf("specify either -f or -s -u -p flags")
+				return fmt.Errorf("-f flag only works with -d and -j flags")
 			}
 		}
+	}
+	if seen["u"] {
+		fmt.Print("SOCKS5 Password: ")
+		bytepw, err := term.ReadPassword(int(os.Stdin.Fd()))
+		if err != nil {
+			return err
+		}
+		conf.Pass = string(bytepw)
+		fmt.Print("\033[2K\r")
+	}
+	if seen["U"] {
+		fmt.Print("HTTP Password: ")
+		bytepw, err := term.ReadPassword(int(os.Stdin.Fd()))
+		if err != nil {
+			return err
+		}
+		conf.ServerPass = string(bytepw)
+		fmt.Print("\033[2K\r")
 	}
 	p := gohpts.New(&conf)
 	p.Run()

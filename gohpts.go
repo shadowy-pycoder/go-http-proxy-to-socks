@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -107,7 +106,8 @@ type proxyApp struct {
 	certFile       string
 	keyFile        string
 	httpServerAddr string
-	proxychain     *proxyChainConfig
+	proxychain     Chain
+	proxylist      []proxyEntry
 	rrIndex        uint32
 	rrIndexReset   uint32
 
@@ -136,8 +136,8 @@ func (p *proxyApp) updateSocksList() {
 	var dialer proxy.Dialer
 	var err error
 	failed := 0
-	chainType := p.proxychain.Chain.Type
-	for _, pr := range p.proxychain.ProxyList {
+	chainType := p.proxychain.Type
+	for _, pr := range p.proxylist {
 		auth := proxy.Auth{
 			User:     pr.Username,
 			Password: pr.Password,
@@ -163,12 +163,12 @@ func (p *proxyApp) updateSocksList() {
 			break
 		}
 	}
-	if failed == len(p.proxychain.ProxyList) {
+	if failed == len(p.proxylist) {
 		p.logger.Error().Err(err).Msgf("[%s] No SOCKS5 Proxy available", chainType)
 		return
 	}
 	currentDialer := dialer
-	for _, pr := range p.proxychain.ProxyList[failed+1:] {
+	for _, pr := range p.proxylist[failed+1:] {
 		auth := proxy.Auth{
 			User:     pr.Username,
 			Password: pr.Password,
@@ -191,7 +191,7 @@ func (p *proxyApp) updateSocksList() {
 		p.availProxyList = append(p.availProxyList, proxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
 	}
 	p.logger.Debug().Msgf("[%s] Available SOCKS5 Proxy [%d/%d]: %s", chainType,
-		len(p.availProxyList), len(p.proxychain.ProxyList), p.printProxyChain(p.availProxyList))
+		len(p.availProxyList), len(p.proxylist), p.printProxyChain(p.availProxyList))
 }
 
 // https://www.calhoun.io/how-to-shuffle-arrays-and-slices-in-go/
@@ -206,17 +206,17 @@ func shuffle(vals []proxyEntry) {
 }
 
 func (p *proxyApp) getSocks() (proxy.Dialer, *http.Client, error) {
-	if p.proxychain == nil {
+	if p.proxylist == nil {
 		return p.sockDialer, p.sockClient, nil
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	chainType := p.proxychain.Chain.Type
+	chainType := p.proxychain.Type
 	var chainLength int
-	if p.proxychain.Chain.Length > len(p.availProxyList) || p.proxychain.Chain.Length <= 0 {
+	if p.proxychain.Length > len(p.availProxyList) || p.proxychain.Length <= 0 {
 		chainLength = len(p.availProxyList)
 	} else {
-		chainLength = p.proxychain.Chain.Length
+		chainLength = p.proxychain.Length
 	}
 	copyProxyList := make([]proxyEntry, 0, len(p.availProxyList))
 	switch chainType {
@@ -251,7 +251,7 @@ func (p *proxyApp) getSocks() (proxy.Dialer, *http.Client, error) {
 		p.logger.Error().Msgf("[%s] No SOCKS5 Proxy available", chainType)
 		return nil, nil, fmt.Errorf("no socks5 proxy available")
 	}
-	if p.proxychain.Chain.Type == "strict" && len(copyProxyList) != len(p.proxychain.ProxyList) {
+	if p.proxychain.Type == "strict" && len(copyProxyList) != len(p.proxylist) {
 		p.logger.Error().Msgf("[%s] Not all SOCKS5 Proxy available", chainType)
 		return nil, nil, fmt.Errorf("not all socks5 proxy available")
 	}
@@ -513,8 +513,8 @@ func (p *proxyApp) Run() {
 	done := make(chan bool)
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt)
-	if p.proxychain != nil {
-		chainType := p.proxychain.Chain.Type
+	if p.proxylist != nil {
+		chainType := p.proxychain.Type
 		go func() {
 			for {
 				p.logger.Debug().Msgf("[%s] Updating available proxy", chainType)
@@ -556,9 +556,11 @@ type Config struct {
 	Json           bool
 	User           string
 	Pass           string
+	ServerUser     string
+	ServerPass     string
 	CertFile       string
 	KeyFile        string
-	ProxyChainPath string
+	ServerConfPath string
 }
 type logWriter struct {
 }
@@ -585,12 +587,45 @@ func (pe proxyEntry) String() string {
 	return pe.Address
 }
 
-type proxyChainConfig struct {
-	Chain struct {
-		Type   string `yaml:"type"`
-		Length int    `yaml:"length"`
-	} `yaml:"chain"`
+type Server struct {
+	Address  string `yaml:"address"`
+	Username string `yaml:"username,omitempty"`
+	Password string `yaml:"password,omitempty"`
+	CertFile string `yaml:"cert_file,omitempty"`
+	KeyFile  string `yaml:"key_file,omitempty"`
+}
+type Chain struct {
+	Type   string `yaml:"type"`
+	Length int    `yaml:"length"`
+}
+
+type serverConfig struct {
+	Chain     Chain        `yaml:"chain"`
 	ProxyList []proxyEntry `yaml:"proxy_list"`
+	Server    Server       `yaml:"server"`
+}
+
+func getFullAddress(v string) string {
+	var addr string
+	i, err := strconv.Atoi(v)
+	if err == nil {
+		addr = fmt.Sprintf("127.0.0.1:%d", i)
+	} else if strings.HasPrefix(v, ":") {
+		addr = fmt.Sprintf("127.0.0.1%s", v)
+	} else {
+		addr = v
+	}
+	return addr
+}
+
+func expandPath(p string) string {
+	p = os.ExpandEnv(p)
+	if strings.HasPrefix(p, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return strings.Replace(p, "~", home, 1)
+		}
+	}
+	return p
 }
 
 func New(conf *Config) *proxyApp {
@@ -604,7 +639,7 @@ func New(conf *Config) *proxyApp {
 		log.SetFlags(0)
 		log.SetOutput(new(logWriter))
 		output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339, NoColor: true}
-		output.FormatLevel = func(i interface{}) string {
+		output.FormatLevel = func(i any) string {
 			return strings.ToUpper(fmt.Sprintf("| %-6s|", i))
 		}
 		logger = zerolog.New(output).With().Timestamp().Logger()
@@ -615,60 +650,62 @@ func New(conf *Config) *proxyApp {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
 	p.logger = &logger
-	if conf.ProxyChainPath != "" {
-		var pcconf proxyChainConfig
-		yamlFile, err := os.ReadFile(filepath.FromSlash(conf.ProxyChainPath))
+	var addrHTTP, addrSOCKS, certFile, keyFile string
+	if conf.ServerConfPath != "" {
+		var sconf serverConfig
+		yamlFile, err := os.ReadFile(expandPath(conf.ServerConfPath))
 		if err != nil {
-			p.logger.Fatal().Err(err).Msg("[proxychain config] Parsing failed")
+			p.logger.Fatal().Err(err).Msg("[server config] Parsing failed")
 		}
-		err = yaml.Unmarshal(yamlFile, &pcconf)
+		err = yaml.Unmarshal(yamlFile, &sconf)
 		if err != nil {
-			p.logger.Fatal().Err(err).Msg("[proxychain config] Parsing failed")
+			p.logger.Fatal().Err(err).Msg("[server config] Parsing failed")
 		}
-		p.proxychain = &pcconf
-		p.availProxyList = make([]proxyEntry, 0, len(p.proxychain.ProxyList))
-	} else {
-		p.proxychain = nil
-	}
-
-	if p.proxychain != nil {
-		if len(p.proxychain.ProxyList) == 0 {
-			p.logger.Fatal().Msg("[proxychain config] Proxy list is empty")
+		if sconf.Server.Address == "" {
+			p.logger.Fatal().Err(err).Msg("[server config] Server address is empty")
+		}
+		addrHTTP = getFullAddress(sconf.Server.Address)
+		p.httpServerAddr = addrHTTP
+		certFile = expandPath(sconf.Server.CertFile)
+		keyFile = expandPath(sconf.Server.KeyFile)
+		p.proxychain = sconf.Chain
+		p.proxylist = sconf.ProxyList
+		p.availProxyList = make([]proxyEntry, 0, len(p.proxylist))
+		if len(p.proxylist) == 0 {
+			p.logger.Fatal().Msg("[server config] Proxy list is empty")
 		}
 		seen := make(map[string]struct{})
-		for idx, pr := range p.proxychain.ProxyList {
-			var addr string
-			i, err := strconv.Atoi(pr.Address)
-			if err == nil {
-				addr = fmt.Sprintf("127.0.0.1:%d", i)
-			} else if strings.HasPrefix(pr.Address, ":") {
-				addr = fmt.Sprintf("127.0.0.1%s", pr.Address)
-			} else {
-				addr = pr.Address
-			}
+		for idx, pr := range p.proxylist {
+			addr := getFullAddress(pr.Address)
 			if _, ok := seen[addr]; !ok {
 				seen[addr] = struct{}{}
-				p.proxychain.ProxyList[idx].Address = addr
+				p.proxylist[idx].Address = addr
 			} else {
-				p.logger.Fatal().Msgf("[proxychain config] Duplicate entry `%s`", addr)
+				p.logger.Fatal().Msgf("[server config] Duplicate entry `%s`", addr)
 			}
 		}
-		chainType := p.proxychain.Chain.Type
+		addrSOCKS = p.printProxyChain(p.proxylist)
+		chainType := p.proxychain.Type
 		if !slices.Contains(supportedChainTypes, chainType) {
-			p.logger.Fatal().Msgf("[proxychain config] Chain type `%s` is not supported", chainType)
+			p.logger.Fatal().Msgf("[server config] Chain type `%s` is not supported", chainType)
 		}
 		p.rrIndexReset = rrIndexMax
 	} else {
+		addrSOCKS = getFullAddress(conf.AddrSOCKS)
+		addrHTTP = getFullAddress(conf.AddrHTTP)
+		p.httpServerAddr = addrHTTP
+		certFile = expandPath(conf.CertFile)
+		keyFile = expandPath(conf.KeyFile)
 		auth := proxy.Auth{
 			User:     conf.User,
 			Password: conf.Pass,
 		}
-		dialer, err := proxy.SOCKS5("tcp", conf.AddrSOCKS, &auth, &net.Dialer{Timeout: timeout})
+		dialer, err := proxy.SOCKS5("tcp", addrSOCKS, &auth, &net.Dialer{Timeout: timeout})
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("Unable to create SOCKS5 dialer")
 		}
 		p.sockDialer = dialer
-		socks := &http.Client{
+		p.sockClient = &http.Client{
 			Transport: &http.Transport{
 				Dial: dialer.Dial,
 			},
@@ -676,10 +713,9 @@ func New(conf *Config) *proxyApp {
 				return http.ErrUseLastResponse
 			},
 		}
-		p.sockClient = socks
 	}
 	hs := &http.Server{
-		Addr:           conf.AddrHTTP,
+		Addr:           addrHTTP,
 		ReadTimeout:    readTimeout,
 		WriteTimeout:   writeTimeout,
 		MaxHeaderBytes: 1 << 20,
@@ -698,8 +734,7 @@ func New(conf *Config) *proxyApp {
 	hs.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
 	hs.Protocols.SetHTTP1(true)
 	p.httpServer = hs
-	p.httpServerAddr = conf.AddrHTTP
-	hc := &http.Client{
+	p.httpClient = &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
@@ -707,15 +742,14 @@ func New(conf *Config) *proxyApp {
 			return http.ErrUseLastResponse
 		},
 	}
-	p.httpClient = hc
-	if p.proxychain != nil {
-		p.logger.Info().Msgf("SOCKS5 Proxy [%s] chain: %s", p.proxychain.Chain.Type, p.printProxyChain(p.proxychain.ProxyList))
+	if conf.ServerConfPath != "" {
+		p.logger.Info().Msgf("SOCKS5 Proxy [%s] chain: %s", p.proxychain.Type, addrSOCKS)
 	} else {
-		p.logger.Info().Msgf("SOCKS5 Proxy: %s", conf.AddrSOCKS)
+		p.logger.Info().Msgf("SOCKS5 Proxy: %s", addrSOCKS)
 	}
-	if conf.CertFile != "" && conf.KeyFile != "" {
-		p.certFile = conf.CertFile
-		p.keyFile = conf.KeyFile
+	if certFile != "" && keyFile != "" {
+		p.certFile = certFile
+		p.keyFile = keyFile
 		p.logger.Info().Msgf("HTTPS Proxy: %s", p.httpServerAddr)
 	} else {
 		p.logger.Info().Msgf("HTTP Proxy: %s", p.httpServerAddr)

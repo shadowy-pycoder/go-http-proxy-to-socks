@@ -49,6 +49,9 @@ Specify http server in proxy configuration of Postman
 - **SOCKS5 Authentication Support**  
   Supports username/password authentication for SOCKS5 proxies.
 
+- **HTTP Authentication Support**  
+  Supports username/password authentication for HTTP proxy server.
+
 - **Lightweight and Fast**  
   Designed with minimal overhead and efficient request handling.
 
@@ -93,31 +96,34 @@ gohpts -h
  | |__| | (_) | |  | | |      | |  ____) |
   \_____|\___/|_|  |_|_|      |_| |_____/
 
-GoHPTS (HTTP Proxy to SOCKS5) by shadowy-pycoder
+GoHPTS (HTTP(S) Proxy to SOCKS5 proxy) by shadowy-pycoder
 GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 
 Usage: gohpts [OPTIONS]
 Options:
   -h    Show this help message and exit.
+  -U string
+        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
   -c string
         Path to certificate PEM encoded file
   -d    Show logs in DEBUG mode
   -f string
-        Path to proxychain YAML configuration file
+        Path to server configuration file in YAML format
   -j    Show logs in JSON format
   -k string
         Path to private key PEM encoded file
-  -l value
-        Address of HTTP proxy server (Default: localhost:8080)
-  -p    Password for SOCKS5 proxy (not echoed to terminal)
-  -s value
-        Address of SOCKS5 proxy server (Default: localhost:1080)
+  -l string
+        Address of HTTP proxy server (default "127.0.0.1:8080")
+  -s string
+        Address of SOCKS5 proxy server (default "127.0.0.1:1080")
   -u string
-        User for SOCKS5 proxy
+        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
   -v    print version
 ```
 
 ## Example
+
+### Configuration via CLI flags
 
 ```shell
 gohpts -s 1080 -l 8080 -d -j
@@ -131,12 +137,21 @@ Output:
 {"level":"debug","time":"2025-05-28T06:15:22+00:00","message":"HTTP/1.1 - CONNECT - www.google.com:443"}
 ```
 
-Specify username and password fo SOCKS5 proxy server:
+Specify username and password for SOCKS5 proxy server:
 
 ```shell
-gohpts -s 1080 -l 8080 -d -j -u user -p
+gohpts -s 1080 -l 8080 -d -j -u user
 SOCKS5 Password: #you will be prompted for password input here
 ```
+
+Specify username and password for HTTP proxy server:
+
+```shell
+gohpts -s 1080 -l 8080 -d -j -U user
+HTTP Password: #you will be prompted for password input here
+```
+
+When both `-u` and `-U` are present, you will be prompted twice
 
 Run http proxy over TLS connection
 
@@ -144,10 +159,12 @@ Run http proxy over TLS connection
 gohpts -s 1080 -l 8080 -c "path/to/certificate" -k "path/to/private/key"
 ```
 
-Run http proxy in SOCKS5 proxy chain mode
+### Configuration via YAML file
+
+Run http proxy in SOCKS5 proxy chain mode (specify server settings via YAML configuration file)
 
 ```shell
-gohpts -f "path/to/proxychain/config" -d
+gohpts -f "path/to/proxychain/config" -d -j
 ```
 
 Config example:
@@ -188,6 +205,14 @@ proxy_list:
     password: password
   - address: 127.0.0.1:1081
   - address: :1082 # empty host means localhost
+server:
+  address: 127.0.0.1:8080 # the only required field in this section
+  # these are for adding basic authentication
+  username: username
+  password: password
+  # comment out these to use HTTP instead of HTTPS
+  cert_file: ~/local.crt
+  key_file: ~/local.key
 ```
 
 To learn more about proxy chains visit [Proxychains Github](https://github.com/rofl0r/proxychains-ng)

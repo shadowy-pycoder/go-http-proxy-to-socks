@@ -33,3 +33,11 @@ proxy_list:
     password: password
   - address: 127.0.0.1:1081
   - address: :1082 # empty host means localhost
+server:
+  address: 127.0.0.1:8080 # the only required field in this section
+  # these are for adding basic authentication
+  username: username 
+  password: password
+  # comment out these to use HTTP instead of HTTPS
+  cert_file: ~/local.crt
+  key_file: ~/local.key

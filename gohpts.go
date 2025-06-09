@@ -2,7 +2,10 @@ package gohpts
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -106,6 +109,8 @@ type proxyApp struct {
 	certFile       string
 	keyFile        string
 	httpServerAddr string
+	user           string
+	pass           string
 	proxychain     Chain
 	proxylist      []proxyEntry
 	rrIndex        uint32
@@ -499,6 +504,50 @@ func (p *proxyApp) transfer(wg *sync.WaitGroup, destination io.Writer, source io
 	p.logger.Debug().Msgf("copied %s from %s to %s", written, srcName, destName)
 }
 
+func parseProxyAuth(auth string) (username, password string, ok bool) {
+	if auth == "" {
+		return "", "", false
+	}
+	const prefix = "Basic "
+	if len(auth) < len(prefix) || strings.ToLower(prefix) != strings.ToLower(auth[:len(prefix)]) {
+		return "", "", false
+	}
+	c, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
+	if err != nil {
+		return "", "", false
+	}
+	cs := string(c)
+	username, password, ok = strings.Cut(cs, ":")
+	if !ok {
+		return "", "", false
+	}
+	return username, password, true
+}
+
+func (p *proxyApp) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Proxy-Authorization")
+		r.Header.Del("Proxy-Authorization")
+		username, password, ok := parseProxyAuth(auth)
+		if ok {
+			usernameHash := sha256.Sum256([]byte(username))
+			passwordHash := sha256.Sum256([]byte(password))
+			expectedUsernameHash := sha256.Sum256([]byte(p.user))
+			expectedPasswordHash := sha256.Sum256([]byte(p.pass))
+
+			usernameMatch := (subtle.ConstantTimeCompare(usernameHash[:], expectedUsernameHash[:]) == 1)
+			passwordMatch := (subtle.ConstantTimeCompare(passwordHash[:], expectedPasswordHash[:]) == 1)
+
+			if usernameMatch && passwordMatch {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		w.Header().Set("Proxy-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
+		http.Error(w, "Proxy Authentication Required", http.StatusProxyAuthRequired)
+	})
+}
+
 func (p *proxyApp) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
@@ -535,7 +584,11 @@ func (p *proxyApp) Run() {
 		}
 		close(done)
 	}()
-	p.httpServer.Handler = p.handler()
+	if p.user != "" && p.pass != "" {
+		p.httpServer.Handler = p.proxyAuth(p.handler())
+	} else {
+		p.httpServer.Handler = p.handler()
+	}
 	if p.certFile != "" && p.keyFile != "" {
 		if err := p.httpServer.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
 			p.logger.Fatal().Err(err).Msg("Unable to start HTTPS server")
@@ -668,6 +721,8 @@ func New(conf *Config) *proxyApp {
 		p.httpServerAddr = addrHTTP
 		certFile = expandPath(sconf.Server.CertFile)
 		keyFile = expandPath(sconf.Server.KeyFile)
+		p.user = sconf.Server.Username
+		p.pass = sconf.Server.Password
 		p.proxychain = sconf.Chain
 		p.proxylist = sconf.ProxyList
 		p.availProxyList = make([]proxyEntry, 0, len(p.proxylist))
@@ -696,6 +751,8 @@ func New(conf *Config) *proxyApp {
 		p.httpServerAddr = addrHTTP
 		certFile = expandPath(conf.CertFile)
 		keyFile = expandPath(conf.KeyFile)
+		p.user = conf.ServerUser
+		p.pass = conf.ServerPass
 		auth := proxy.Auth{
 			User:     conf.User,
 			Password: conf.Pass,

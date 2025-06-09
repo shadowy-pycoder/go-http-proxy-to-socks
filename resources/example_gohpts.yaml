@@ -1,0 +1,43 @@
+# Explanations for chains taken from /etc/proxychains4.conf
+  
+# strict - Each connection will be done via chained proxies
+# all proxies chained in the order as they appear in the list
+# all proxies must be online to play in chain
+  
+# dynamic - Each connection will be done via chained proxies
+# all proxies chained in the order as they appear in the list
+# at least one proxy must be online to play in chain
+# (dead proxies are skipped)
+
+# random - Each connection will be done via random proxy
+# (or proxy chain, see  chain_len) from the list.
+# this option is good to test your IDS :)
+
+# round_robin - Each connection will be done via chained proxies
+# of chain_len length
+# all proxies chained in the order as they appear in the list
+# at least one proxy must be online to play in chain
+# (dead proxies are skipped).
+# the start of the current proxy chain is the proxy after the last
+# proxy in the previously invoked proxy chain.
+# if the end of the proxy chain is reached while looking for proxies
+# start at the beginning again.
+# These semantics are not guaranteed in a multithreaded environment.
+
+chain:
+  type: strict # dynamic, strict, random, round_robin
+  length: 2 # maximum number of proxy in a chain (works only for random chain and round_robin chain)
+proxy_list:
+  - address: 127.0.0.1:1080
+    username: username # username and password are optional
+    password: password
+  - address: 127.0.0.1:1081
+  - address: :1082 # empty host means localhost
+server:
+  address: 127.0.0.1:8080 # the only required field in this section
+  # these are for adding basic authentication
+  username: username 
+  password: password
+  # comment out these to use HTTP instead of HTTPS
+  cert_file: ~/local.crt
+  key_file: ~/local.key

@@ -1,4 +1,4 @@
-# GoHPTS - HTTP proxy to SOCKS5 proxy written in Go
+# GoHPTS - HTTP(S) proxy to SOCKS5 proxy (chain) written in Go
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Reference](https://pkg.go.dev/badge/github.com/shadowy-pycoder/go-http-proxy-to-socks.svg)](https://pkg.go.dev/github.com/shadowy-pycoder/go-http-proxy-to-socks)
@@ -9,8 +9,8 @@
 
 ## Introduction
 
-`GoHPTS` CLI tool is a bridge between HTTP clients and a SOCKS5 proxy server. It listens locally as an HTTP proxy, accepts standard HTTP
-or HTTPS (via CONNECT) requests and forwards the connection through a SOCKS5 proxy. Inspired by [http-proxy-to-socks](https://github.com/oyyd/http-proxy-to-socks)
+`GoHPTS` CLI tool is a bridge between HTTP clients and a SOCKS5 proxy server or multiple servers (chain). It listens locally as an HTTP proxy, accepts standard HTTP
+or HTTPS (via CONNECT) requests and forwards the connection through a SOCKS5 proxy. Inspired by [http-proxy-to-socks](https://github.com/oyyd/http-proxy-to-socks) and [Proxychains](https://github.com/rofl0r/proxychains-ng)
 
 Possible use case: you need to connect to external API via Postman, but this API only available from some remote server.
 The following commands will help you to perform such a task:
@@ -31,6 +31,9 @@ Specify http server in proxy configuration of Postman
 
 ## Features
 
+- **Proxy Chain functionality**  
+  Supports `strict`, `dynamic`, `random`, `round_robin` chains of SOCKS5 proxy
+
 - **DNS Leak Protection**  
   DNS resolution occurs on SOCKS5 server side.
 
@@ -46,6 +49,9 @@ Specify http server in proxy configuration of Postman
 - **SOCKS5 Authentication Support**  
   Supports username/password authentication for SOCKS5 proxies.
 
+- **HTTP Authentication Support**  
+  Supports username/password authentication for HTTP proxy server.
+
 - **Lightweight and Fast**  
   Designed with minimal overhead and efficient request handling.
 
@@ -59,7 +65,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.4.1; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.5.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -83,7 +89,6 @@ make build
 
 ```shell
 gohpts -h
-
     _____       _    _ _____ _______ _____
   / ____|     | |  | |  __ \__   __/ ____|
  | |  __  ___ | |__| | |__) | | | | (___
@@ -91,29 +96,34 @@ gohpts -h
  | |__| | (_) | |  | | |      | |  ____) |
   \_____|\___/|_|  |_|_|      |_| |_____/
 
-GoHPTS (HTTP Proxy to SOCKS5) by shadowy-pycoder
+GoHPTS (HTTP(S) Proxy to SOCKS5 proxy) by shadowy-pycoder
 GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 
 Usage: gohpts [OPTIONS]
 Options:
   -h    Show this help message and exit.
+  -U string
+        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
   -c string
-    	Path to certificate PEM encoded file
-  -d	Show logs in DEBUG mode
-  -j	Show logs in JSON format
+        Path to certificate PEM encoded file
+  -d    Show logs in DEBUG mode
+  -f string
+        Path to server configuration file in YAML format
+  -j    Show logs in JSON format
   -k string
-    	Path to private key PEM encoded file
-  -l value
-    	Address of HTTP proxy server (Default: localhost:8080)
-  -p	Password for SOCKS5 proxy (not echoed to terminal)
-  -s value
-    	Address of SOCKS5 proxy server (Default: localhost:1080)
+        Path to private key PEM encoded file
+  -l string
+        Address of HTTP proxy server (default "127.0.0.1:8080")
+  -s string
+        Address of SOCKS5 proxy server (default "127.0.0.1:1080")
   -u string
-    	User for SOCKS5 proxy
-  -v	print version
+        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
+  -v    print version
 ```
 
 ## Example
+
+### Configuration via CLI flags
 
 ```shell
 gohpts -s 1080 -l 8080 -d -j
@@ -127,18 +137,85 @@ Output:
 {"level":"debug","time":"2025-05-28T06:15:22+00:00","message":"HTTP/1.1 - CONNECT - www.google.com:443"}
 ```
 
-Specify username and password fo SOCKS5 proxy server:
+Specify username and password for SOCKS5 proxy server:
 
 ```shell
-gohpts -s 1080 -l 8080 -d -j -u user -p
+gohpts -s 1080 -l 8080 -d -j -u user
 SOCKS5 Password: #you will be prompted for password input here
 ```
+
+Specify username and password for HTTP proxy server:
+
+```shell
+gohpts -s 1080 -l 8080 -d -j -U user
+HTTP Password: #you will be prompted for password input here
+```
+
+When both `-u` and `-U` are present, you will be prompted twice
 
 Run http proxy over TLS connection
 
 ```shell
 gohpts -s 1080 -l 8080 -c "path/to/certificate" -k "path/to/private/key"
 ```
+
+### Configuration via YAML file
+
+Run http proxy in SOCKS5 proxy chain mode (specify server settings via YAML configuration file)
+
+```shell
+gohpts -f "path/to/proxychain/config" -d -j
+```
+
+Config example:
+
+```yaml
+# Explanations for chains taken from /etc/proxychains4.conf
+
+# strict - Each connection will be done via chained proxies
+# all proxies chained in the order as they appear in the list
+# all proxies must be online to play in chain
+
+# dynamic - Each connection will be done via chained proxies
+# all proxies chained in the order as they appear in the list
+# at least one proxy must be online to play in chain
+# (dead proxies are skipped)
+
+# random - Each connection will be done via random proxy
+# (or proxy chain, see  chain_len) from the list.
+# this option is good to test your IDS :)
+
+# round_robin - Each connection will be done via chained proxies
+# of chain_len length
+# all proxies chained in the order as they appear in the list
+# at least one proxy must be online to play in chain
+# (dead proxies are skipped).
+# the start of the current proxy chain is the proxy after the last
+# proxy in the previously invoked proxy chain.
+# if the end of the proxy chain is reached while looking for proxies
+# start at the beginning again.
+# These semantics are not guaranteed in a multithreaded environment.
+
+chain:
+  type: strict # dynamic, strict, random, round_robin
+  length: 2 # maximum number of proxy in a chain (works only for random chain and round_robin chain)
+proxy_list:
+  - address: 127.0.0.1:1080
+    username: username # username and password are optional
+    password: password
+  - address: 127.0.0.1:1081
+  - address: :1082 # empty host means localhost
+server:
+  address: 127.0.0.1:8080 # the only required field in this section
+  # these are for adding basic authentication
+  username: username
+  password: password
+  # comment out these to use HTTP instead of HTTPS
+  cert_file: ~/local.crt
+  key_file: ~/local.key
+```
+
+To learn more about proxy chains visit [Proxychains Github](https://github.com/rofl0r/proxychains-ng)
 
 ## License
 

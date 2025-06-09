@@ -2,30 +2,43 @@ package gohpts
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/goccy/go-yaml"
 	"github.com/rs/zerolog"
 	"golang.org/x/net/proxy"
 )
 
 const (
-	readTimeout  time.Duration = 10 * time.Second
-	writeTimeout time.Duration = 10 * time.Second
-	timeout      time.Duration = 10 * time.Second
-	flushTimeout time.Duration = 10 * time.Millisecond
-	kbSize       int64         = 1000
+	readTimeout              time.Duration = 10 * time.Second
+	writeTimeout             time.Duration = 10 * time.Second
+	timeout                  time.Duration = 10 * time.Second
+	hopTimeout               time.Duration = 3 * time.Second
+	flushTimeout             time.Duration = 10 * time.Millisecond
+	availProxyUpdateInterval time.Duration = 30 * time.Second
+	kbSize                   int64         = 1000
+	rrIndexMax               uint32        = 1_000_000
 )
+
+var supportedChainTypes = []string{"strict", "dynamic", "random", "round_robin"}
 
 // Hop-by-hop headers
 // https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1
@@ -88,24 +101,199 @@ func isLocalAddress(addr string) bool {
 }
 
 type proxyApp struct {
-	httpServer *http.Server
-	sockClient *http.Client
-	httpClient *http.Client
-	sockDialer proxy.Dialer
-	logger     *zerolog.Logger
-	certFile   string
-	keyFile    string
+	httpServer     *http.Server
+	sockClient     *http.Client
+	httpClient     *http.Client
+	sockDialer     proxy.Dialer
+	logger         *zerolog.Logger
+	certFile       string
+	keyFile        string
+	httpServerAddr string
+	user           string
+	pass           string
+	proxychain     Chain
+	proxylist      []proxyEntry
+	rrIndex        uint32
+	rrIndexReset   uint32
+
+	mu             sync.RWMutex
+	availProxyList []proxyEntry
 }
 
-func (p *proxyApp) doReq(w http.ResponseWriter, r *http.Request, socks bool) *http.Response {
+func (p *proxyApp) printProxyChain(pc []proxyEntry) string {
+	var sb strings.Builder
+	sb.WriteString("client -> ")
+	sb.WriteString(p.httpServerAddr)
+	sb.WriteString(" -> ")
+	for _, pe := range pc {
+		sb.WriteString(pe.String())
+		sb.WriteString(" -> ")
+	}
+	sb.WriteString("target")
+	return sb.String()
+}
+
+func (p *proxyApp) updateSocksList() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.availProxyList = p.availProxyList[:0]
+	var base proxy.Dialer = &net.Dialer{Timeout: timeout}
+	var dialer proxy.Dialer
+	var err error
+	failed := 0
+	chainType := p.proxychain.Type
+	for _, pr := range p.proxylist {
+		auth := proxy.Auth{
+			User:     pr.Username,
+			Password: pr.Password,
+		}
+		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, base)
+		if err != nil {
+			p.logger.Error().Err(err).Msgf("[%s] Unable to create SOCKS5 dialer %s", chainType, pr.Address)
+			failed++
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), hopTimeout)
+		defer cancel()
+		conn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", pr.Address)
+		if err != nil && !errors.Is(err, io.EOF) { // check for EOF to include localhost SOCKS5 in the chain
+			p.logger.Error().Err(err).Msgf("[%s] Unable to connect to %s", chainType, pr.Address)
+			failed++
+			continue
+		} else {
+			if conn != nil {
+				conn.Close()
+			}
+			p.availProxyList = append(p.availProxyList, proxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
+			break
+		}
+	}
+	if failed == len(p.proxylist) {
+		p.logger.Error().Err(err).Msgf("[%s] No SOCKS5 Proxy available", chainType)
+		return
+	}
+	currentDialer := dialer
+	for _, pr := range p.proxylist[failed+1:] {
+		auth := proxy.Auth{
+			User:     pr.Username,
+			Password: pr.Password,
+		}
+		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, currentDialer)
+		if err != nil {
+			p.logger.Error().Err(err).Msgf("[%s] Unable to create SOCKS5 dialer %s", chainType, pr.Address)
+			continue
+		}
+		// https://github.com/golang/go/issues/37549#issuecomment-1178745487
+		ctx, cancel := context.WithTimeout(context.Background(), hopTimeout)
+		defer cancel()
+		conn, err := dialer.(proxy.ContextDialer).DialContext(ctx, "tcp", pr.Address)
+		if err != nil {
+			p.logger.Error().Err(err).Msgf("[%s] Unable to connect to %s", chainType, pr.Address)
+			continue
+		}
+		conn.Close()
+		currentDialer = dialer
+		p.availProxyList = append(p.availProxyList, proxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
+	}
+	p.logger.Debug().Msgf("[%s] Available SOCKS5 Proxy [%d/%d]: %s", chainType,
+		len(p.availProxyList), len(p.proxylist), p.printProxyChain(p.availProxyList))
+}
+
+// https://www.calhoun.io/how-to-shuffle-arrays-and-slices-in-go/
+func shuffle(vals []proxyEntry) {
+	r := rand.New(rand.NewSource(time.Now().Unix()))
+	for len(vals) > 0 {
+		n := len(vals)
+		randIndex := r.Intn(n)
+		vals[n-1], vals[randIndex] = vals[randIndex], vals[n-1]
+		vals = vals[:n-1]
+	}
+}
+
+func (p *proxyApp) getSocks() (proxy.Dialer, *http.Client, error) {
+	if p.proxylist == nil {
+		return p.sockDialer, p.sockClient, nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	chainType := p.proxychain.Type
+	var chainLength int
+	if p.proxychain.Length > len(p.availProxyList) || p.proxychain.Length <= 0 {
+		chainLength = len(p.availProxyList)
+	} else {
+		chainLength = p.proxychain.Length
+	}
+	copyProxyList := make([]proxyEntry, 0, len(p.availProxyList))
+	switch chainType {
+	case "strict", "dynamic":
+		copyProxyList = p.availProxyList
+	case "random":
+		copyProxyList = append(copyProxyList, p.availProxyList...)
+		shuffle(copyProxyList)
+		copyProxyList = copyProxyList[:chainLength]
+	case "round_robin":
+		var start uint32
+		for {
+			start = atomic.LoadUint32(&p.rrIndex)
+			next := start + 1
+			if start >= p.rrIndexReset {
+				p.logger.Debug().Msg("Resetting round robin index")
+				next = 0
+			}
+			if atomic.CompareAndSwapUint32(&p.rrIndex, start, next) {
+				break
+			}
+		}
+		startIdx := int(start % uint32(len(p.availProxyList)))
+		for i := 0; i < chainLength; i++ {
+			idx := (startIdx + i) % len(p.availProxyList)
+			copyProxyList = append(copyProxyList, p.availProxyList[idx])
+		}
+	default:
+		p.logger.Fatal().Msg("Unreachable")
+	}
+	if len(copyProxyList) == 0 {
+		p.logger.Error().Msgf("[%s] No SOCKS5 Proxy available", chainType)
+		return nil, nil, fmt.Errorf("no socks5 proxy available")
+	}
+	if p.proxychain.Type == "strict" && len(copyProxyList) != len(p.proxylist) {
+		p.logger.Error().Msgf("[%s] Not all SOCKS5 Proxy available", chainType)
+		return nil, nil, fmt.Errorf("not all socks5 proxy available")
+	}
+	var dialer proxy.Dialer = &net.Dialer{Timeout: timeout}
+	var err error
+	for _, pr := range copyProxyList {
+		auth := proxy.Auth{
+			User:     pr.Username,
+			Password: pr.Password,
+		}
+		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, dialer)
+		if err != nil {
+			p.logger.Error().Err(err).Msgf("[%s] Unable to create SOCKS5 dialer %s", &chainType, pr.Address)
+			return nil, nil, err
+		}
+	}
+	socks := &http.Client{
+		Transport: &http.Transport{
+			Dial: dialer.Dial,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	p.logger.Debug().Msgf("[%s] Request chain: %s", chainType, p.printProxyChain(copyProxyList))
+	return dialer, socks, nil
+}
+
+func (p *proxyApp) doReq(w http.ResponseWriter, r *http.Request, sock *http.Client) *http.Response {
 	var (
 		resp   *http.Response
 		err    error
 		msg    string
 		client *http.Client
 	)
-	if socks {
-		client = p.sockClient
+	if sock != nil {
+		client = sock
 		msg = "Connection to SOCKS5 server failed"
 	} else {
 		client = p.httpClient
@@ -143,33 +331,36 @@ func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 	var resp *http.Response
 	var chunked bool
 	p.httpClient.Timeout = timeout
-	p.sockClient.Timeout = timeout
 	if isLocalAddress(r.Host) {
-		resp = p.doReq(w, req, false)
+		resp = p.doReq(w, req, nil)
 		if resp == nil {
 			return
 		}
 		if slices.Contains(resp.TransferEncoding, "chunked") {
 			chunked = true
 			p.httpClient.Timeout = 0
-			p.sockClient.Timeout = 0
 			resp.Body.Close()
-			resp = p.doReq(w, req, false)
+			resp = p.doReq(w, req, nil)
 			if resp == nil {
 				return
 			}
 		}
 	} else {
-		resp = p.doReq(w, req, true)
+		_, sockClient, err := p.getSocks()
+		if err != nil {
+			p.logger.Error().Err(err).Msg("Failed getting SOCKS5 client")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		resp = p.doReq(w, req, sockClient)
 		if resp == nil {
 			return
 		}
 		if slices.Contains(resp.TransferEncoding, "chunked") {
 			chunked = true
-			p.httpClient.Timeout = 0
-			p.sockClient.Timeout = 0
+			sockClient.Timeout = 0
 			resp.Body.Close()
-			resp = p.doReq(w, req, true)
+			resp = p.doReq(w, req, sockClient)
 			if resp == nil {
 				return
 			}
@@ -255,7 +446,13 @@ func (p *proxyApp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		dstConn, err = p.sockDialer.Dial("tcp", r.Host)
+		sockDialer, _, err := p.getSocks()
+		if err != nil {
+			p.logger.Error().Err(err).Msg("Failed getting SOCKS5 client")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		dstConn, err = sockDialer.Dial("tcp", r.Host)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -307,6 +504,50 @@ func (p *proxyApp) transfer(wg *sync.WaitGroup, destination io.Writer, source io
 	p.logger.Debug().Msgf("copied %s from %s to %s", written, srcName, destName)
 }
 
+func parseProxyAuth(auth string) (username, password string, ok bool) {
+	if auth == "" {
+		return "", "", false
+	}
+	const prefix = "Basic "
+	if len(auth) < len(prefix) || strings.ToLower(prefix) != strings.ToLower(auth[:len(prefix)]) {
+		return "", "", false
+	}
+	c, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
+	if err != nil {
+		return "", "", false
+	}
+	cs := string(c)
+	username, password, ok = strings.Cut(cs, ":")
+	if !ok {
+		return "", "", false
+	}
+	return username, password, true
+}
+
+func (p *proxyApp) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Proxy-Authorization")
+		r.Header.Del("Proxy-Authorization")
+		username, password, ok := parseProxyAuth(auth)
+		if ok {
+			usernameHash := sha256.Sum256([]byte(username))
+			passwordHash := sha256.Sum256([]byte(password))
+			expectedUsernameHash := sha256.Sum256([]byte(p.user))
+			expectedPasswordHash := sha256.Sum256([]byte(p.pass))
+
+			usernameMatch := (subtle.ConstantTimeCompare(usernameHash[:], expectedUsernameHash[:]) == 1)
+			passwordMatch := (subtle.ConstantTimeCompare(passwordHash[:], expectedPasswordHash[:]) == 1)
+
+			if usernameMatch && passwordMatch {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		w.Header().Set("Proxy-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
+		http.Error(w, "Proxy Authentication Required", http.StatusProxyAuthRequired)
+	})
+}
+
 func (p *proxyApp) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
@@ -321,6 +562,16 @@ func (p *proxyApp) Run() {
 	done := make(chan bool)
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt)
+	if p.proxylist != nil {
+		chainType := p.proxychain.Type
+		go func() {
+			for {
+				p.logger.Debug().Msgf("[%s] Updating available proxy", chainType)
+				p.updateSocksList()
+				time.Sleep(availProxyUpdateInterval)
+			}
+		}()
+	}
 	go func() {
 		<-quit
 		p.logger.Info().Msg("Server is shutting down...")
@@ -333,7 +584,11 @@ func (p *proxyApp) Run() {
 		}
 		close(done)
 	}()
-	p.httpServer.Handler = p.handler()
+	if p.user != "" && p.pass != "" {
+		p.httpServer.Handler = p.proxyAuth(p.handler())
+	} else {
+		p.httpServer.Handler = p.handler()
+	}
 	if p.certFile != "" && p.keyFile != "" {
 		if err := p.httpServer.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
 			p.logger.Fatal().Err(err).Msg("Unable to start HTTPS server")
@@ -348,14 +603,17 @@ func (p *proxyApp) Run() {
 }
 
 type Config struct {
-	AddrHTTP  string
-	AddrSOCKS string
-	Debug     bool
-	Json      bool
-	User      string
-	Pass      string
-	CertFile  string
-	KeyFile   string
+	AddrHTTP       string
+	AddrSOCKS      string
+	Debug          bool
+	Json           bool
+	User           string
+	Pass           string
+	ServerUser     string
+	ServerPass     string
+	CertFile       string
+	KeyFile        string
+	ServerConfPath string
 }
 type logWriter struct {
 }
@@ -372,8 +630,60 @@ func (writer jsonLogWriter) Write(bytes []byte) (int, error) {
 		time.Now().Format(time.RFC3339), strings.TrimRight(string(bytes), "\n")))
 }
 
+type proxyEntry struct {
+	Address  string `yaml:"address"`
+	Username string `yaml:"username,omitempty"`
+	Password string `yaml:"password,omitempty"`
+}
+
+func (pe proxyEntry) String() string {
+	return pe.Address
+}
+
+type Server struct {
+	Address  string `yaml:"address"`
+	Username string `yaml:"username,omitempty"`
+	Password string `yaml:"password,omitempty"`
+	CertFile string `yaml:"cert_file,omitempty"`
+	KeyFile  string `yaml:"key_file,omitempty"`
+}
+type Chain struct {
+	Type   string `yaml:"type"`
+	Length int    `yaml:"length"`
+}
+
+type serverConfig struct {
+	Chain     Chain        `yaml:"chain"`
+	ProxyList []proxyEntry `yaml:"proxy_list"`
+	Server    Server       `yaml:"server"`
+}
+
+func getFullAddress(v string) string {
+	var addr string
+	i, err := strconv.Atoi(v)
+	if err == nil {
+		addr = fmt.Sprintf("127.0.0.1:%d", i)
+	} else if strings.HasPrefix(v, ":") {
+		addr = fmt.Sprintf("127.0.0.1%s", v)
+	} else {
+		addr = v
+	}
+	return addr
+}
+
+func expandPath(p string) string {
+	p = os.ExpandEnv(p)
+	if strings.HasPrefix(p, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return strings.Replace(p, "~", home, 1)
+		}
+	}
+	return p
+}
+
 func New(conf *Config) *proxyApp {
 	var logger zerolog.Logger
+	var p proxyApp
 	if conf.Json {
 		log.SetFlags(0)
 		log.SetOutput(new(jsonLogWriter))
@@ -382,7 +692,7 @@ func New(conf *Config) *proxyApp {
 		log.SetFlags(0)
 		log.SetOutput(new(logWriter))
 		output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339, NoColor: true}
-		output.FormatLevel = func(i interface{}) string {
+		output.FormatLevel = func(i any) string {
 			return strings.ToUpper(fmt.Sprintf("| %-6s|", i))
 		}
 		logger = zerolog.New(output).With().Timestamp().Logger()
@@ -392,24 +702,77 @@ func New(conf *Config) *proxyApp {
 	if conf.Debug {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
-	auth := proxy.Auth{
-		User:     conf.User,
-		Password: conf.Pass,
-	}
-	dialer, err := proxy.SOCKS5("tcp", conf.AddrSOCKS, &auth, &net.Dialer{Timeout: timeout})
-	if err != nil {
-		logger.Fatal().Err(err).Msg("Unable to create SOCKS5 dialer")
-	}
-	socks := &http.Client{
-		Transport: &http.Transport{
-			Dial: dialer.Dial,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	p.logger = &logger
+	var addrHTTP, addrSOCKS, certFile, keyFile string
+	if conf.ServerConfPath != "" {
+		var sconf serverConfig
+		yamlFile, err := os.ReadFile(expandPath(conf.ServerConfPath))
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("[server config] Parsing failed")
+		}
+		err = yaml.Unmarshal(yamlFile, &sconf)
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("[server config] Parsing failed")
+		}
+		if sconf.Server.Address == "" {
+			p.logger.Fatal().Err(err).Msg("[server config] Server address is empty")
+		}
+		addrHTTP = getFullAddress(sconf.Server.Address)
+		p.httpServerAddr = addrHTTP
+		certFile = expandPath(sconf.Server.CertFile)
+		keyFile = expandPath(sconf.Server.KeyFile)
+		p.user = sconf.Server.Username
+		p.pass = sconf.Server.Password
+		p.proxychain = sconf.Chain
+		p.proxylist = sconf.ProxyList
+		p.availProxyList = make([]proxyEntry, 0, len(p.proxylist))
+		if len(p.proxylist) == 0 {
+			p.logger.Fatal().Msg("[server config] Proxy list is empty")
+		}
+		seen := make(map[string]struct{})
+		for idx, pr := range p.proxylist {
+			addr := getFullAddress(pr.Address)
+			if _, ok := seen[addr]; !ok {
+				seen[addr] = struct{}{}
+				p.proxylist[idx].Address = addr
+			} else {
+				p.logger.Fatal().Msgf("[server config] Duplicate entry `%s`", addr)
+			}
+		}
+		addrSOCKS = p.printProxyChain(p.proxylist)
+		chainType := p.proxychain.Type
+		if !slices.Contains(supportedChainTypes, chainType) {
+			p.logger.Fatal().Msgf("[server config] Chain type `%s` is not supported", chainType)
+		}
+		p.rrIndexReset = rrIndexMax
+	} else {
+		addrSOCKS = getFullAddress(conf.AddrSOCKS)
+		addrHTTP = getFullAddress(conf.AddrHTTP)
+		p.httpServerAddr = addrHTTP
+		certFile = expandPath(conf.CertFile)
+		keyFile = expandPath(conf.KeyFile)
+		p.user = conf.ServerUser
+		p.pass = conf.ServerPass
+		auth := proxy.Auth{
+			User:     conf.User,
+			Password: conf.Pass,
+		}
+		dialer, err := proxy.SOCKS5("tcp", addrSOCKS, &auth, &net.Dialer{Timeout: timeout})
+		if err != nil {
+			p.logger.Fatal().Err(err).Msg("Unable to create SOCKS5 dialer")
+		}
+		p.sockDialer = dialer
+		p.sockClient = &http.Client{
+			Transport: &http.Transport{
+				Dial: dialer.Dial,
+			},
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
 	}
 	hs := &http.Server{
-		Addr:           conf.AddrHTTP,
+		Addr:           addrHTTP,
 		ReadTimeout:    readTimeout,
 		WriteTimeout:   writeTimeout,
 		MaxHeaderBytes: 1 << 20,
@@ -427,7 +790,8 @@ func New(conf *Config) *proxyApp {
 	}
 	hs.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
 	hs.Protocols.SetHTTP1(true)
-	hc := &http.Client{
+	p.httpServer = hs
+	p.httpClient = &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
@@ -435,19 +799,17 @@ func New(conf *Config) *proxyApp {
 			return http.ErrUseLastResponse
 		},
 	}
-	logger.Info().Msgf("SOCKS5 Proxy: %s", conf.AddrSOCKS)
-	if conf.CertFile != "" && conf.KeyFile != "" {
-		logger.Info().Msgf("HTTPS Proxy: %s", conf.AddrHTTP)
+	if conf.ServerConfPath != "" {
+		p.logger.Info().Msgf("SOCKS5 Proxy [%s] chain: %s", p.proxychain.Type, addrSOCKS)
 	} else {
-		logger.Info().Msgf("HTTP Proxy: %s", conf.AddrHTTP)
+		p.logger.Info().Msgf("SOCKS5 Proxy: %s", addrSOCKS)
 	}
-	return &proxyApp{
-		httpServer: hs,
-		sockClient: socks,
-		httpClient: hc,
-		sockDialer: dialer,
-		logger:     &logger,
-		certFile:   conf.CertFile,
-		keyFile:    conf.KeyFile,
+	if certFile != "" && keyFile != "" {
+		p.certFile = certFile
+		p.keyFile = keyFile
+		p.logger.Info().Msgf("HTTPS Proxy: %s", p.httpServerAddr)
+	} else {
+		p.logger.Info().Msgf("HTTP Proxy: %s", p.httpServerAddr)
 	}
+	return &p
 }

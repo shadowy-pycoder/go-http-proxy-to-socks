@@ -100,7 +100,7 @@ func isLocalAddress(addr string) bool {
 	return strings.HasSuffix(host, ".local") || host == "localhost"
 }
 
-type proxyApp struct {
+type proxyapp struct {
 	httpServer     *http.Server
 	sockClient     *http.Client
 	httpClient     *http.Client
@@ -111,7 +111,7 @@ type proxyApp struct {
 	httpServerAddr string
 	user           string
 	pass           string
-	proxychain     Chain
+	proxychain     chain
 	proxylist      []proxyEntry
 	rrIndex        uint32
 	rrIndexReset   uint32
@@ -120,7 +120,7 @@ type proxyApp struct {
 	availProxyList []proxyEntry
 }
 
-func (p *proxyApp) printProxyChain(pc []proxyEntry) string {
+func (p *proxyapp) printProxyChain(pc []proxyEntry) string {
 	var sb strings.Builder
 	sb.WriteString("client -> ")
 	sb.WriteString(p.httpServerAddr)
@@ -133,7 +133,7 @@ func (p *proxyApp) printProxyChain(pc []proxyEntry) string {
 	return sb.String()
 }
 
-func (p *proxyApp) updateSocksList() {
+func (p *proxyapp) updateSocksList() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.availProxyList = p.availProxyList[:0]
@@ -210,7 +210,7 @@ func shuffle(vals []proxyEntry) {
 	}
 }
 
-func (p *proxyApp) getSocks() (proxy.Dialer, *http.Client, error) {
+func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
 	if p.proxylist == nil {
 		return p.sockDialer, p.sockClient, nil
 	}
@@ -285,7 +285,7 @@ func (p *proxyApp) getSocks() (proxy.Dialer, *http.Client, error) {
 	return dialer, socks, nil
 }
 
-func (p *proxyApp) doReq(w http.ResponseWriter, r *http.Request, sock *http.Client) *http.Response {
+func (p *proxyapp) doReq(w http.ResponseWriter, r *http.Request, sock *http.Client) *http.Response {
 	var (
 		resp   *http.Response
 		err    error
@@ -313,7 +313,7 @@ func (p *proxyApp) doReq(w http.ResponseWriter, r *http.Request, sock *http.Clie
 	return resp
 }
 
-func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
+func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 
 	req, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
 	if err != nil {
@@ -435,7 +435,7 @@ func (p *proxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 	close(done)
 }
 
-func (p *proxyApp) handleTunnel(w http.ResponseWriter, r *http.Request) {
+func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	var dstConn net.Conn
 	var err error
 	if isLocalAddress(r.Host) {
@@ -489,7 +489,7 @@ func (p *proxyApp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 }
 
-func (p *proxyApp) transfer(wg *sync.WaitGroup, destination io.Writer, source io.Reader, destName, srcName string) {
+func (p *proxyapp) transfer(wg *sync.WaitGroup, destination io.Writer, source io.Reader, destName, srcName string) {
 	defer wg.Done()
 	n, err := io.Copy(destination, source)
 	if err != nil {
@@ -524,7 +524,7 @@ func parseProxyAuth(auth string) (username, password string, ok bool) {
 	return username, password, true
 }
 
-func (p *proxyApp) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
+func (p *proxyapp) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Proxy-Authorization")
 		r.Header.Del("Proxy-Authorization")
@@ -548,7 +548,7 @@ func (p *proxyApp) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
-func (p *proxyApp) handler() http.HandlerFunc {
+func (p *proxyapp) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
 			p.handleTunnel(w, r)
@@ -558,7 +558,7 @@ func (p *proxyApp) handler() http.HandlerFunc {
 	}
 }
 
-func (p *proxyApp) Run() {
+func (p *proxyapp) Run() {
 	done := make(chan bool)
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt)
@@ -640,22 +640,22 @@ func (pe proxyEntry) String() string {
 	return pe.Address
 }
 
-type Server struct {
+type server struct {
 	Address  string `yaml:"address"`
 	Username string `yaml:"username,omitempty"`
 	Password string `yaml:"password,omitempty"`
 	CertFile string `yaml:"cert_file,omitempty"`
 	KeyFile  string `yaml:"key_file,omitempty"`
 }
-type Chain struct {
+type chain struct {
 	Type   string `yaml:"type"`
 	Length int    `yaml:"length"`
 }
 
 type serverConfig struct {
-	Chain     Chain        `yaml:"chain"`
+	Chain     chain        `yaml:"chain"`
 	ProxyList []proxyEntry `yaml:"proxy_list"`
-	Server    Server       `yaml:"server"`
+	Server    server       `yaml:"server"`
 }
 
 func getFullAddress(v string) string {
@@ -681,9 +681,9 @@ func expandPath(p string) string {
 	return p
 }
 
-func New(conf *Config) *proxyApp {
+func New(conf *Config) *proxyapp {
 	var logger zerolog.Logger
-	var p proxyApp
+	var p proxyapp
 	if conf.Json {
 		log.SetFlags(0)
 		log.SetOutput(new(jsonLogWriter))

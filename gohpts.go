@@ -13,18 +13,23 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/goccy/go-yaml"
 	"github.com/rs/zerolog"
 	"golang.org/x/net/proxy"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -34,6 +39,7 @@ const (
 	hopTimeout               time.Duration = 3 * time.Second
 	flushTimeout             time.Duration = 10 * time.Millisecond
 	availProxyUpdateInterval time.Duration = 30 * time.Second
+	shutdownTimeout          time.Duration = 5 * time.Second
 	kbSize                   int64         = 1000
 	rrIndexMax               uint32        = 1_000_000
 )
@@ -109,6 +115,7 @@ type proxyapp struct {
 	certFile       string
 	keyFile        string
 	httpServerAddr string
+	tproxyAddr     string
 	user           string
 	pass           string
 	proxychain     chain
@@ -123,7 +130,16 @@ type proxyapp struct {
 func (p *proxyapp) printProxyChain(pc []proxyEntry) string {
 	var sb strings.Builder
 	sb.WriteString("client -> ")
-	sb.WriteString(p.httpServerAddr)
+	if p.httpServerAddr != "" {
+		sb.WriteString(p.httpServerAddr)
+		if p.tproxyAddr != "" {
+			sb.WriteString(" | ")
+			sb.WriteString(p.tproxyAddr)
+			sb.WriteString(" (tproxy)")
+		}
+	} else if p.tproxyAddr != "" {
+		sb.WriteString(p.tproxyAddr)
+	}
 	sb.WriteString(" -> ")
 	for _, pe := range pc {
 		sb.WriteString(pe.String())
@@ -558,10 +574,151 @@ func (p *proxyapp) handler() http.HandlerFunc {
 	}
 }
 
+type tproxyServer struct {
+	listener net.Listener
+	quit     chan struct{}
+	wg       sync.WaitGroup
+	pa       *proxyapp
+}
+
+func newTproxyServer(pa *proxyapp) *tproxyServer {
+	ts := &tproxyServer{
+		quit: make(chan struct{}),
+		pa:   pa,
+	}
+	ln, err := net.Listen("tcp", ts.pa.tproxyAddr)
+	if err != nil {
+		ts.pa.logger.Fatal().Err(err).Msg("")
+	}
+	ts.listener = ln
+	return ts
+}
+
+func (ts *tproxyServer) ListenAndServe() {
+	ts.wg.Add(1)
+	go ts.serve()
+}
+
+func (ts *tproxyServer) serve() {
+	defer ts.wg.Done()
+
+	for {
+		conn, err := ts.listener.Accept()
+		if err != nil {
+			select {
+			case <-ts.quit:
+				return
+			default:
+				ts.pa.logger.Error().Err(err).Msg("")
+			}
+		} else {
+			ts.wg.Add(1)
+			go func() {
+				ts.handleConnection(conn)
+				ts.wg.Done()
+			}()
+		}
+	}
+}
+
+func getsockopt(s int, level int, optname int, optval unsafe.Pointer, optlen *uint32) (err error) {
+	_, _, e := unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(s), uintptr(level), uintptr(optname), uintptr(optval), uintptr(unsafe.Pointer(optlen)), 0)
+	if e != 0 {
+		return e
+	}
+	return nil
+}
+
+func (ts *tproxyServer) getOriginalDst(rawConn syscall.RawConn) (string, error) {
+	var originalDst unix.RawSockaddrInet4
+	err := rawConn.Control(func(fd uintptr) {
+		optlen := uint32(unsafe.Sizeof(originalDst))
+		err := getsockopt(int(fd), unix.SOL_IP, unix.SO_ORIGINAL_DST, unsafe.Pointer(&originalDst), &optlen)
+		if err != nil {
+			ts.pa.logger.Error().Err(err).Msg("[tproxy] getsockopt SO_ORIGINAL_DST failed")
+		}
+	})
+	if err != nil {
+		ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed invoking control connection")
+		return "", err
+	}
+	dstHost := netip.AddrFrom4(originalDst.Addr)
+	dstPort := uint16(originalDst.Port<<8) | originalDst.Port>>8
+	ts.pa.logger.Debug().Msgf("[tproxy] getsockopt SO_ORIGINAL_DST %s:%d", dstHost, dstPort)
+	return fmt.Sprintf("%s:%d", dstHost, dstPort), nil
+}
+
+func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
+	var dstConn net.Conn
+	defer srcConn.Close()
+
+	rawConn, err := srcConn.(*net.TCPConn).SyscallConn()
+	if err != nil {
+		ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed to get raw connection")
+		return
+	}
+
+	dst, err := ts.getOriginalDst(rawConn)
+	if err != nil {
+		ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed to get destination address")
+		return
+	}
+	if isLocalAddress(dst) {
+		dstConn, err = net.DialTimeout("tcp", dst, timeout)
+		if err != nil {
+			ts.pa.logger.Error().Err(err).Msgf("[tproxy] Failed connecting to %s", dst)
+			return
+		}
+	} else {
+		sockDialer, _, err := ts.pa.getSocks()
+		if err != nil {
+			ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed getting SOCKS5 client")
+			return
+		}
+		dstConn, err = sockDialer.Dial("tcp", dst)
+		if err != nil {
+			ts.pa.logger.Error().Err(err).Msgf("[tproxy] Failed connecting to %s", dst)
+			return
+		}
+	}
+	defer dstConn.Close()
+
+	dstConnStr := fmt.Sprintf("%s->%s->%s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), dst)
+	srcConnStr := fmt.Sprintf("%s->%s", srcConn.LocalAddr().String(), srcConn.RemoteAddr().String())
+
+	ts.pa.logger.Debug().Msgf("[tproxy] src: %s - dst: %s", srcConnStr, dstConnStr)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go ts.pa.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr)
+	go ts.pa.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr)
+	wg.Wait()
+}
+
+func (ts *tproxyServer) Shutdown() {
+	close(ts.quit)
+	ts.listener.Close()
+	done := make(chan struct{})
+	go func() {
+		ts.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		ts.pa.logger.Info().Msg("[tproxy] Server gracefully shutdown")
+		return
+	case <-time.After(shutdownTimeout):
+		ts.pa.logger.Error().Msg("[tproxy] Server timed out waiting for connections to finish")
+		return
+	}
+}
+
 func (p *proxyapp) Run() {
 	done := make(chan bool)
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt)
+	tproxyServer := newTproxyServer(p)
 	if p.proxylist != nil {
 		chainType := p.proxychain.Type
 		go func() {
@@ -572,34 +729,51 @@ func (p *proxyapp) Run() {
 			}
 		}()
 	}
-	go func() {
-		<-quit
-		p.logger.Info().Msg("Server is shutting down...")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if p.httpServer != nil {
+		go func() {
+			<-quit
+			if p.tproxyAddr != "" {
+				p.logger.Info().Msg("[tproxy] Server is shutting down...")
+				tproxyServer.Shutdown()
+			}
+			p.logger.Info().Msg("Server is shutting down...")
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 
-		defer cancel()
-		p.httpServer.SetKeepAlivesEnabled(false)
-		if err := p.httpServer.Shutdown(ctx); err != nil {
-			p.logger.Fatal().Err(err).Msg("Could not gracefully shutdown the server")
+			defer cancel()
+			p.httpServer.SetKeepAlivesEnabled(false)
+			if err := p.httpServer.Shutdown(ctx); err != nil {
+				p.logger.Fatal().Err(err).Msg("Could not gracefully shutdown the server")
+			}
+			close(done)
+		}()
+		if p.tproxyAddr != "" {
+			go tproxyServer.ListenAndServe()
 		}
-		close(done)
-	}()
-	if p.user != "" && p.pass != "" {
-		p.httpServer.Handler = p.proxyAuth(p.handler())
+		if p.user != "" && p.pass != "" {
+			p.httpServer.Handler = p.proxyAuth(p.handler())
+		} else {
+			p.httpServer.Handler = p.handler()
+		}
+		if p.certFile != "" && p.keyFile != "" {
+			if err := p.httpServer.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
+				p.logger.Fatal().Err(err).Msg("Unable to start HTTPS server")
+			}
+		} else {
+			if err := p.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				p.logger.Fatal().Err(err).Msg("Unable to start HTTP server")
+			}
+		}
+		p.logger.Info().Msg("Server stopped")
 	} else {
-		p.httpServer.Handler = p.handler()
-	}
-	if p.certFile != "" && p.keyFile != "" {
-		if err := p.httpServer.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
-			p.logger.Fatal().Err(err).Msg("Unable to start HTTPS server")
-		}
-	} else {
-		if err := p.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			p.logger.Fatal().Err(err).Msg("Unable to start HTTP server")
-		}
+		go func() {
+			<-quit
+			p.logger.Info().Msg("[tproxy] server is shutting down...")
+			tproxyServer.Shutdown()
+			close(done)
+		}()
+		tproxyServer.ListenAndServe()
 	}
 	<-done
-	p.logger.Info().Msg("Server stopped")
 }
 
 type Config struct {
@@ -614,6 +788,8 @@ type Config struct {
 	CertFile       string
 	KeyFile        string
 	ServerConfPath string
+	TProxy         string
+	TProxyOnly     string
 }
 type logWriter struct {
 }
@@ -659,6 +835,9 @@ type serverConfig struct {
 }
 
 func getFullAddress(v string) string {
+	if v == "" {
+		return ""
+	}
 	var addr string
 	i, err := strconv.Atoi(v)
 	if err == nil {
@@ -697,12 +876,24 @@ func New(conf *Config) *proxyapp {
 		}
 		logger = zerolog.New(output).With().Timestamp().Logger()
 	}
-
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	if conf.Debug {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
 	p.logger = &logger
+	if runtime.GOOS == "linux" && conf.TProxy != "" && conf.TProxyOnly != "" {
+		p.logger.Fatal().Msg("Cannot specify TPRoxy and TProxyOnly at the same time")
+	} else if runtime.GOOS != "linux" {
+		conf.TProxy = ""
+		conf.TProxyOnly = ""
+		p.logger.Warn().Msg("[tproxy] functionality only available on linux system")
+	}
+	tproxyonly := conf.TProxyOnly != ""
+	if tproxyonly {
+		p.tproxyAddr = getFullAddress(conf.TProxyOnly)
+	} else {
+		p.tproxyAddr = getFullAddress(conf.TProxy)
+	}
 	var addrHTTP, addrSOCKS, certFile, keyFile string
 	if conf.ServerConfPath != "" {
 		var sconf serverConfig
@@ -714,15 +905,17 @@ func New(conf *Config) *proxyapp {
 		if err != nil {
 			p.logger.Fatal().Err(err).Msg("[server config] Parsing failed")
 		}
-		if sconf.Server.Address == "" {
-			p.logger.Fatal().Err(err).Msg("[server config] Server address is empty")
+		if !tproxyonly {
+			if sconf.Server.Address == "" {
+				p.logger.Fatal().Err(err).Msg("[server config] Server address is empty")
+			}
+			addrHTTP = getFullAddress(sconf.Server.Address)
+			p.httpServerAddr = addrHTTP
+			certFile = expandPath(sconf.Server.CertFile)
+			keyFile = expandPath(sconf.Server.KeyFile)
+			p.user = sconf.Server.Username
+			p.pass = sconf.Server.Password
 		}
-		addrHTTP = getFullAddress(sconf.Server.Address)
-		p.httpServerAddr = addrHTTP
-		certFile = expandPath(sconf.Server.CertFile)
-		keyFile = expandPath(sconf.Server.KeyFile)
-		p.user = sconf.Server.Username
-		p.pass = sconf.Server.Password
 		p.proxychain = sconf.Chain
 		p.proxylist = sconf.ProxyList
 		p.availProxyList = make([]proxyEntry, 0, len(p.proxylist))
@@ -746,13 +939,15 @@ func New(conf *Config) *proxyapp {
 		}
 		p.rrIndexReset = rrIndexMax
 	} else {
+		if !tproxyonly {
+			addrHTTP = getFullAddress(conf.AddrHTTP)
+			p.httpServerAddr = addrHTTP
+			certFile = expandPath(conf.CertFile)
+			keyFile = expandPath(conf.KeyFile)
+			p.user = conf.ServerUser
+			p.pass = conf.ServerPass
+		}
 		addrSOCKS = getFullAddress(conf.AddrSOCKS)
-		addrHTTP = getFullAddress(conf.AddrHTTP)
-		p.httpServerAddr = addrHTTP
-		certFile = expandPath(conf.CertFile)
-		keyFile = expandPath(conf.KeyFile)
-		p.user = conf.ServerUser
-		p.pass = conf.ServerPass
 		auth := proxy.Auth{
 			User:     conf.User,
 			Password: conf.Pass,
@@ -762,54 +957,63 @@ func New(conf *Config) *proxyapp {
 			p.logger.Fatal().Err(err).Msg("Unable to create SOCKS5 dialer")
 		}
 		p.sockDialer = dialer
-		p.sockClient = &http.Client{
+		if !tproxyonly {
+			p.sockClient = &http.Client{
+				Transport: &http.Transport{
+					Dial: dialer.Dial,
+				},
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+			}
+		}
+	}
+	if !tproxyonly {
+		hs := &http.Server{
+			Addr:           addrHTTP,
+			ReadTimeout:    readTimeout,
+			WriteTimeout:   writeTimeout,
+			MaxHeaderBytes: 1 << 20,
+			Protocols:      new(http.Protocols),
+			TLSConfig: &tls.Config{
+				MinVersion:       tls.VersionTLS12,
+				CurvePreferences: []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
+				CipherSuites: []uint16{
+					tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+					tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+					tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+					tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+				},
+			},
+		}
+		hs.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
+		hs.Protocols.SetHTTP1(true)
+		p.httpServer = hs
+		p.httpClient = &http.Client{
 			Transport: &http.Transport{
-				Dial: dialer.Dial,
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			},
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		}
 	}
-	hs := &http.Server{
-		Addr:           addrHTTP,
-		ReadTimeout:    readTimeout,
-		WriteTimeout:   writeTimeout,
-		MaxHeaderBytes: 1 << 20,
-		Protocols:      new(http.Protocols),
-		TLSConfig: &tls.Config{
-			MinVersion:       tls.VersionTLS12,
-			CurvePreferences: []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
-			CipherSuites: []uint16{
-				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-				tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-				tls.TLS_RSA_WITH_AES_256_CBC_SHA,
-			},
-		},
-	}
-	hs.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
-	hs.Protocols.SetHTTP1(true)
-	p.httpServer = hs
-	p.httpClient = &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
 	if conf.ServerConfPath != "" {
 		p.logger.Info().Msgf("SOCKS5 Proxy [%s] chain: %s", p.proxychain.Type, addrSOCKS)
 	} else {
 		p.logger.Info().Msgf("SOCKS5 Proxy: %s", addrSOCKS)
 	}
-	if certFile != "" && keyFile != "" {
-		p.certFile = certFile
-		p.keyFile = keyFile
-		p.logger.Info().Msgf("HTTPS Proxy: %s", p.httpServerAddr)
-	} else {
-		p.logger.Info().Msgf("HTTP Proxy: %s", p.httpServerAddr)
+	if !tproxyonly {
+		if certFile != "" && keyFile != "" {
+			p.certFile = certFile
+			p.keyFile = keyFile
+			p.logger.Info().Msgf("HTTPS Proxy: %s", p.httpServerAddr)
+		} else {
+			p.logger.Info().Msgf("HTTP Proxy: %s", p.httpServerAddr)
+		}
+	}
+	if p.tproxyAddr != "" {
+		p.logger.Info().Msgf("TPROXY: %s", p.tproxyAddr)
 	}
 	return &p
 }

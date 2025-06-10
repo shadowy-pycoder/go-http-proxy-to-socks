@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 
 	gohpts "github.com/shadowy-pycoder/go-http-proxy-to-socks"
 	"golang.org/x/term"
@@ -40,6 +41,10 @@ func root(args []string) error {
 	flags.StringVar(&conf.CertFile, "c", "", "Path to certificate PEM encoded file")
 	flags.StringVar(&conf.KeyFile, "k", "", "Path to private key PEM encoded file")
 	flags.StringVar(&conf.ServerConfPath, "f", "", "Path to server configuration file in YAML format")
+	if runtime.GOOS == "linux" {
+		flags.StringVar(&conf.TProxy, "t", "", "Address of transparent proxy server (TPROXY) (it starts along with HTTP proxy server)")
+		flags.StringVar(&conf.TProxyOnly, "T", "", "Address of transparent proxy server (TPROXY) (no HTTP)")
+	}
 	flags.BoolFunc("d", "Show logs in DEBUG mode", func(flagValue string) error {
 		conf.Debug = true
 		return nil
@@ -64,9 +69,22 @@ func root(args []string) error {
 	}
 	seen := make(map[string]bool)
 	flags.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+	if seen["t"] && seen["T"] {
+		return fmt.Errorf("cannot specify both -t and -T flags")
+	}
+	if seen["T"] {
+		for _, da := range []string{"U", "c", "k", "l"} {
+			if seen[da] {
+				return fmt.Errorf("-T flag only works with -s, -u, -f, -d and -j flags")
+			}
+		}
+	}
 	if seen["f"] {
 		for _, da := range []string{"s", "u", "U", "c", "k", "l"} {
 			if seen[da] {
+				if runtime.GOOS == "linux" {
+					return fmt.Errorf("-f flag only works with -t, -T, -d and -j flags")
+				}
 				return fmt.Errorf("-f flag only works with -d and -j flags")
 			}
 		}
@@ -89,6 +107,7 @@ func root(args []string) error {
 		conf.ServerPass = string(bytepw)
 		fmt.Print("\033[2K\r")
 	}
+
 	p := gohpts.New(&conf)
 	p.Run()
 	return nil

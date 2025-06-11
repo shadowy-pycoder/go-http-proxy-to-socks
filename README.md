@@ -232,15 +232,15 @@ To learn more about proxy chains visit [Proxychains Github](https://github.com/r
 >
 > -- _From [Wiki](https://en.wikipedia.org/wiki/Proxy_server)_
 
-This functionality available only on Linux systems and requires `iptables` setup
+This functionality available only on Linux systems and requires additional setup (`iptables`, ip route, etc)
 
-`-T` flag specifies the address for the transparent server but `GoHPTS` will be running without HTTP server.
+`-T address` flag specifies the address of transparent proxy server (`GoHPTS` will be running without HTTP server).
 
-`-t` flag specifies the address of transparent proxy (all other functionality stays the same).
+`-t address` flag specifies the address of transparent proxy server (other functionality stays the same).
 
-In other words, `-T` spins up a single server, but `-t` two servers, http and tcp.
+In other words, `-T` spins up a single server, but `-t` two servers, `http` and `tcp`.
 
-There are two modes `redirect` and `tproxy` that can be specified by `-M` flag
+There are two modes `redirect` and `tproxy` that can be specified with `-M` flag
 
 ## `redirect` (Transparent proxy via NAT)
 
@@ -290,11 +290,13 @@ iptables -t nat -A OUTPUT -p tcp -j GOHPTS
 Test connection:
 
 ```shell
-curl http://example.com #traffic should be redirected via 127.0.0.1:1090
+#traffic should be redirected via 127.0.0.1:1090
+curl http://example.com
 ```
 
 ```shell
-curl --proxy http://127.0.0.1:8080 http://example.com #traffic should be redirected via 127.0.0.1:8080
+#traffic should be redirected via 127.0.0.1:8080
+curl --proxy http://127.0.0.1:8080 http://example.com
 ```
 
 Undo everything:
@@ -302,14 +304,14 @@ Undo everything:
 ```shell
 sysctl -w net.ipv4.ip_forward=0
 iptables -t nat -D PREROUTING -p tcp -j GOHPTS
-iptables -t nat -D OUTPUT -p tcp -j GOHPT
+iptables -t nat -D OUTPUT -p tcp -j GOHPTS
 iptables -t nat -F GOHPTS
 iptables -t nat -X GOHPTS
 ```
 
 ## `tproxy` (Transparent proxy with IP_TRANSPARENT socket option)
 
-In this mode proxying happens with `iptables` `mangle` table and `TPROXY` target. Transparent proxy sees destination address as it is, it is not being rewrited by the kernel. For this to work the proxy binds with socket option `IP_TRANSPARENT`, `iptables` intercepts traffic using TPROXY target, routing rules are used marked packets to the local proxy without changing their original destination.
+In this mode proxying happens with `iptables` `mangle` table and `TPROXY` target. Transparent proxy sees destination address as is, it is not being rewrited by the kernel. For this to work the proxy binds with socket option `IP_TRANSPARENT`, `iptables` intercepts traffic using TPROXY target, routing rules tell marked packets to go to the local proxy without changing their original destination.
 
 This mode requires elevated privileges to run `GoHPTS`. You can do that by running the follwing command:
 

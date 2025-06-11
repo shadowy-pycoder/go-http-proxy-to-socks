@@ -33,8 +33,8 @@ import (
 )
 
 const (
-	readTimeout              time.Duration = 10 * time.Second
-	writeTimeout             time.Duration = 10 * time.Second
+	readTimeout              time.Duration = 3 * time.Second
+	writeTimeout             time.Duration = 3 * time.Second
 	timeout                  time.Duration = 10 * time.Second
 	hopTimeout               time.Duration = 3 * time.Second
 	flushTimeout             time.Duration = 10 * time.Millisecond
@@ -46,6 +46,7 @@ const (
 var (
 	supportedChainTypes  = []string{"strict", "dynamic", "random", "round_robin"}
 	SupportedTProxyModes = []string{"redirect", "tproxy"}
+	errInvalidWrite      = errors.New("invalid write result")
 )
 
 // Hop-by-hop headers
@@ -476,7 +477,9 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		dstConn, err = sockDialer.Dial("tcp", r.Host)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		dstConn, err = sockDialer.(proxy.ContextDialer).DialContext(ctx, "tcp", r.Host)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -513,9 +516,56 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 }
 
-func (p *proxyapp) transfer(wg *sync.WaitGroup, destination io.Writer, source io.Reader, destName, srcName string) {
+func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn) (written int64, err error) {
+	buf := make([]byte, 32*1024)
+	for {
+		er := src.SetReadDeadline(time.Now().Add(readTimeout))
+		if er != nil {
+			err = er
+			break
+		}
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			er := dst.SetWriteDeadline(time.Now().Add(writeTimeout))
+			if er != nil {
+				err = er
+				break
+			}
+			nw, ew := dst.Write(buf[0:nr])
+			if nw < 0 || nr < nw {
+				nw = 0
+				if ew == nil {
+					ew = errInvalidWrite
+				}
+			}
+			written += int64(nw)
+			if ew != nil {
+				if ne, ok := ew.(net.Error); ok && ne.Timeout() {
+					err = ne
+					break
+				}
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
+		}
+		if er != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				err = er
+				break
+			}
+			if er == io.EOF {
+				break
+			}
+		}
+	}
+	return written, err
+}
+
+func (p *proxyapp) transfer(wg *sync.WaitGroup, dst net.Conn, src net.Conn, destName, srcName string) {
 	defer wg.Done()
-	n, err := io.Copy(destination, source)
+	n, err := p.copyWithTimeout(dst, src)
 	if err != nil {
 		p.logger.Error().Err(err).Msgf("Error during copy from %s to %s: %v", srcName, destName, err)
 	}
@@ -718,7 +768,9 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 			ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed getting SOCKS5 client")
 			return
 		}
-		dstConn, err = sockDialer.Dial("tcp", dst)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		dstConn, err = sockDialer.(proxy.ContextDialer).DialContext(ctx, "tcp", dst)
 		if err != nil {
 			ts.pa.logger.Error().Err(err).Msgf("[tproxy] Failed connecting to %s", dst)
 			return
@@ -835,6 +887,7 @@ type Config struct {
 	TProxyOnly     string
 	TProxyMode     string
 }
+
 type logWriter struct {
 }
 

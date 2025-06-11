@@ -294,7 +294,7 @@ func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
 		}
 		dialer, err = proxy.SOCKS5("tcp", pr.Address, &auth, dialer)
 		if err != nil {
-			p.logger.Error().Err(err).Msgf("[%s] Unable to create SOCKS5 dialer %s", &chainType, pr.Address)
+			p.logger.Error().Err(err).Msgf("[%s] Unable to create SOCKS5 dialer %s", chainType, pr.Address)
 			return nil, nil, err
 		}
 	}

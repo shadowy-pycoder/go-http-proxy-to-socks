@@ -130,8 +130,6 @@ Options:
   -v	print version
 ```
 
-## Example
-
 ### Configuration via CLI flags
 
 ```shell
@@ -236,13 +234,13 @@ This functionality available only on Linux systems and requires additional setup
 
 `-T address` flag specifies the address of transparent proxy server (`GoHPTS` will be running without HTTP server).
 
-`-t address` flag specifies the address of transparent proxy server (other functionality stays the same).
+`-t address` flag specifies the address of transparent proxy server (`HTTP` proxy and other functionality stays the same).
 
 In other words, `-T` spins up a single server, but `-t` two servers, `http` and `tcp`.
 
 There are two modes `redirect` and `tproxy` that can be specified with `-M` flag
 
-## `redirect` (Transparent proxy via NAT)
+## `redirect` (via _NAT_ and _SO_ORIGINAL_DST_)
 
 In this mode proxying happens with `iptables` `nat` table and `REDIRECT` target. Host of incoming packet changes to the address of running `redirect` transparent proxy, but it also contains original destination that can be retrieved with `getsockopt(SO_ORIGINAL_DST)`
 
@@ -309,7 +307,7 @@ iptables -t nat -F GOHPTS
 iptables -t nat -X GOHPTS
 ```
 
-## `tproxy` (Transparent proxy with IP_TRANSPARENT socket option)
+## `tproxy` (via _MANGLE_ and _IP_TRANSPARENT_)
 
 In this mode proxying happens with `iptables` `mangle` table and `TPROXY` target. Transparent proxy sees destination address as is, it is not being rewrited by the kernel. For this to work the proxy binds with socket option `IP_TRANSPARENT`, `iptables` intercepts traffic using TPROXY target, routing rules tell marked packets to go to the local proxy without changing their original destination.
 
@@ -333,7 +331,7 @@ gohpts -s 1080 -T 0.0.0.0:1090 -M tproxy -d
 ssh remote -D 1080 -Nf
 ```
 
-Setup your operating system:
+**Setup your operating system:**
 
 ```shell
 ip netns exec ns-client ip route add default via 10.0.0.1

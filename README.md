@@ -331,7 +331,7 @@ gohpts -s 1080 -T 0.0.0.0:1090 -M tproxy -d
 ssh remote -D 1080 -Nf
 ```
 
-**Setup your operating system:**
+Setup your operating system:
 
 ```shell
 ip netns exec ns-client ip route add default via 10.0.0.1
@@ -359,6 +359,8 @@ ip route flush table 100
 ip netns del ns-client
 ip link del veth1
 ```
+
+## Links
 
 Learn more about transparent proxies by visiting the following links:
 

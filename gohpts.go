@@ -39,12 +39,14 @@ const (
 	hopTimeout               time.Duration = 3 * time.Second
 	flushTimeout             time.Duration = 10 * time.Millisecond
 	availProxyUpdateInterval time.Duration = 30 * time.Second
-	shutdownTimeout          time.Duration = 5 * time.Second
 	kbSize                   int64         = 1000
 	rrIndexMax               uint32        = 1_000_000
 )
 
-var supportedChainTypes = []string{"strict", "dynamic", "random", "round_robin"}
+var (
+	supportedChainTypes  = []string{"strict", "dynamic", "random", "round_robin"}
+	SupportedTProxyModes = []string{"redirect", "tproxy"}
+)
 
 // Hop-by-hop headers
 // https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1
@@ -116,6 +118,7 @@ type proxyapp struct {
 	keyFile        string
 	httpServerAddr string
 	tproxyAddr     string
+	tproxyMode     string
 	user           string
 	pass           string
 	proxychain     chain
@@ -135,10 +138,11 @@ func (p *proxyapp) printProxyChain(pc []proxyEntry) string {
 		if p.tproxyAddr != "" {
 			sb.WriteString(" | ")
 			sb.WriteString(p.tproxyAddr)
-			sb.WriteString(" (tproxy)")
+			sb.WriteString(fmt.Sprintf(" (%s)", p.tproxyMode))
 		}
 	} else if p.tproxyAddr != "" {
 		sb.WriteString(p.tproxyAddr)
+		sb.WriteString(fmt.Sprintf(" (%s)", p.tproxyMode))
 	}
 	sb.WriteString(" -> ")
 	for _, pe := range pc {
@@ -233,6 +237,10 @@ func (p *proxyapp) getSocks() (proxy.Dialer, *http.Client, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	chainType := p.proxychain.Type
+	if len(p.availProxyList) == 0 {
+		p.logger.Error().Msgf("[%s] No SOCKS5 Proxy available", chainType)
+		return nil, nil, fmt.Errorf("no socks5 proxy available")
+	}
 	var chainLength int
 	if p.proxychain.Length > len(p.availProxyList) || p.proxychain.Length <= 0 {
 		chainLength = len(p.availProxyList)
@@ -586,9 +594,30 @@ func newTproxyServer(pa *proxyapp) *tproxyServer {
 		quit: make(chan struct{}),
 		pa:   pa,
 	}
-	ln, err := net.Listen("tcp", ts.pa.tproxyAddr)
+	// https://iximiuz.com/en/posts/go-net-http-setsockopt-example/
+	lc := net.ListenConfig{
+		Control: func(network, address string, conn syscall.RawConn) error {
+			var operr error
+			if err := conn.Control(func(fd uintptr) {
+				operr = syscall.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT, int(timeout*1000))
+				operr = syscall.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+				if ts.pa.tproxyMode == "tproxy" {
+					operr = syscall.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
+				}
+			}); err != nil {
+				return err
+			}
+			return operr
+		},
+	}
+
+	ln, err := lc.Listen(context.Background(), "tcp4", ts.pa.tproxyAddr)
 	if err != nil {
-		ts.pa.logger.Fatal().Err(err).Msg("")
+		var msg string
+		if errors.Is(err, unix.EPERM) {
+			msg = "try `sudo setcap 'cap_net_admin+ep` for the binary:"
+		}
+		ts.pa.logger.Fatal().Err(err).Msg(msg)
 	}
 	ts.listener = ln
 	return ts
@@ -613,6 +642,10 @@ func (ts *tproxyServer) serve() {
 			}
 		} else {
 			ts.wg.Add(1)
+			err := conn.SetDeadline(time.Now().Add(timeout))
+			if err != nil {
+				ts.pa.logger.Error().Err(err).Msg("")
+			}
 			go func() {
 				ts.handleConnection(conn)
 				ts.wg.Done()
@@ -644,24 +677,34 @@ func (ts *tproxyServer) getOriginalDst(rawConn syscall.RawConn) (string, error) 
 	}
 	dstHost := netip.AddrFrom4(originalDst.Addr)
 	dstPort := uint16(originalDst.Port<<8) | originalDst.Port>>8
-	ts.pa.logger.Debug().Msgf("[tproxy] getsockopt SO_ORIGINAL_DST %s:%d", dstHost, dstPort)
 	return fmt.Sprintf("%s:%d", dstHost, dstPort), nil
 }
 
 func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
-	var dstConn net.Conn
+	var (
+		dstConn net.Conn
+		dst     string
+		err     error
+	)
 	defer srcConn.Close()
-
-	rawConn, err := srcConn.(*net.TCPConn).SyscallConn()
-	if err != nil {
-		ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed to get raw connection")
-		return
-	}
-
-	dst, err := ts.getOriginalDst(rawConn)
-	if err != nil {
-		ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed to get destination address")
-		return
+	switch ts.pa.tproxyMode {
+	case "redirect":
+		rawConn, err := srcConn.(*net.TCPConn).SyscallConn()
+		if err != nil {
+			ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed to get raw connection")
+			return
+		}
+		dst, err = ts.getOriginalDst(rawConn)
+		if err != nil {
+			ts.pa.logger.Error().Err(err).Msg("[tproxy] Failed to get destination address")
+			return
+		}
+		ts.pa.logger.Debug().Msgf("[tproxy] getsockopt SO_ORIGINAL_DST %s", dst)
+	case "tproxy":
+		dst = srcConn.LocalAddr().String()
+		ts.pa.logger.Debug().Msgf("[tproxy] IP_TRANSPARENT %s", dst)
+	default:
+		ts.pa.logger.Fatal().Msg("Unknown tproxyMode")
 	}
 	if isLocalAddress(dst) {
 		dstConn, err = net.DialTimeout("tcp", dst, timeout)
@@ -708,7 +751,7 @@ func (ts *tproxyServer) Shutdown() {
 	case <-done:
 		ts.pa.logger.Info().Msg("[tproxy] Server gracefully shutdown")
 		return
-	case <-time.After(shutdownTimeout):
+	case <-time.After(timeout):
 		ts.pa.logger.Error().Msg("[tproxy] Server timed out waiting for connections to finish")
 		return
 	}
@@ -737,7 +780,7 @@ func (p *proxyapp) Run() {
 				tproxyServer.Shutdown()
 			}
 			p.logger.Info().Msg("Server is shutting down...")
-			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
 			defer cancel()
 			p.httpServer.SetKeepAlivesEnabled(false)
@@ -767,7 +810,7 @@ func (p *proxyapp) Run() {
 	} else {
 		go func() {
 			<-quit
-			p.logger.Info().Msg("[tproxy] server is shutting down...")
+			p.logger.Info().Msg("[tproxy] Server is shutting down...")
 			tproxyServer.Shutdown()
 			close(done)
 		}()
@@ -790,6 +833,7 @@ type Config struct {
 	ServerConfPath string
 	TProxy         string
 	TProxyOnly     string
+	TProxyMode     string
 }
 type logWriter struct {
 }
@@ -883,11 +927,15 @@ func New(conf *Config) *proxyapp {
 	p.logger = &logger
 	if runtime.GOOS == "linux" && conf.TProxy != "" && conf.TProxyOnly != "" {
 		p.logger.Fatal().Msg("Cannot specify TPRoxy and TProxyOnly at the same time")
+	} else if runtime.GOOS == "linux" && conf.TProxyMode != "" && !slices.Contains(SupportedTProxyModes, conf.TProxyMode) {
+		p.logger.Fatal().Msg("Incorrect TProxyMode provided")
 	} else if runtime.GOOS != "linux" {
 		conf.TProxy = ""
 		conf.TProxyOnly = ""
+		conf.TProxyMode = ""
 		p.logger.Warn().Msg("[tproxy] functionality only available on linux system")
 	}
+	p.tproxyMode = conf.TProxyMode
 	tproxyonly := conf.TProxyOnly != ""
 	if tproxyonly {
 		p.tproxyAddr = getFullAddress(conf.TProxyOnly)

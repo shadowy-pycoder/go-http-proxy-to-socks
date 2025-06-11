@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 
 	gohpts "github.com/shadowy-pycoder/go-http-proxy-to-socks"
 	"golang.org/x/term"
@@ -14,6 +15,7 @@ const (
 	app       string = "gohpts"
 	addrSOCKS        = "127.0.0.1:1080"
 	addrHTTP         = "127.0.0.1:8080"
+	tproxyOS         = "linux"
 )
 const usagePrefix string = `                                                                  
     _____       _    _ _____ _______ _____ 
@@ -41,9 +43,17 @@ func root(args []string) error {
 	flags.StringVar(&conf.CertFile, "c", "", "Path to certificate PEM encoded file")
 	flags.StringVar(&conf.KeyFile, "k", "", "Path to private key PEM encoded file")
 	flags.StringVar(&conf.ServerConfPath, "f", "", "Path to server configuration file in YAML format")
-	if runtime.GOOS == "linux" {
-		flags.StringVar(&conf.TProxy, "t", "", "Address of transparent proxy server (TPROXY) (it starts along with HTTP proxy server)")
-		flags.StringVar(&conf.TProxyOnly, "T", "", "Address of transparent proxy server (TPROXY) (no HTTP)")
+	if runtime.GOOS == tproxyOS {
+		flags.StringVar(&conf.TProxy, "t", "", "Address of transparent proxy server (it starts along with HTTP proxy server)")
+		flags.StringVar(&conf.TProxyOnly, "T", "", "Address of transparent proxy server (no HTTP)")
+		flags.Func("M", fmt.Sprintf("Transparent proxy mode: %s", gohpts.SupportedTProxyModes), func(flagValue string) error {
+			if !slices.Contains(gohpts.SupportedTProxyModes, flagValue) {
+				fmt.Fprintf(os.Stderr, "%s: %s is not supported (type '%s -h' for help)\n", app, flagValue, app)
+				os.Exit(2)
+			}
+			conf.TProxyMode = flagValue
+			return nil
+		})
 	}
 	flags.BoolFunc("d", "Show logs in DEBUG mode", func(flagValue string) error {
 		conf.Debug = true
@@ -72,18 +82,31 @@ func root(args []string) error {
 	if seen["t"] && seen["T"] {
 		return fmt.Errorf("cannot specify both -t and -T flags")
 	}
+	if seen["t"] {
+		if !seen["M"] {
+			return fmt.Errorf("Transparent proxy mode is not provided: -M flag")
+		}
+	}
 	if seen["T"] {
 		for _, da := range []string{"U", "c", "k", "l"} {
 			if seen[da] {
-				return fmt.Errorf("-T flag only works with -s, -u, -f, -d and -j flags")
+				return fmt.Errorf("-T flag only works with -s, -u, -f, -M, -d and -j flags")
 			}
+		}
+		if !seen["M"] {
+			return fmt.Errorf("Transparent proxy mode is not provided: -M flag")
+		}
+	}
+	if seen["M"] {
+		if !seen["t"] && !seen["T"] {
+			return fmt.Errorf("Transparent proxy mode requires -t or -T flag")
 		}
 	}
 	if seen["f"] {
 		for _, da := range []string{"s", "u", "U", "c", "k", "l"} {
 			if seen[da] {
-				if runtime.GOOS == "linux" {
-					return fmt.Errorf("-f flag only works with -t, -T, -d and -j flags")
+				if runtime.GOOS == tproxyOS {
+					return fmt.Errorf("-f flag only works with -t, -T, -M, -d and -j flags")
 				}
 				return fmt.Errorf("-f flag only works with -d and -j flags")
 			}

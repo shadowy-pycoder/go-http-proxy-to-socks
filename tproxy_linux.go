@@ -35,7 +35,7 @@ func newTproxyServer(pa *proxyapp) *tproxyServer {
 		Control: func(network, address string, conn syscall.RawConn) error {
 			var operr error
 			if err := conn.Control(func(fd uintptr) {
-				operr = unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT, int(timeout*1000))
+				operr = unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT, int(timeout.Milliseconds()))
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 				if ts.pa.tproxyMode == "tproxy" {
 					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)

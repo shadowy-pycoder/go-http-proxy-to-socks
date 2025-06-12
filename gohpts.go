@@ -804,7 +804,7 @@ func New(conf *Config) *proxyapp {
 		p.logger.Fatal().Msg("Cannot specify TPRoxy and TProxyOnly at the same time")
 	} else if runtime.GOOS == "linux" && conf.TProxyMode != "" && !slices.Contains(SupportedTProxyModes, conf.TProxyMode) {
 		p.logger.Fatal().Msg("Incorrect TProxyMode provided")
-	} else if runtime.GOOS != "linux" {
+	} else if runtime.GOOS != "linux" && (conf.TProxy != "" || conf.TProxyOnly != "" || conf.TProxyMode != "") {
 		conf.TProxy = ""
 		conf.TProxyOnly = ""
 		conf.TProxyMode = ""

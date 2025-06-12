@@ -34,7 +34,7 @@ proxy_list:
   - address: 127.0.0.1:1081
   - address: :1082 # empty host means localhost
 server:
-  address: 127.0.0.1:8080 # the only required field in this section
+  address: 127.0.0.1:8080 # the only required field in this section (ignored when -T flag specified)
   # these are for adding basic authentication
   username: username 
   password: password

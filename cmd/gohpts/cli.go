@@ -161,7 +161,7 @@ func root(args []string) error {
 			if err != nil {
 				return err
 			}
-			fmt.Println("gohpts pid:", process.Pid)
+			fmt.Println("%s pid:", app, process.Pid)
 			process.Release()
 			os.Exit(0)
 		}

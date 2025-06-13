@@ -86,7 +86,7 @@ func root(args []string) error {
 	if seen["T"] {
 		for _, da := range []string{"U", "c", "k", "l"} {
 			if seen[da] {
-				return fmt.Errorf("-T flag only works with -s, -u, -f, -M, -d and -j flags")
+				return fmt.Errorf("-T flag only works with -s, -u, -f, -M, -d, -D, -logfile and -j flags")
 			}
 		}
 		if !seen["M"] {
@@ -102,9 +102,9 @@ func root(args []string) error {
 		for _, da := range []string{"s", "u", "U", "c", "k", "l"} {
 			if seen[da] {
 				if runtime.GOOS == tproxyOS {
-					return fmt.Errorf("-f flag only works with -t, -T, -M, -d and -j flags")
+					return fmt.Errorf("-f flag only works with -t, -T, -M, -d, -D, -logfile and -j flags")
 				}
-				return fmt.Errorf("-f flag only works with -d and -j flags")
+				return fmt.Errorf("-f flag only works with -d, -D, -logfile and -j flags")
 			}
 		}
 	}

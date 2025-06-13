@@ -43,6 +43,7 @@ func root(args []string) error {
 	flags.StringVar(&conf.CertFile, "c", "", "Path to certificate PEM encoded file")
 	flags.StringVar(&conf.KeyFile, "k", "", "Path to private key PEM encoded file")
 	flags.StringVar(&conf.ServerConfPath, "f", "", "Path to server configuration file in YAML format")
+	daemon := flags.Bool("D", false, "Run as a daemon (provide -logfile to see logs)")
 	if runtime.GOOS == tproxyOS {
 		flags.StringVar(&conf.TProxy, "t", "", "Address of transparent proxy server (it starts along with HTTP proxy server)")
 		flags.StringVar(&conf.TProxyOnly, "T", "", "Address of transparent proxy server (no HTTP)")
@@ -55,14 +56,9 @@ func root(args []string) error {
 			return nil
 		})
 	}
-	flags.BoolFunc("d", "Show logs in DEBUG mode", func(flagValue string) error {
-		conf.Debug = true
-		return nil
-	})
-	flags.BoolFunc("j", "Show logs in JSON format", func(flagValue string) error {
-		conf.Json = true
-		return nil
-	})
+	flags.StringVar(&conf.LogFilePath, "logfile", "", "Log file path (Default: stdout)")
+	flags.BoolVar(&conf.Debug, "d", false, "Show logs in DEBUG mode")
+	flags.BoolVar(&conf.Json, "j", false, "Show logs in JSON format")
 	flags.BoolFunc("v", "print version", func(flagValue string) error {
 		fmt.Println(gohpts.Version)
 		os.Exit(0)
@@ -90,7 +86,7 @@ func root(args []string) error {
 	if seen["T"] {
 		for _, da := range []string{"U", "c", "k", "l"} {
 			if seen[da] {
-				return fmt.Errorf("-T flag only works with -s, -u, -f, -M, -d and -j flags")
+				return fmt.Errorf("-T flag only works with -s, -u, -f, -M, -d, -D, -logfile and -j flags")
 			}
 		}
 		if !seen["M"] {
@@ -106,10 +102,15 @@ func root(args []string) error {
 		for _, da := range []string{"s", "u", "U", "c", "k", "l"} {
 			if seen[da] {
 				if runtime.GOOS == tproxyOS {
-					return fmt.Errorf("-f flag only works with -t, -T, -M, -d and -j flags")
+					return fmt.Errorf("-f flag only works with -t, -T, -M, -d, -D, -logfile and -j flags")
 				}
-				return fmt.Errorf("-f flag only works with -d and -j flags")
+				return fmt.Errorf("-f flag only works with -d, -D, -logfile and -j flags")
 			}
+		}
+	}
+	if seen["D"] {
+		if seen["u"] || seen["U"] {
+			return fmt.Errorf("-u and -U flags do not work in daemon mode")
 		}
 	}
 	if seen["u"] {
@@ -131,6 +132,40 @@ func root(args []string) error {
 		fmt.Print("\033[2K\r")
 	}
 
+	if *daemon {
+		if os.Getenv("GOHPTS_DAEMON") != "1" {
+			env := os.Environ()
+			files := [3]*os.File{}
+			env = append(env, "GOHPTS_DAEMON=1")
+			files[0], _ = os.Open(os.DevNull)
+			files[1], _ = os.Open(os.DevNull)
+			files[2], _ = os.Open(os.DevNull)
+			attr := &os.ProcAttr{
+				Files: []*os.File{
+					files[0], // stdin
+					files[1], // stdout
+					files[2], // stderr
+				},
+				Dir: ".",
+				Env: env,
+			}
+			path, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			process, err := os.StartProcess(
+				path,
+				os.Args,
+				attr,
+			)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("%s pid: %d\n", app, process.Pid)
+			process.Release()
+			os.Exit(0)
+		}
+	}
 	p := gohpts.New(&conf)
 	p.Run()
 	return nil

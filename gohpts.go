@@ -696,8 +696,6 @@ func (p *proxyapp) Run() {
 type Config struct {
 	AddrHTTP       string
 	AddrSOCKS      string
-	Debug          bool
-	Json           bool
 	User           string
 	Pass           string
 	ServerUser     string
@@ -708,20 +706,25 @@ type Config struct {
 	TProxy         string
 	TProxyOnly     string
 	TProxyMode     string
+	LogFilePath    string
+	Debug          bool
+	Json           bool
 }
 
 type logWriter struct {
+	file *os.File
 }
 
 func (writer logWriter) Write(bytes []byte) (int, error) {
-	return fmt.Print(fmt.Sprintf("%s | ERROR | %s", time.Now().Format(time.RFC3339), string(bytes)))
+	return fmt.Fprintf(writer.file, fmt.Sprintf("%s | ERROR | %s", time.Now().Format(time.RFC3339), string(bytes)))
 }
 
 type jsonLogWriter struct {
+	file *os.File
 }
 
 func (writer jsonLogWriter) Write(bytes []byte) (int, error) {
-	return fmt.Print(fmt.Sprintf("{\"level\":\"error\",\"time\":\"%s\",\"message\":\"%s\"}\n",
+	return fmt.Fprintf(writer.file, fmt.Sprintf("{\"level\":\"error\",\"time\":\"%s\",\"message\":\"%s\"}\n",
 		time.Now().Format(time.RFC3339), strings.TrimRight(string(bytes), "\n")))
 }
 
@@ -782,14 +785,24 @@ func expandPath(p string) string {
 func New(conf *Config) *proxyapp {
 	var logger zerolog.Logger
 	var p proxyapp
+	var logfile *os.File = os.Stdout
+	if conf.LogFilePath != "" {
+		f, err := os.OpenFile(conf.LogFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatalf("Failed to open log file: %v", err)
+		}
+		logfile = f
+	}
 	if conf.Json {
 		log.SetFlags(0)
-		log.SetOutput(new(jsonLogWriter))
-		logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
+		jsonWriter := jsonLogWriter{file: logfile}
+		log.SetOutput(jsonWriter)
+		logger = zerolog.New(logfile).With().Timestamp().Logger()
 	} else {
 		log.SetFlags(0)
-		log.SetOutput(new(logWriter))
-		output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339, NoColor: true}
+		logWriter := logWriter{file: logfile}
+		log.SetOutput(logWriter)
+		output := zerolog.ConsoleWriter{Out: logfile, TimeFormat: time.RFC3339, NoColor: true}
 		output.FormatLevel = func(i any) string {
 			return strings.ToUpper(fmt.Sprintf("| %-6s|", i))
 		}

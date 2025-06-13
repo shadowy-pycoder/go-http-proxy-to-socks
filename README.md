@@ -68,7 +68,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.6.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.6.1; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -105,29 +105,32 @@ GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 Usage: gohpts [OPTIONS]
 Options:
   -h    Show this help message and exit.
+  -D    Run as a daemon (provide -logfile to see logs)
   -M value
-    	Transparent proxy mode: [redirect tproxy]
+        Transparent proxy mode: [redirect tproxy]
   -T string
-    	Address of transparent proxy server (no HTTP)
+        Address of transparent proxy server (no HTTP)
   -U string
-    	User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
+        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
   -c string
-    	Path to certificate PEM encoded file
-  -d	Show logs in DEBUG mode
+        Path to certificate PEM encoded file
+  -d    Show logs in DEBUG mode
   -f string
-    	Path to server configuration file in YAML format
-  -j	Show logs in JSON format
+        Path to server configuration file in YAML format
+  -j    Show logs in JSON format
   -k string
-    	Path to private key PEM encoded file
+        Path to private key PEM encoded file
   -l string
-    	Address of HTTP proxy server (default "127.0.0.1:8080")
+        Address of HTTP proxy server (default "127.0.0.1:8080")
+  -logfile string
+        Log file path (Default: stdout)
   -s string
-    	Address of SOCKS5 proxy server (default "127.0.0.1:1080")
+        Address of SOCKS5 proxy server (default "127.0.0.1:1080")
   -t string
-    	Address of transparent proxy server (it starts along with HTTP proxy server)
+        Address of transparent proxy server (it starts along with HTTP proxy server)
   -u string
-    	User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
-  -v	print version
+        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
+  -v    print version
 ```
 
 ### Configuration via CLI flags
@@ -165,6 +168,26 @@ Run http proxy over TLS connection
 ```shell
 gohpts -s 1080 -l 8080 -c "path/to/certificate" -k "path/to/private/key"
 ```
+
+Run proxy as a daemon (logfile is needed for logging output, otherwise you will see nothing)
+
+```shell
+gohpts -D -logfile /tmp/gohpts.log
+```
+
+```shell
+# output
+gohpts pid: <pid>
+```
+
+```shell
+# kill the process
+kill <pid>
+#or
+kill $(pidof gohpts)
+```
+
+`-u` and `-U` flags do not work in a daemon mode (and therefore authentication), but you can provide a config file (see below)
 
 ### Configuration via YAML file
 

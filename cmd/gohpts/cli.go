@@ -56,7 +56,7 @@ func root(args []string) error {
 			return nil
 		})
 	}
-	flags.StringVar(&conf.LogFilePath, "logfile", "", "Log file path (Default: stdout")
+	flags.StringVar(&conf.LogFilePath, "logfile", "", "Log file path (Default: stdout)")
 	flags.BoolVar(&conf.Debug, "d", false, "Show logs in DEBUG mode")
 	flags.BoolVar(&conf.Json, "j", false, "Show logs in JSON format")
 	flags.BoolFunc("v", "print version", func(flagValue string) error {
@@ -161,7 +161,7 @@ func root(args []string) error {
 			if err != nil {
 				return err
 			}
-			fmt.Println("%s pid:", app, process.Pid)
+			fmt.Printf("%s pid: %d\n", app, process.Pid)
 			process.Release()
 			os.Exit(0)
 		}

@@ -19,9 +19,12 @@
   - [redirect (via NAT and SO_ORIGINAL_DST)](#redirect-via-nat-and-so_original_dst)
   - [tproxy (via MANGLE and IP_TRANSPARENT)](#tproxy-via-mangle-and-ip_transparent)
 - [Links](#links)
+- [Contributing](#contributing)
 - [License](#license)
 
 ## Introduction
+
+[[Back]](#table-of-contents)
 
 `GoHPTS` CLI tool is a bridge between HTTP clients and a SOCKS5 proxy server or multiple servers (chain). It listens locally as an HTTP proxy, accepts standard HTTP
 or HTTPS (via CONNECT) requests and forwards the connection through a SOCKS5 proxy. Inspired by [http-proxy-to-socks](https://github.com/oyyd/http-proxy-to-socks) and [Proxychains](https://github.com/rofl0r/proxychains-ng)
@@ -44,6 +47,8 @@ gohpts -s :1080 -l :8080
 Specify http server in proxy configuration of Postman
 
 ## Features
+
+[[Back]](#table-of-contents)
 
 - **Proxy Chain functionality**  
   Supports `strict`, `dynamic`, `random`, `round_robin` chains of SOCKS5 proxy
@@ -77,6 +82,8 @@ Specify http server in proxy configuration of Postman
 
 ## Installation
 
+[[Back]](#table-of-contents)
+
 You can download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page.
 
 Example:
@@ -103,6 +110,8 @@ make build
 ```
 
 ## Usage
+
+[[Back]](#table-of-contents)
 
 ```shell
 gohpts -h
@@ -148,6 +157,8 @@ Options:
 ```
 
 ### Configuration via CLI flags
+
+[[Back]](#table-of-contents)
 
 ```shell
 gohpts -s 1080 -l 8080 -d -j
@@ -204,6 +215,8 @@ kill $(pidof gohpts)
 `-u` and `-U` flags do not work in a daemon mode (and therefore authentication), but you can provide a config file (see below)
 
 ### Configuration via YAML file
+
+[[Back]](#table-of-contents)
 
 Run http proxy in SOCKS5 proxy chain mode (specify server settings via YAML configuration file)
 
@@ -262,6 +275,8 @@ server:
 To learn more about proxy chains visit [Proxychains Github](https://github.com/rofl0r/proxychains-ng)
 
 ## Transparent proxy
+
+[[Back]](#table-of-contents)
 
 > Also known as an `intercepting proxy`, `inline proxy`, or `forced proxy`, a transparent proxy intercepts normal application layer communication without requiring any special client configuration. Clients need not be aware of the existence of the proxy. A transparent proxy is normally located between the client and the Internet, with the proxy performing some of the functions of a gateway or router
 >
@@ -346,6 +361,8 @@ iptables -t nat -X GOHPTS
 
 ## `tproxy` (via _MANGLE_ and _IP_TRANSPARENT_)
 
+[[Back]](#table-of-contents)
+
 In this mode proxying happens with `iptables` `mangle` table and `TPROXY` target. Transparent proxy sees destination address as is, it is not being rewrited by the kernel. For this to work the proxy binds with socket option `IP_TRANSPARENT`, `iptables` intercepts traffic using TPROXY target, routing rules tell marked packets to go to the local proxy without changing their original destination.
 
 This mode requires elevated privileges to run `GoHPTS`. You can do that by running the follwing command:
@@ -399,6 +416,8 @@ ip link del veth1
 
 ## Links
 
+[[Back]](#table-of-contents)
+
 Learn more about transparent proxies by visiting the following links:
 
 - [Transparent proxy support in Linux Kernel](https://docs.kernel.org/networking/tproxy.html)
@@ -407,6 +426,20 @@ Learn more about transparent proxies by visiting the following links:
 - [Golang TProxy](https://github.com/KatelynHaworth/go-tproxy)
 - [Transparent Proxy Implementation using eBPF and Go](https://medium.com/all-things-ebpf/building-a-transparent-proxy-with-ebpf-50a012237e76)
 
+## Contributing
+
+[[Back]](#table-of-contents)
+
+Are you a developer?
+
+- Fork the repository
+- Create your feature branch: `git switch -c my-new-feature`
+- Commit your changes: `git commit -am 'Add some feature'`
+- Push to the branch: `git push origin my-new-feature`
+- Submit a pull request
+
 ## License
+
+[[Back]](#table-of-contents)
 
 MIT

@@ -59,6 +59,8 @@ func root(args []string) error {
 	flags.StringVar(&conf.LogFilePath, "logfile", "", "Log file path (Default: stdout)")
 	flags.BoolVar(&conf.Debug, "d", false, "Show logs in DEBUG mode")
 	flags.BoolVar(&conf.Json, "j", false, "Show logs in JSON format")
+	flags.BoolVar(&conf.Sniff, "sniff", false, "Enable traffic sniffing for HTTP and TLS")
+	flags.StringVar(&conf.SniffLogFile, "snifflog", "", "Sniffed traffic log file path (Default: the same as -logfile)")
 	flags.BoolFunc("v", "print version", func(flagValue string) error {
 		fmt.Println(gohpts.Version)
 		os.Exit(0)
@@ -86,7 +88,7 @@ func root(args []string) error {
 	if seen["T"] {
 		for _, da := range []string{"U", "c", "k", "l"} {
 			if seen[da] {
-				return fmt.Errorf("-T flag only works with -s, -u, -f, -M, -d, -D, -logfile and -j flags")
+				return fmt.Errorf("-T flag only works with -s, -u, -f, -M, -d, -D, -logfile, -sniff, -snifflog and -j flags")
 			}
 		}
 		if !seen["M"] {
@@ -102,9 +104,9 @@ func root(args []string) error {
 		for _, da := range []string{"s", "u", "U", "c", "k", "l"} {
 			if seen[da] {
 				if runtime.GOOS == tproxyOS {
-					return fmt.Errorf("-f flag only works with -t, -T, -M, -d, -D, -logfile and -j flags")
+					return fmt.Errorf("-f flag only works with -t, -T, -M, -d, -D, -logfile, -sniff, -snifflog and -j flags")
 				}
-				return fmt.Errorf("-f flag only works with -d, -D, -logfile and -j flags")
+				return fmt.Errorf("-f flag only works with -d, -D, -logfile, -sniff, -snifflog and -j flags")
 			}
 		}
 	}
@@ -130,6 +132,16 @@ func root(args []string) error {
 		}
 		conf.ServerPass = string(bytepw)
 		fmt.Print("\033[2K\r")
+	}
+	if seen["sniff"] {
+		if !seen["d"] {
+			return fmt.Errorf("Traffic sniffing requires debug mode")
+		}
+	}
+	if seen["snifflog"] {
+		if !seen["sniff"] {
+			return fmt.Errorf("-snifflog only works with -sniff flag")
+		}
 	}
 
 	if *daemon {

@@ -169,10 +169,19 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 
 	ts.pa.logger.Debug().Msgf("[tproxy] src: %s - dst: %s", srcConnStr, dstConnStr)
 
+	reqChan := make(chan []byte)
+	respChan := make(chan []byte)
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go ts.pa.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr)
-	go ts.pa.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr)
+	go ts.pa.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr, reqChan)
+	go ts.pa.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr, respChan)
+	if ts.pa.sniff {
+		wg.Add(1)
+		sniffheader := make([]string, 0, 3)
+		sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"tproxy_mode\":%q,\"src_local\":%q,\"src_remote\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%q}}",
+			ts.pa.tproxyMode, srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr(), dst))
+		go ts.pa.sniffreporter(&wg, &sniffheader, reqChan, respChan)
+	}
 	wg.Wait()
 }
 

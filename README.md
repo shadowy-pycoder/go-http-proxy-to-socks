@@ -15,9 +15,10 @@
 - [Usage](#usage)
   - [Configuration via CLI flags](#configuration-via-cli-flags)
   - [Configuration via YAML file](#configuration-via-yaml-file)
-- [Transparent proxy](#usage)
+- [Transparent proxy](#transparent-proxy)
   - [redirect (via NAT and SO_ORIGINAL_DST)](#redirect-via-nat-and-so_original_dst)
   - [tproxy (via MANGLE and IP_TRANSPARENT)](#tproxy-via-mangle-and-ip_transparent)
+- [Traffic sniffing](#traffic-sniffing)
 - [Links](#links)
 - [Contributing](#contributing)
 - [License](#license)
@@ -56,6 +57,9 @@ Specify http server in proxy configuration of Postman
 - **Transparent proxy**  
   Supports `redirect` (SO_ORIGINAL_DST) and `tproxy` (IP_TRANSPARENT) modes
 
+- **Traffic sniffing**  
+  Proxy is able to parse HTTP headers and TLS handshake metadata
+
 - **DNS Leak Protection**  
   DNS resolution occurs on SOCKS5 server side.
 
@@ -89,7 +93,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.6.1; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.7.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -128,32 +132,36 @@ GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 Usage: gohpts [OPTIONS]
 Options:
   -h    Show this help message and exit.
-  -D    Run as a daemon (provide -logfile to see logs)
+  -D	Run as a daemon (provide -logfile to see logs)
   -M value
-        Transparent proxy mode: [redirect tproxy]
+    	Transparent proxy mode: [redirect tproxy]
   -T string
-        Address of transparent proxy server (no HTTP)
+    	Address of transparent proxy server (no HTTP)
   -U string
-        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
+    	User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
   -c string
-        Path to certificate PEM encoded file
-  -d    Show logs in DEBUG mode
+    	Path to certificate PEM encoded file
+  -d	Show logs in DEBUG mode
   -f string
-        Path to server configuration file in YAML format
-  -j    Show logs in JSON format
+    	Path to server configuration file in YAML format
+  -j	Show logs in JSON format
   -k string
-        Path to private key PEM encoded file
+    	Path to private key PEM encoded file
   -l string
-        Address of HTTP proxy server (default "127.0.0.1:8080")
+    	Address of HTTP proxy server (default "127.0.0.1:8080")
   -logfile string
-        Log file path (Default: stdout)
+    	Log file path (Default: stdout)
   -s string
-        Address of SOCKS5 proxy server (default "127.0.0.1:1080")
+    	Address of SOCKS5 proxy server (default "127.0.0.1:1080")
+  -sniff
+    	Enable traffic sniffing for HTTP and TLS
+  -snifflog string
+    	Sniffed traffic log file path (Default: the same as -logfile)
   -t string
-        Address of transparent proxy server (it starts along with HTTP proxy server)
+    	Address of transparent proxy server (it starts along with HTTP proxy server)
   -u string
-        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
-  -v    print version
+    	User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
+  -v	print version
 ```
 
 ### Configuration via CLI flags
@@ -413,6 +421,144 @@ ip route flush table 100
 ip netns del ns-client
 ip link del veth1
 ```
+
+## Traffic sniffing
+
+[[Back]](#table-of-contents)
+
+`GoHPTS` proxy allows one to capture and monitor traffic that goes through the service. This procces is known as `traffic sniffing`, `packet sniffing` or just `sniffing`. In particular, proxy tries to identify whether it is a plain text (HTTP) or TLS traffic, and after identification is done, it parses request/response metadata and writes it to the file or console. In the case of `GoHTPS` proxy a parsed metadata looks like the following (TLS Handshake):
+
+```json
+[
+  {
+    "connection": {
+      "tproxy_mode": "redirect",
+      "src_local": "127.0.0.1:8888",
+      "src_remote": "192.168.0.107:51142",
+      "dst_local": "127.0.0.1:56256",
+      "dst_remote": "127.0.0.1:1080",
+      "original_dst": "216.58.209.206:443"
+    }
+  },
+  {
+    "tls_request": {
+      "sni": "www.youtube.com",
+      "type": "Client hello (1)",
+      "version": "TLS 1.2 (0x0303)",
+      "session_id": "2670a6779b4346e5e84d46890ad2aaf7a53b08adcfe0c9f6868c2d9882242e39",
+      "cipher_suites": [
+        "TLS_AES_128_GCM_SHA256 (0x1301)",
+        "TLS_CHACHA20_POLY1305_SHA256 (0x1303)",
+        "TLS_AES_256_GCM_SHA384 (0x1302)",
+        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 (0xc02b)",
+        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (0xc02f)",
+        "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 (0xcca9)",
+        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 (0xcca8)",
+        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 (0xc02c)",
+        "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 (0xc030)",
+        "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA (0xc00a)",
+        "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA (0xc009)",
+        "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA (0xc013)",
+        "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA (0xc014)",
+        "TLS_RSA_WITH_AES_128_GCM_SHA256 (0x9c)",
+        "TLS_RSA_WITH_AES_256_GCM_SHA384 (0x9d)",
+        "TLS_RSA_WITH_AES_128_CBC_SHA (0x2f)",
+        "TLS_RSA_WITH_AES_256_CBC_SHA (0x35)"
+      ],
+      "extensions": [
+        "server_name (0)",
+        "extended_master_secret (23)",
+        "renegotiation_info (65281)",
+        "supported_groups (10)",
+        "ec_point_formats (11)",
+        "session_ticket (35)",
+        "application_layer_protocol_negotiation (16)",
+        "status_request (5)",
+        "delegated_credential (34)",
+        "signed_certificate_timestamp (18)",
+        "key_share (51)",
+        "supported_versions (43)",
+        "signature_algorithms (13)",
+        "psk_key_exchange_modes (45)",
+        "record_size_limit (28)",
+        "compress_certificate (27)",
+        "encrypted_client_hello (65037)"
+      ],
+      "alpn": ["h2", "http/1.1"]
+    }
+  },
+  {
+    "tls_response": {
+      "type": "Server hello (2)",
+      "version": "TLS 1.2 (0x0303)",
+      "session_id": "2670a6779b4346e5e84d46890ad2aaf7a53b08adcfe0c9f6868c2d9882242e39",
+      "cipher_suite": "TLS_AES_128_GCM_SHA256 (0x1301)",
+      "extensions": ["key_share (51)", "supported_versions (43)"],
+      "supported_version": "TLS 1.3 (0x0304)"
+    }
+  }
+]
+```
+
+And HTTP request with curl:
+
+```json
+[
+  {
+    "connection": {
+      "tproxy_mode": "redirect",
+      "src_local": "127.0.0.1:8888",
+      "src_remote": "192.168.0.107:45736",
+      "dst_local": "127.0.0.1:37640",
+      "dst_remote": "127.0.0.1:1080",
+      "original_dst": "96.7.128.198:80"
+    }
+  },
+  {
+    "http_request": {
+      "host": "example.com",
+      "uri": "/",
+      "method": "GET",
+      "proto": "HTTP/1.1",
+      "header": {
+        "Accept": ["*/*"],
+        "My": ["Header"],
+        "User-Agent": ["curl/7.81.0"]
+      }
+    }
+  },
+  {
+    "http_response": {
+      "proto": "HTTP/1.1",
+      "status": "200 OK",
+      "content-length": 1256,
+      "header": {
+        "Cache-Control": ["max-age=2880"],
+        "Connection": ["keep-alive"],
+        "Content-Length": ["1256"],
+        "Content-Type": ["text/html"],
+        "Date": ["Tue, 17 Jun 2025 14:43:24 GMT"],
+        "Etag": ["\"84238dfc8092e5d9c0dac8ef93371a07:1736799080.121134\""],
+        "Last-Modified": ["Mon, 13 Jan 2025 20:11:20 GMT"]
+      }
+    }
+  }
+]
+```
+
+Usage as simple as specifying `-sniff` flag along with regular flags
+
+```shell
+gohpts -d -t 8888 -M redirect -sniff
+```
+
+You can also specify a file to which write sniffed traffic:
+
+```shell
+gohpts -d -sniff -snifflog ~/sniff.log
+```
+
+Please note that for now sniffing only visible with `-d` flag, it may change in the future.
 
 ## Links
 

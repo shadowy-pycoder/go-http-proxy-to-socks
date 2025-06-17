@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/rs/zerolog"
+	"github.com/shadowy-pycoder/mshark/layers"
 	"golang.org/x/net/proxy"
 )
 
@@ -111,6 +113,7 @@ type proxyapp struct {
 	httpClient     *http.Client
 	sockDialer     proxy.Dialer
 	logger         *zerolog.Logger
+	snifflogger    *zerolog.Logger
 	certFile       string
 	keyFile        string
 	httpServerAddr string
@@ -122,6 +125,7 @@ type proxyapp struct {
 	proxylist      []proxyEntry
 	rrIndex        uint32
 	rrIndexReset   uint32
+	sniff          bool
 
 	mu             sync.RWMutex
 	availProxyList []proxyEntry
@@ -504,15 +508,88 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 
 	p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
 	p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
-
+	reqChan := make(chan []byte)
+	respChan := make(chan []byte)
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go p.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr)
-	go p.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr)
+	go p.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr, reqChan)
+	go p.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr, respChan)
+	if p.sniff {
+		wg.Add(1)
+		sniffheader := make([]string, 0, 4)
+		sniffheader = append(sniffheader, fmt.Sprintf("{\"connection\":{\"src_local\":%q,\"src_remote\":%q,\"dst_local\":%q,\"dst_remote\":%q}}",
+			srcConn.LocalAddr(), srcConn.RemoteAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()))
+		j, err := json.Marshal(&layers.HTTPMessage{Request: r})
+		if err == nil {
+			sniffheader = append(sniffheader, string(j))
+		}
+		go p.sniffreporter(&wg, &sniffheader, reqChan, respChan)
+	}
 	wg.Wait()
 }
 
-func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn) (written int64, err error) {
+func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqChan <-chan []byte, respChan <-chan []byte) {
+	defer wg.Done()
+	sniffheaderlen := len(*sniffheader)
+	for {
+		req, okreq := <-reqChan // if resp comes first it blocks
+		resp, okresp := <-respChan
+		if !okreq || !okresp {
+			return
+		}
+		*sniffheader = append(*sniffheader, string(req), string(resp))
+		p.snifflogger.Debug().Msg(fmt.Sprintf("[%s]", strings.Join(*sniffheader, ",")))
+		*sniffheader = (*sniffheader)[:sniffheaderlen]
+	}
+}
+
+func sniff(data []byte, logger *zerolog.Logger) ([]byte, error) {
+	// TODO: check if it is http or tls beforehand
+	h := &layers.HTTPMessage{}
+	if err := h.Parse(data); err == nil && !h.IsEmpty() {
+		j, err := json.Marshal(h)
+		if err == nil {
+			return j, nil
+		}
+	}
+	m := &layers.TLSMessage{}
+	if err := m.Parse(data); err != nil {
+		return nil, err
+	}
+	if len(m.Records) > 0 {
+		hsrec := m.Records[0]
+		if hsrec.ContentType == layers.HandshakeTLSVal { // TODO: add more cases, parse all records
+			parser := layers.HSTLSParserByType(hsrec.Data[0])
+			switch parser.(type) {
+			case *layers.TLSClientHello:
+				tc := parser.(*layers.TLSClientHello)
+				err := tc.ParseHS(hsrec.Data)
+				if err != nil {
+					return nil, err
+				}
+				j, err := json.Marshal(tc)
+				if err != nil {
+					return nil, err
+				}
+				return j, nil
+			case *layers.TLSServerHello:
+				ts := parser.(*layers.TLSServerHello)
+				err := ts.ParseHS(hsrec.Data)
+				if err != nil {
+					return nil, err
+				}
+				j, err := json.Marshal(ts)
+				if err != nil {
+					return nil, err
+				}
+				return j, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("failed sniffing traffic")
+}
+
+func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- []byte) (written int64, err error) {
 	buf := make([]byte, 32*1024)
 	for {
 		er := src.SetReadDeadline(time.Now().Add(readTimeout))
@@ -526,6 +603,12 @@ func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn) (written int64, e
 			if er != nil {
 				err = er
 				break
+			}
+			if p.sniff {
+				s, err := sniff(buf[0:nr], p.logger)
+				if err == nil {
+					msgChan <- s
+				}
 			}
 			nw, ew := dst.Write(buf[0:nr])
 			if nw < 0 || nr < nw {
@@ -559,9 +642,12 @@ func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn) (written int64, e
 	return written, err
 }
 
-func (p *proxyapp) transfer(wg *sync.WaitGroup, dst net.Conn, src net.Conn, destName, srcName string) {
-	defer wg.Done()
-	n, err := p.copyWithTimeout(dst, src)
+func (p *proxyapp) transfer(wg *sync.WaitGroup, dst net.Conn, src net.Conn, destName, srcName string, msgChan chan<- []byte) {
+	defer func() {
+		wg.Done()
+		close(msgChan)
+	}()
+	n, err := p.copyWithTimeout(dst, src, msgChan)
 	if err != nil {
 		p.logger.Error().Err(err).Msgf("Error during copy from %s to %s: %v", srcName, destName, err)
 	}
@@ -709,6 +795,8 @@ type Config struct {
 	LogFilePath    string
 	Debug          bool
 	Json           bool
+	Sniff          bool
+	SniffLogFile   string
 }
 
 type logWriter struct {
@@ -783,9 +871,11 @@ func expandPath(p string) string {
 }
 
 func New(conf *Config) *proxyapp {
-	var logger zerolog.Logger
+	var logger, snifflogger zerolog.Logger
 	var p proxyapp
 	var logfile *os.File = os.Stdout
+	var snifflog *os.File
+	p.sniff = conf.Sniff
 	if conf.LogFilePath != "" {
 		f, err := os.OpenFile(conf.LogFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 		if err != nil {
@@ -793,26 +883,38 @@ func New(conf *Config) *proxyapp {
 		}
 		logfile = f
 	}
+	if conf.SniffLogFile != "" && conf.SniffLogFile != conf.LogFilePath {
+		f, err := os.OpenFile(conf.SniffLogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatalf("Failed to open sniff log file: %v", err)
+		}
+		snifflog = f
+	} else {
+		snifflog = logfile
+	}
 	if conf.Json {
 		log.SetFlags(0)
 		jsonWriter := jsonLogWriter{file: logfile}
 		log.SetOutput(jsonWriter)
 		logger = zerolog.New(logfile).With().Timestamp().Logger()
+		snifflogger = zerolog.New(snifflog).With().Timestamp().Logger()
 	} else {
 		log.SetFlags(0)
 		logWriter := logWriter{file: logfile}
 		log.SetOutput(logWriter)
-		output := zerolog.ConsoleWriter{Out: logfile, TimeFormat: time.RFC3339, NoColor: true}
-		output.FormatLevel = func(i any) string {
-			return strings.ToUpper(fmt.Sprintf("| %-6s|", i))
-		}
+		noColor := logfile != os.Stdout
+		sniffNoColor := snifflog != os.Stdout
+		output := zerolog.ConsoleWriter{Out: logfile, TimeFormat: time.RFC3339, NoColor: noColor}
 		logger = zerolog.New(output).With().Timestamp().Logger()
+		sniffoutput := zerolog.ConsoleWriter{Out: snifflog, TimeFormat: time.RFC3339, NoColor: sniffNoColor}
+		snifflogger = zerolog.New(sniffoutput).With().Timestamp().Logger()
 	}
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	if conf.Debug {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
 	p.logger = &logger
+	p.snifflogger = &snifflogger
 	if runtime.GOOS == "linux" && conf.TProxy != "" && conf.TProxyOnly != "" {
 		p.logger.Fatal().Msg("Cannot specify TPRoxy and TProxyOnly at the same time")
 	} else if runtime.GOOS == "linux" && conf.TProxyMode != "" && !slices.Contains(SupportedTProxyModes, conf.TProxyMode) {

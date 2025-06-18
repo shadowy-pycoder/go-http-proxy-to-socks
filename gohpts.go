@@ -532,7 +532,7 @@ func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqC
 	defer wg.Done()
 	sniffheaderlen := len(*sniffheader)
 	for {
-		req, okreq := <-reqChan // if resp comes first it blocks
+		req, okreq := <-reqChan // FIX: if resp comes first it blocks
 		resp, okresp := <-respChan
 		if !okreq || !okresp {
 			return

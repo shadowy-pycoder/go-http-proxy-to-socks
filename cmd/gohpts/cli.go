@@ -13,9 +13,9 @@ import (
 
 const (
 	app       string = "gohpts"
-	addrSOCKS        = "127.0.0.1:1080"
-	addrHTTP         = "127.0.0.1:8080"
-	tproxyOS         = "linux"
+	addrSOCKS string = "127.0.0.1:1080"
+	addrHTTP  string = "127.0.0.1:8080"
+	tproxyOS  string = "linux"
 )
 const usagePrefix string = `                                                                  
     _____       _    _ _____ _______ _____ 
@@ -61,6 +61,7 @@ func root(args []string) error {
 	flags.BoolVar(&conf.Json, "j", false, "Show logs in JSON format")
 	flags.BoolVar(&conf.Sniff, "sniff", false, "Enable traffic sniffing for HTTP and TLS")
 	flags.StringVar(&conf.SniffLogFile, "snifflog", "", "Sniffed traffic log file path (Default: the same as -logfile)")
+	flags.BoolVar(&conf.Color, "color", false, "Enable colored output for logs in stdout (no effect if log file provided or -j flag specified)")
 	flags.BoolFunc("v", "print version", func(flagValue string) error {
 		fmt.Println(gohpts.Version)
 		os.Exit(0)

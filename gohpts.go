@@ -543,7 +543,7 @@ func (p *proxyapp) sniffreporter(wg *sync.WaitGroup, sniffheader *[]string, reqC
 	}
 }
 
-func sniff(data []byte, logger *zerolog.Logger) ([]byte, error) {
+func sniff(data []byte) ([]byte, error) {
 	// TODO: check if it is http or tls beforehand
 	h := &layers.HTTPMessage{}
 	if err := h.Parse(data); err == nil && !h.IsEmpty() {
@@ -559,26 +559,13 @@ func sniff(data []byte, logger *zerolog.Logger) ([]byte, error) {
 	if len(m.Records) > 0 {
 		hsrec := m.Records[0]
 		if hsrec.ContentType == layers.HandshakeTLSVal { // TODO: add more cases, parse all records
-			parser := layers.HSTLSParserByType(hsrec.Data[0])
-			switch parser.(type) {
-			case *layers.TLSClientHello:
-				tc := parser.(*layers.TLSClientHello)
-				err := tc.ParseHS(hsrec.Data)
+			switch parser := layers.HSTLSParserByType(hsrec.Data[0]).(type) {
+			case *layers.TLSClientHello, *layers.TLSServerHello:
+				err := parser.ParseHS(hsrec.Data)
 				if err != nil {
 					return nil, err
 				}
-				j, err := json.Marshal(tc)
-				if err != nil {
-					return nil, err
-				}
-				return j, nil
-			case *layers.TLSServerHello:
-				ts := parser.(*layers.TLSServerHello)
-				err := ts.ParseHS(hsrec.Data)
-				if err != nil {
-					return nil, err
-				}
-				j, err := json.Marshal(ts)
+				j, err := json.Marshal(parser)
 				if err != nil {
 					return nil, err
 				}
@@ -605,7 +592,7 @@ func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- []
 				break
 			}
 			if p.sniff {
-				s, err := sniff(buf[0:nr], p.logger)
+				s, err := sniff(buf[0:nr])
 				if err == nil {
 					msgChan <- s
 				}
@@ -665,7 +652,7 @@ func parseProxyAuth(auth string) (username, password string, ok bool) {
 		return "", "", false
 	}
 	const prefix = "Basic "
-	if len(auth) < len(prefix) || strings.ToLower(prefix) != strings.ToLower(auth[:len(prefix)]) {
+	if len(auth) < len(prefix) || !strings.EqualFold(prefix, auth[:len(prefix)]) {
 		return "", "", false
 	}
 	c, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
@@ -797,6 +784,7 @@ type Config struct {
 	Json           bool
 	Sniff          bool
 	SniffLogFile   string
+	Color          bool
 }
 
 type logWriter struct {
@@ -804,7 +792,7 @@ type logWriter struct {
 }
 
 func (writer logWriter) Write(bytes []byte) (int, error) {
-	return fmt.Fprintf(writer.file, fmt.Sprintf("%s | ERROR | %s", time.Now().Format(time.RFC3339), string(bytes)))
+	return fmt.Fprintf(writer.file, "%s ERR %s", time.Now().Format(time.RFC3339), string(bytes))
 }
 
 type jsonLogWriter struct {
@@ -812,8 +800,8 @@ type jsonLogWriter struct {
 }
 
 func (writer jsonLogWriter) Write(bytes []byte) (int, error) {
-	return fmt.Fprintf(writer.file, fmt.Sprintf("{\"level\":\"error\",\"time\":\"%s\",\"message\":\"%s\"}\n",
-		time.Now().Format(time.RFC3339), strings.TrimRight(string(bytes), "\n")))
+	return fmt.Fprintf(writer.file, "{\"level\":\"error\",\"time\":\"%s\",\"message\":\"%s\"}\n",
+		time.Now().Format(time.RFC3339), strings.TrimRight(string(bytes), "\n"))
 }
 
 type proxyEntry struct {
@@ -902,8 +890,8 @@ func New(conf *Config) *proxyapp {
 		log.SetFlags(0)
 		logWriter := logWriter{file: logfile}
 		log.SetOutput(logWriter)
-		noColor := logfile != os.Stdout
-		sniffNoColor := snifflog != os.Stdout
+		noColor := !conf.Color || logfile != os.Stdout
+		sniffNoColor := !conf.Color || snifflog != os.Stdout
 		output := zerolog.ConsoleWriter{Out: logfile, TimeFormat: time.RFC3339, NoColor: noColor}
 		logger = zerolog.New(output).With().Timestamp().Logger()
 		sniffoutput := zerolog.ConsoleWriter{Out: snifflog, TimeFormat: time.RFC3339, NoColor: sniffNoColor}

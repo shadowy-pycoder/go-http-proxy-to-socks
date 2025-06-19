@@ -63,7 +63,7 @@ func root(args []string) error {
 	flags.StringVar(&conf.SniffLogFile, "snifflog", "", "Sniffed traffic log file path (Default: the same as -logfile)")
 	flags.BoolVar(&conf.Color, "color", false, "Enable colored output for logs in stdout (no effect if log file provided or -j flag specified)")
 	flags.BoolFunc("v", "print version", func(flagValue string) error {
-		fmt.Println(gohpts.Version)
+		fmt.Printf("%s (built for %s %s with %s)\n", gohpts.Version, runtime.GOOS, runtime.GOARCH, runtime.Version())
 		os.Exit(0)
 		return nil
 	})

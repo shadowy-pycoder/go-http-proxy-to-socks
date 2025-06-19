@@ -347,9 +347,9 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.RequestURI = ""
-	delConnectionHeaders(r.Header)
-	delHopHeaders(r.Header)
 	copyHeader(req.Header, r.Header)
+	delConnectionHeaders(req.Header)
+	delHopHeaders(req.Header)
 	if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
 		appendHostToXForwardHeader(req.Header, clientIP)
 	}
@@ -392,6 +392,18 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer resp.Body.Close()
+	if p.sniff {
+		sniffheader := make([]string, 0, 2)
+		j, err := json.Marshal(&layers.HTTPMessage{Request: r})
+		if err == nil {
+			sniffheader = append(sniffheader, string(j))
+		}
+		j, err = json.Marshal(&layers.HTTPMessage{Response: resp})
+		if err == nil {
+			sniffheader = append(sniffheader, string(j))
+		}
+		p.snifflogger.Debug().Msg(fmt.Sprintf("[%s]", strings.Join(sniffheader, ",")))
+	}
 	done := make(chan bool)
 	if chunked {
 		rc := http.NewResponseController(w)

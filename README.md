@@ -93,7 +93,7 @@ You can download the binary for your platform from [Releases](https://github.com
 Example:
 
 ```shell
-HPTS_RELEASE=v1.7.2; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+HPTS_RELEASE=v1.7.3; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$HPTS_RELEASE/gohpts-$HPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$HPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 Alternatively, you can install it using `go install` command (requires Go [1.24](https://go.dev/doc/install) or later):
@@ -139,10 +139,10 @@ Options:
         Address of transparent proxy server (no HTTP)
   -U string
         User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
+  -body
+        Collect request and response body for HTTP sniffing
   -c string
         Path to certificate PEM encoded file
-  -color
-        Enable colored output for logs in stdout (no effect if log file provided or -j flag specified)
   -d    Show logs in DEBUG mode
   -f string
         Path to server configuration file in YAML format
@@ -153,6 +153,8 @@ Options:
         Address of HTTP proxy server (default "127.0.0.1:8080")
   -logfile string
         Log file path (Default: stdout)
+  -nocolor
+        Disable colored output for logs in stdout (no effect if log file provided or -j flag specified)
   -s string
         Address of SOCKS5 proxy server (default "127.0.0.1:1080")
   -sniff
@@ -559,8 +561,6 @@ You can also specify a file to which write sniffed traffic:
 ```shell
 gohpts -d -sniff -snifflog ~/sniff.log
 ```
-
-Please note that for now sniffing only visible with `-d` flag, it may change in the future.
 
 ## Links
 

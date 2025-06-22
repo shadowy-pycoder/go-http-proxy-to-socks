@@ -61,7 +61,8 @@ func root(args []string) error {
 	flags.BoolVar(&conf.Json, "j", false, "Show logs in JSON format")
 	flags.BoolVar(&conf.Sniff, "sniff", false, "Enable traffic sniffing for HTTP and TLS")
 	flags.StringVar(&conf.SniffLogFile, "snifflog", "", "Sniffed traffic log file path (Default: the same as -logfile)")
-	flags.BoolVar(&conf.Color, "color", false, "Enable colored output for logs in stdout (no effect if log file provided or -j flag specified)")
+	flags.BoolVar(&conf.NoColor, "nocolor", false, "Disable colored output for logs in stdout (no effect if log file provided or -j flag specified)")
+	flags.BoolVar(&conf.Body, "body", false, "Collect request and response body for HTTP sniffing")
 	flags.BoolFunc("v", "print version", func(flagValue string) error {
 		fmt.Printf("%s (built for %s %s with %s)\n", gohpts.Version, runtime.GOOS, runtime.GOARCH, runtime.Version())
 		os.Exit(0)
@@ -134,14 +135,14 @@ func root(args []string) error {
 		conf.ServerPass = string(bytepw)
 		fmt.Print("\033[2K\r")
 	}
-	if seen["sniff"] {
-		if !seen["d"] {
-			return fmt.Errorf("Traffic sniffing requires debug mode")
-		}
-	}
 	if seen["snifflog"] {
 		if !seen["sniff"] {
 			return fmt.Errorf("-snifflog only works with -sniff flag")
+		}
+	}
+	if seen["body"] {
+		if !seen["sniff"] {
+			return fmt.Errorf("-body only works with -sniff flag")
 		}
 	}
 

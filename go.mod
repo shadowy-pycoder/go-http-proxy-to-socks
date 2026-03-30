@@ -8,8 +8,8 @@ require (
 	github.com/rs/zerolog v1.34.0
 	github.com/shadowy-pycoder/arpspoof v0.0.3
 	github.com/shadowy-pycoder/colors v0.0.2
-	github.com/shadowy-pycoder/mshark v0.0.22
-	github.com/shadowy-pycoder/ndpspoof v0.0.4
+	github.com/shadowy-pycoder/mshark v0.0.23
+	github.com/shadowy-pycoder/ndpspoof v0.0.6
 	github.com/wzshiming/socks5 v0.5.2
 	golang.org/x/sys v0.33.0
 	golang.org/x/term v0.32.0

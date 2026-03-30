@@ -590,13 +590,12 @@ func New(conf *Config) *proxyapp {
 		if p.iface != nil {
 			nsc.Interface = p.iface.Name
 		}
-		nsc.DNSServers = ""
+		nsc.RDNSS = ""
 		nsc.Auto = false
 		if nsc.RA {
 			hostIP, err := network.GetHostIPv6GlobalUnicastFromRoute()
 			if err == nil {
-				nsc.RDNSS = true
-				nsc.DNSServers = hostIP.String() // use host ip as DNS server
+				nsc.RDNSS = hostIP.String() // use host ip as DNS server
 				p.raEnabled = true
 				p.hostIPGlobal = hostIP
 			}

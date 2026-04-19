@@ -139,11 +139,8 @@ type tproxyServerUDP struct {
 	wg           sync.WaitGroup
 	p            *proxyapp
 	clients      *udpConnections
-	iface        *net.Interface
 	gwConn       *net.UDPConn
-	gwDNS        *net.UDPAddr
 	gwConn6      *net.UDPConn
-	gwDNS6       *net.UDPAddr
 	startingFlag atomic.Bool
 	closingFlag  atomic.Bool
 }
@@ -184,20 +181,7 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 	}
 	tsu.conn = pconn.(*net.UDPConn)
 	tsu.clients = &udpConnections{quit: tsu.quit, clients: make(map[string]*udpConn)}
-	if tsu.p.iface != nil {
-		tsu.iface = tsu.p.iface
-	} else {
-		tsu.iface, err = network.GetDefaultInterface()
-		if err != nil {
-			tsu.iface, err = network.GetDefaultInterfaceFromRoute()
-			if err != nil {
-				tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed getting default interface", tsu.p.tproxyMode)
-			}
-		}
-	}
-	if tsu.p.arpspoofer != nil {
-		gw := tsu.p.arpspoofer.GatewayIP()
-		tsu.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
+	if tsu.p.arpspoofer != nil && tsu.p.gwDNS != nil {
 		lc = net.ListenConfig{
 			Control: func(network, address string, conn syscall.RawConn) error {
 				var operr error
@@ -215,26 +199,13 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 				return operr
 			},
 		}
-		pconn, err = lc.ListenPacket(context.Background(), tsu.p.udp, tsu.gwDNS.String())
+		pconn, err = lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.gwDNS.String())
 		if err != nil {
 			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed listening on gateway DNS", tsu.p.tproxyMode)
 		}
 		tsu.gwConn = pconn.(*net.UDPConn)
 	}
-	if tsu.p.ndpspoofer != nil && tsu.p.raEnabled {
-		var dnsResolver netip.Addr
-		sysDNS, err := network.GetSystemNameservers()
-		if err != nil {
-			if tsu.p.arpspoofer != nil {
-				dnsResolver = tsu.p.arpspoofer.GatewayIP()
-			} else {
-				dnsResolver = netip.MustParseAddr("2001:4860:4860::8888")
-			}
-		} else {
-			dnsResolver = sysDNS[0]
-		}
-		tsu.gwDNS6 = &net.UDPAddr{IP: net.ParseIP(dnsResolver.String()), Port: 53}
-		hostGw := &net.UDPAddr{IP: net.ParseIP(tsu.p.hostIPGlobal.String()), Port: 53}
+	if tsu.p.ndpspoofer != nil && tsu.p.raEnabled && tsu.p.hostDNS6 != nil && tsu.p.gwDNS6 != nil {
 		lc = net.ListenConfig{
 			Control: func(network, address string, conn syscall.RawConn) error {
 				var operr error
@@ -252,7 +223,7 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 				return operr
 			},
 		}
-		pconn, err = lc.ListenPacket(context.Background(), tsu.p.udp, hostGw.String())
+		pconn, err = lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.hostDNS6.String())
 		if err != nil {
 			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed listening on gateway DNS", tsu.p.tproxyMode)
 		}
@@ -267,13 +238,13 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 	go tsu.clients.Cleanup()
 	if tsu.p.arpspoofer != nil {
 		go func() {
-			tsu.listenAndServeDNS(tsu.gwConn, tsu.gwDNS)
+			tsu.listenAndServeDNS(tsu.gwConn, tsu.p.gwDNS)
 			tsu.wg.Done()
 		}()
 	}
 	if tsu.p.ndpspoofer != nil && tsu.p.raEnabled {
 		go func() {
-			tsu.listenAndServeDNS(tsu.gwConn6, tsu.gwDNS6)
+			tsu.listenAndServeDNS(tsu.gwConn6, tsu.p.gwDNS6)
 			tsu.wg.Done()
 		}()
 	}
@@ -759,9 +730,9 @@ ip6tables -t mangle -X GOHPTS_UDP 2>/dev/null || true
 `
 			tsu.p.runRuleCmd(cmdClear1)
 		}
-		prefix, err := network.GetIPv4PrefixFromInterface(tsu.iface)
+		prefix, err := network.GetIPv4PrefixFromInterface(tsu.p.iface)
 		if err != nil {
-			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed getting host from %s", tsu.p.tproxyMode, tsu.iface.Name)
+			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed getting host from %s", tsu.p.tproxyMode, tsu.p.iface.Name)
 		}
 		cmdInit0 := fmt.Sprintf(`
 iptables -t mangle -N GOHPTS_UDP 2>/dev/null || true
@@ -784,11 +755,11 @@ ip6tables -t mangle -A GOHPTS_UDP -p udp -d ff00::/8 -j RETURN
 ip6tables -t mangle -A GOHPTS_UDP -p udp -d fe80::/10 -j RETURN
 `
 			tsu.p.runRuleCmd(cmdInit01)
-			if tsu.p.raEnabled {
+			if tsu.p.raEnabled && tsu.p.hostDNS6 != nil {
 				cmdInit02 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS_UDP -p udp --dport 53 -j RETURN
 ip6tables -t mangle -A GOHPTS_UDP -p udp -d %s -j RETURN
-`, tsu.p.hostIPGlobal)
+`, tsu.p.hostDNS6.IP)
 				tsu.p.runRuleCmd(cmdInit02)
 			}
 		}

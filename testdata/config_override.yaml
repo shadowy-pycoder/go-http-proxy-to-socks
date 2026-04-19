@@ -1,0 +1,55 @@
+interface: "eth0" # if specified, overrides http server IP address
+ipv6_enabled: false # this must be enabled for ndpspoof
+
+http_server:
+  enabled: true
+  address: 127.0.0.1:8080
+  username: username
+  password: password
+  cert_file: ~/local.crt
+  key_file: ~/local.key
+
+proxy_list:
+  - address: 127.0.0.1:1080
+    username: username
+    password: password
+  - address: 127.0.0.1:1081
+  - address: :1082 # empty host means localhost
+
+proxy_chain:
+  enabled: true
+  type: strict
+  length: 2
+
+logging:
+  debug: true
+  json: false
+  nocolor: false
+  pprof: 127.0.0.1:8088
+
+sniffing:
+  enabled: true
+  body: true
+
+transparent_proxy:
+  tcp:
+    enabled: true
+    address: 0.0.0.0:8888
+    workers: 1
+  udp:
+    enabled: false
+    address: 0.0.0.0:8889
+    workers: 1
+  mode: "tproxy"
+  disable_http: false
+  auto: false
+  dump_rules: false
+  ignored_ports: []
+  mark: 100
+
+arpspoof:
+  enabled: false
+  settings: "targets 192.168.10.0/24;fullduplex true;debug true;interval 10s"
+ndpspoof:
+  enabled: true
+  settings: "ra true;debug true;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;interval 10s;mtu 1500;packet HRD F2 DSDS"

@@ -454,8 +454,8 @@ ip6tables -t mangle -A GOHPTS -p tcp -d ff00::/8 -j RETURN
 ip6tables -t mangle -A GOHPTS -p tcp -d fe80::/10 -j RETURN
 `
 			ts.p.runRuleCmd(cmdInit01)
-			if ts.p.raEnabled {
-				cmdInit02 := fmt.Sprintf(`ip6tables -t mangle -A GOHPTS -p tcp -d %s -j RETURN`, ts.p.hostIPGlobal)
+			if ts.p.raEnabled && ts.p.hostDNS6 != nil {
+				cmdInit02 := fmt.Sprintf(`ip6tables -t mangle -A GOHPTS -p tcp -d %s -j RETURN`, ts.p.hostDNS6.IP)
 				ts.p.runRuleCmd(cmdInit02)
 			}
 		}

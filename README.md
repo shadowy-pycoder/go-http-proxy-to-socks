@@ -21,14 +21,15 @@
 - [Transparent proxy](#transparent-proxy)
   - [redirect (via NAT and SO_ORIGINAL_DST)](#redirect-via-nat-and-so_original_dst)
   - [tproxy (via MANGLE and IP_TRANSPARENT)](#tproxy-via-mangle-and-ip_transparent)
-  - [ARP spoofing](#arp-spoofing)
   - [UDP support](#udp-support)
   - [Android support](#android-support)
-  - [IPv6 support](#ipv6-support)
-  - [NDP spoofing](#ndp-spoofing)
+  - [YAML configuration](#yaml-configuration)
 - [Traffic sniffing](#traffic-sniffing)
   - [JSON format](#json-format)
   - [Colored format](#colored-format)
+- [IPv6 support](#ipv6-support)
+- [ARP spoofing](#arp-spoofing)
+- [NDP spoofing](#ndp-spoofing)
 - [Links](#links)
 - [Contributing](#contributing)
 - [License](#license)
@@ -107,21 +108,19 @@ Specify http server in proxy configuration of Postman
 
 [[Back]](#table-of-contents)
 
-1. Arch Linux/CachyOS/EndeavourOS
+- Arch Linux/CachyOS/EndeavourOS
 
 ```shell
 yay -S gohpts
 ```
 
-2. You can download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page.
-
-Example:
+- Download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page.
 
 ```shell
-GOHPTS_RELEASE=v1.12.5; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+GOHPTS_RELEASE=v1.13.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
-3. Alternatively, you can install it using `go install` command (requires Go [1.26](https://go.dev/doc/install) or later):
+- Install using `go install` command (requires Go [1.26](https://go.dev/doc/install) or later):
 
 ```shell
 CGO_ENABLED=0 go install -ldflags "-s -w" -trimpath github.com/shadowy-pycoder/go-http-proxy-to-socks/cmd/gohpts@latest
@@ -129,7 +128,7 @@ CGO_ENABLED=0 go install -ldflags "-s -w" -trimpath github.com/shadowy-pycoder/g
 
 This will install the `gohpts` binary to your `$GOPATH/bin` directory.
 
-4. Another alternative is to build from source:
+- Build from source:
 
 ```shell
 git clone https://github.com/shadowy-pycoder/go-http-proxy-to-socks.git
@@ -153,6 +152,7 @@ gohpts -h
 
 GoHPTS (HTTP(S) Proxy to SOCKS5 proxy) by shadowy-pycoder
 GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
+Codeberg: https://codeberg.org/shadowy-pycoder/go-http-proxy-to-socks
 
 Usage: gohpts [OPTIONS]
 OPTIONS:
@@ -170,7 +170,7 @@ OPTIONS:
   -U        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
   -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
   -i        Bind proxy to specific network interface (either by interface name or index)
-  -f        Path to server configuration file in YAML format (overrides proxy flags above)
+  -f        Path to proxy configuration file in YAML format
   -6        Enable IPv6 support for TCP and UDP
 
   Logs:
@@ -186,13 +186,13 @@ OPTIONS:
   -body     Collect request and response body for HTTP traffic (credentials, tokens, etc)
 
   TProxy:
-  -t        Address of transparent proxy server (it starts along with HTTP proxy server)
-  -T        Address of transparent proxy server (no HTTP)
+  -T        Address of transparent proxy server
   -Tu       Address of transparent UDP proxy server
   -M        Transparent proxy mode: (redirect, tproxy)
+  -nohttp   Disable HTTP server
   -w        Number of instances of transparent proxy server (Default: number of CPU cores)
   -wu       Number of instances of transparent UDP proxy server (Default: number of CPU cores)
-  -auto     Automatically setup iptables for transparent proxy (requires elevated privileges)
+  -auto     Automatically setup iptables and kernel parameters for transparent proxy (requires elevated privileges)
   -arpspoof Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true;interval 10s")
   -ndpspoof Enable NDP spoof proxy for selected targets (Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4;fullduplex false;debug true;interval 10s")
   -mark     Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
@@ -262,60 +262,84 @@ kill $(pidof gohpts)
 
 [[Back]](#table-of-contents)
 
+Configuration files are useful when you want to preconfigure your proxy without messing with CLI too much or just want multiple profiles for different needs.
+
 Run http proxy in SOCKS5 proxy chain mode (specify server settings via YAML configuration file)
 
 ```shell
-gohpts -f "path/to/proxychain/config" -d -j
+gohpts -f "~/gohtps.yaml" -d -j
 ```
 
 Config example:
 
 ```yaml
-# Explanations for chains taken from /etc/proxychains4.conf
+# bind proxy to specific network interface (either by interface name or index)
+interface: "eth0" # if specified, overrides http server IP address
+ipv6_enabled: false # this must be enabled for ndpspoof
 
-# strict - Each connection will be done via chained proxies
-# all proxies chained in the order as they appear in the list
-# all proxies must be online to play in chain
+http_server:
+  enabled: true
+  address: 127.0.0.1:8080
 
-# dynamic - Each connection will be done via chained proxies
-# all proxies chained in the order as they appear in the list
-# at least one proxy must be online to play in chain
-# (dead proxies are skipped)
-
-# random - Each connection will be done via random proxy
-# (or proxy chain, see  chain_len) from the list.
-# this option is good to test your IDS :)
-
-# round_robin - Each connection will be done via chained proxies
-# of chain_len length
-# all proxies chained in the order as they appear in the list
-# at least one proxy must be online to play in chain
-# (dead proxies are skipped).
-# the start of the current proxy chain is the proxy after the last
-# proxy in the previously invoked proxy chain.
-# if the end of the proxy chain is reached while looking for proxies
-# start at the beginning again.
-# These semantics are not guaranteed in a multithreaded environment.
-
-chain:
-  type: strict # dynamic, strict, random, round_robin
-  length: 2 # maximum number of proxy in a chain (works only for random chain and round_robin chain)
+# list of socks5 proxy
+# if proxy_chain is disabled, uses first server in a list as upstream
 proxy_list:
   - address: 127.0.0.1:1080
-    username: username # username and password are optional
-    password: password
   - address: 127.0.0.1:1081
   - address: :1082 # empty host means localhost
-server:
-  address: 127.0.0.1:8080 # the only required field in this section (ignored when -T flag specified)
-  interface: "eth0" # if specified, overrides server address
-  # these are for adding basic authentication
-  username: username
-  password: password
-  # comment out these to use HTTP instead of HTTPS
-  cert_file: ~/local.crt
-  key_file: ~/local.key
+
+proxy_chain:
+  enabled: false
+  # Explanations for chains taken from /etc/proxychains4.conf
+
+  # strict - Each connection will be done via chained proxies
+  # all proxies chained in the order as they appear in the list
+  # all proxies must be online to play in chain
+
+  # dynamic - Each connection will be done via chained proxies
+  # all proxies chained in the order as they appear in the list
+  # at least one proxy must be online to play in chain
+  # (dead proxies are skipped)
+
+  # random - Each connection will be done via random proxy
+  # (or proxy chain, see  chain_len) from the list.
+  # this option is good to test your IDS :)
+
+  # round_robin - Each connection will be done via chained proxies
+  # of chain_len length
+  # all proxies chained in the order as they appear in the list
+  # at least one proxy must be online to play in chain
+  # (dead proxies are skipped).
+  # the start of the current proxy chain is the proxy after the last
+  # proxy in the previously invoked proxy chain.
+  # if the end of the proxy chain is reached while looking for proxies
+  # start at the beginning again.
+  # These semantics are not guaranteed in a multithreaded environment.
+  type: strict # dynamic, strict, random, round_robin
+  length: 2 # maximum number of proxy in a chain (works only for random chain and round_robin chain)
+
+logging:
+  debug: true
+  json: false
+  # defaults to standard output
+  #logfile: /tmp/gohpts.log
+  # use colored output in logs (no effect if json enabled)
+  nocolor: false
+  # profiling data
+  pprof: 127.0.0.1:8081
 ```
+
+You can override almost any settings specified in configuration file by providing corresponding CLI flags:
+
+```shell
+gohpts -l :6969 -f "~/gohtps.yaml" -nocolor
+```
+
+Proxy takes all the settings specified in `~/gohpts.yaml` but spins up http server on `127.0.0.1:6969` insted of `127.0.0.1:8080` and also disables colored output in logs.
+
+Some settings (e.g. proxy_chain and dns filters) can only be configured via file.
+
+Full version of config can be found here: [example_gohpts.yaml](./resources/example_gohpts.yaml)
 
 To learn more about proxy chains visit [Proxychains Github](https://github.com/rofl0r/proxychains-ng)
 
@@ -329,25 +353,23 @@ To learn more about proxy chains visit [Proxychains Github](https://github.com/r
 
 This functionality available only on Linux systems and Android (arm64) and requires additional setup (`iptables`, ip route, etc)
 
-`-T address` flag specifies the address of transparent proxy server (`GoHPTS` will be running without HTTP server).
-
-`-t address` flag specifies the address of transparent proxy server (`HTTP` proxy and other functionality stays the same).
-
-In other words, `-T` spins up a single server, but `-t` two servers, `http` and `tcp`.
+`-T address` flag specifies the address of transparent proxy server
 
 There are two modes `redirect` and `tproxy` that can be specified with `-M` flag
 
 ## `redirect` (via _NAT_ and _SO_ORIGINAL_DST_)
 
+[[Back]](#table-of-contents)
+
 In this mode proxying happens with `iptables` `nat` table and `REDIRECT` target. Host of incoming packet changes to the address of running `redirect` transparent proxy, but it also contains original destination that can be retrieved with `getsockopt(SO_ORIGINAL_DST)`
 
-To run `GoHPTS` in this mode you use `-t` or `-T` flags with `-M redirect`
+To run `GoHPTS` in this mode you use `-T` flag with `-M redirect`
 
 ### Example
 
 ```shell
 # run the proxy
-gohpts -s 1080 -t 1090 -M redirect -d
+gohpts -s 1080 -T 1090 -M redirect -d
 ```
 
 ```shell
@@ -366,7 +388,7 @@ sysctl -w net.ipv4.ip_forward=1
 # create `GOHPTS` nat chain
 iptables -t nat -N GOHPTS
 
-# set no redirection rules for local, http proxy, ssh and redirect procy itself
+# set no redirection rules for local, http proxy, ssh and redirect proxy itself
 iptables -t nat -A GOHPTS -d 127.0.0.0/8 -j RETURN
 iptables -t nat -A GOHPTS -p tcp --dport 8080 -j RETURN
 iptables -t nat -A GOHPTS -p tcp --dport 1090 -j RETURN
@@ -434,7 +456,7 @@ This mode requires elevated privileges to run `GoHPTS`. You can do that by runni
 sudo setcap 'cap_net_admin+ep' ~/go/bin/gohpts
 ```
 
-To run `GoHPTS` in this mode you use `-t` or `-T` flags with `-M tproxy`
+To run `GoHPTS` in this mode you use `-T` flag with `-M tproxy`
 
 ### Example
 
@@ -517,44 +539,6 @@ else
 fi
 ```
 
-### ARP spoofing
-
-[[Back]](#table-of-contents)
-
-`GoHPTS` has in-built ARP spoofer that can be used to make all TCP talking devices of your LAN to use proxy server to connect to the Internet.
-This is achieved by adding `-arpspoof` flag with couple of parameters, separated by semicolon.
-
-Example:
-
-```shell
-ssh remote -D 1080 -Nf
-sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100 -arpspoof "targets 192.168.10.0/24;fullduplex true;debug true"
-```
-
-Proxy will scan for devices in subnet `192.168.10.0/24` and send them ARP packets to pretend to be a gateway, if `fullduplex` is true,
-proxy will send ARP packets to gateway as well to make it believe our proxy has each IP on the subnet.
-
-After proxy is stopped with `Ctrl+C`, it will automatically unspoof all targets.
-
-`GoHPTS` can also be used with tools like [Bettercap](https://github.com/bettercap/bettercap) to proxy ARP spoofed traffic.
-
-Run the proxy:
-
-```shell
-ssh remote -D 1080 -Nf
-sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100
-```
-
-Run `bettercap` with this command (see [documentation](https://www.bettercap.org/)):
-
-```shell
-sudo bettercap -eval "net.probe on;net.recon on;set arp.spoof.fullduplex true;arp.spoof on"
-```
-
-Check proxy logs for traffic from other devices from your LAN
-
-For more information about arpspoof options see `gohpts -h` and [https://github.com/shadowy-pycoder/arpspoof](https://github.com/shadowy-pycoder/arpspoof)
-
 ### UDP support
 
 [[Back]](#table-of-contents)
@@ -583,6 +567,8 @@ sudo ./gohpts -s <socks5 server> -T 8888 -Tu :8989 -M tproxy -sniff -body -auto 
 
 ### Android support
 
+[[Back]](#table-of-contents)
+
 Transparent proxy can be enabled on Android devices (arm64) with root access. You can install [Termux](https://github.com/termux/termux-app) and run `GoHPTS` as a CLI tool there:
 
 ```shell
@@ -591,99 +577,36 @@ pkg install tsu iproute2
 # Android support added in v1.10.2
 GOHPTS_RELEASE=v1.10.2; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-android-arm64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-android-arm64 gohpts && ./gohpts -h
 # use your phone as router for LAN devices redirecting their traffic to remote socks5 server
-sudo ./gohpts -s remote -t 8888 -Tu :8989 -M tproxy -sniff -body -auto -mark 100 -d -arpspoof "fullduplex true;debug false"
+sudo ./gohpts -s remote -T 8888 -Tu :8989 -M tproxy -sniff -body -auto -mark 100 -d -arpspoof "fullduplex true;debug false"
 ```
 
-### IPv6 support
-
-To enable IPv6 handling just add `-6` flag, for example when using with transparent proxy:
-
-```shell
-sudo ./gohpts -T 8888 -M redirect -sniff -body -auto -mark 100 -d -6
-```
-
-For this to work, your ISP and remote socks5 proxy should have active IPv6 support, you can visit [https://test-ipv6.com/](https://test-ipv6.com/) to find out you can access IPv6 addresses.
-To test proxy in IPv6 mode you can use any Linux VM:
-
-1. On your virtual machine:
-
-```shell
-# add your host machine as gateway for VM
-export GATEWAY="<host IPv4 address>"
-ip route add 0.0.0.0/1 via "$GATEWAY"
-ip route add 128.0.0.0/1 via "$GATEWAY"
-
-# add your host machine as gateway IPv6 for VM
-export GATEWAY6="<host IPv6 address>"
-ip -6 route add ::/1 via "$GATEWAY6" dev eth0
-ip -6 route add 8000::/1 via "$GATEWAY6" dev eth0
-```
-
-2. On your host:
-
-```shell
-# run proxy on your host
-sudo ./gohpts -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -d -6
-```
-
-3. Visit any website on your virtual machine and see traffic in proxy logs
-
-### NDP spoofing
+### YAML configuration
 
 [[Back]](#table-of-contents)
 
-`GoHPTS` has in-built functionality to perform NDP spoofing in IPv6 networks with Router Advertisement (RA) and Neighbor Advertisement (NA) packets. It also includes RDNSS option in RA packets to put host as a IPv6 nameserver for affected clients. When combined with transparent proxy mode (TCP/UDP), NDP spoofing allows `gohpts` to proxy traffic for clients in the local networks. As is the case with [ARP spoofing](#arp-spoofing), you can set ndp spoof options with single `-ndpspoof` flag:
-
-Example:
-
-```shell
-sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100 -ndpspoof "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4;fullduplex false;debug true"
+```yaml
+transparent_proxy:
+  tcp:
+    enabled: true
+    address: 0.0.0.0:8888
+    # number of instances of transparent proxy server (Default: number of CPU cores)
+    workers: 1
+  udp:
+    enabled: true
+    address: 0.0.0.0:8889
+    # number of instances of transparent UDP proxy server (Default: number of CPU cores)
+    workers: 1
+  mode: "tproxy" # available modes are "redirect", "tproxy" (udp requires tproxy mode)
+  disable_http: false
+  # automatically setup iptables and kernel parameters for transparent proxy (requires elevated privileges)
+  auto: true
+  # dump iptables rules and other system settings generated by auto setting
+  dump_rules: false
+  # list of ports to ignore when proxying traffic (Example: [22,80,443,9092])
+  ignored_ports: []
+  # set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
+  mark: 100
 ```
-
-For more information about ndpspoof options see `gohpts -h` and [https://github.com/shadowy-pycoder/ndpspoof](https://github.com/shadowy-pycoder/ndpspoof)
-
-Plese note that some options like `rdnss`, `gateway`, `interface` are set automatically by `gohpts` itself to properly function as a proxy.
-
-Since `gohpts` proxies all connections via upstream SOCKS5 server, you need to have a working server with IPv4/IPv6 and TCP/UDP support. Obviously, a remote machine (e.g. VPS) should also have IPv6 connectivity working. Needless to say, the machine on which `gohpts` is installed should be part of network with IPv6 support.
-
-Example setup for NDP spoofing to work correctly:
-
-1. Connect to VPS
-
-```shell
-ssh remote@203.0.113.10
-```
-
-2. Install dependencies
-
-```shell
-GO_VERSION=$(curl 'https://go.dev/VERSION?m=text' | head -n1)
-cd ~/Downloads/ && wget https://go.dev/dl/$GO_VERSION.linux-amd64.tar.gz
-sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf $GO_VERSION.linux-amd64.tar.gz
-```
-
-3. Setup SOCKS5 server (make sure firewall rules do not block used ports)
-
-```shell
-git clone https://github.com/wzshiming/socks5.git && cd socks5
-go build -o ./bin/socks5_server ./cmd/socks5/*.go
-./bin/socks5_server -a :3000
-```
-
-4. Go back to your host machine and install `gohpts` (see [Installation](#installation))
-
-5. Run `gohtps`:
-
-```shell
-sudo env PATH=$PATH gohpts -s 203.0.113.10:3000 -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -mark 100 -arpspoof "fullduplex true;debug true" -ndpspoof "ra true;debug true
-" -6 -d
-```
-
-6. Get another device (phone, tablet, etc) and connect it to the same network. Try to access Internet and check if some traffic appears on your host machine. Check public IP address with some online tools (it should match your VPS address `203.0.113.10` in this case or global IPv6 address)
-
-7. Stop proxy by hitting Ctrl+C
-
-8. Profit!
 
 ## Traffic sniffing
 
@@ -692,6 +615,8 @@ sudo env PATH=$PATH gohpts -s 203.0.113.10:3000 -T 8888 -Tu 8889 -M tproxy -snif
 `GoHPTS` proxy allows one to capture and monitor traffic that goes through the service. This procces is known as `traffic sniffing`, `packet sniffing` or just `sniffing`. In particular, proxy tries to identify whether it is a plain text (HTTP) or TLS traffic, and after identification is done, it parses request/response metadata and writes it to the file or console. In the case of `GoHTPS` proxy a parsed metadata looks like the following (TLS Handshake):
 
 ### JSON format
+
+[[Back]](#table-of-contents)
 
 ```json
 [
@@ -814,7 +739,7 @@ And HTTP request with curl:
 Usage as simple as specifying `-sniff` flag along with regular flags
 
 ```shell
-gohpts -d -t 8888 -M redirect -sniff -j
+gohpts -d -T 8888 -M redirect -sniff -j
 ```
 
 You can also specify a file to which write sniffed traffic:
@@ -848,6 +773,138 @@ To disable colors add `-nocolor`:
 ```shell
 gohpts -sniff -body -nocolor
 ```
+
+## IPv6 support
+
+[[Back]](#table-of-contents)
+
+To enable IPv6 handling just add `-6` flag, for example when using with transparent proxy:
+
+```shell
+sudo ./gohpts -T 8888 -M redirect -sniff -body -auto -mark 100 -d -6
+```
+
+For this to work, your ISP and remote socks5 proxy should have active IPv6 support, you can visit [https://test-ipv6.com/](https://test-ipv6.com/) to find out you can access IPv6 addresses.
+To test proxy in IPv6 mode you can use any Linux VM:
+
+1. On your virtual machine:
+
+```shell
+# add your host machine as gateway for VM
+export GATEWAY="<host IPv4 address>"
+ip route add 0.0.0.0/1 via "$GATEWAY"
+ip route add 128.0.0.0/1 via "$GATEWAY"
+
+# add your host machine as gateway IPv6 for VM
+export GATEWAY6="<host IPv6 address>"
+ip -6 route add ::/1 via "$GATEWAY6" dev eth0
+ip -6 route add 8000::/1 via "$GATEWAY6" dev eth0
+```
+
+2. On your host:
+
+```shell
+# run proxy on your host
+sudo ./gohpts -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -d -6
+```
+
+3. Visit any website on your virtual machine and see traffic in proxy logs
+
+## ARP spoofing
+
+[[Back]](#table-of-contents)
+
+`GoHPTS` has in-built ARP spoofer that can be used to make all TCP talking devices of your LAN to use proxy server to connect to the Internet.
+This is achieved by adding `-arpspoof` flag with couple of parameters, separated by semicolon.
+
+Example:
+
+```shell
+ssh remote -D 1080 -Nf
+sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100 -arpspoof "targets 192.168.10.0/24;fullduplex true;debug true"
+```
+
+Proxy will scan for devices in subnet `192.168.10.0/24` and send them ARP packets to pretend to be a gateway, if `fullduplex` is true,
+proxy will send ARP packets to gateway as well to make it believe our proxy has each IP on the subnet.
+
+After proxy is stopped with `Ctrl+C`, it will automatically unspoof all targets.
+
+`GoHPTS` can also be used with tools like [Bettercap](https://github.com/bettercap/bettercap) to proxy ARP spoofed traffic.
+
+Run the proxy:
+
+```shell
+ssh remote -D 1080 -Nf
+sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100
+```
+
+Run `bettercap` with this command (see [documentation](https://www.bettercap.org/)):
+
+```shell
+sudo bettercap -eval "net.probe on;net.recon on;set arp.spoof.fullduplex true;arp.spoof on"
+```
+
+Check proxy logs for traffic from other devices from your LAN
+
+For more information about arpspoof options see `gohpts -h` and [https://github.com/shadowy-pycoder/arpspoof](https://github.com/shadowy-pycoder/arpspoof)
+
+### NDP spoofing
+
+[[Back]](#table-of-contents)
+
+`GoHPTS` has in-built functionality to perform NDP spoofing in IPv6 networks with Router Advertisement (RA) and Neighbor Advertisement (NA) packets. It also includes RDNSS option in RA packets to put host as a IPv6 nameserver for affected clients. When combined with transparent proxy mode (TCP/UDP), NDP spoofing allows `gohpts` to proxy traffic for clients in the local networks. As is the case with [ARP spoofing](#arp-spoofing), you can set ndp spoof options with single `-ndpspoof` flag:
+
+Example:
+
+```shell
+sudo env PATH=$PATH gohpts -d -T 8888 -M tproxy -sniff -body -auto -mark 100 -ndpspoof "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4;fullduplex false;debug true"
+```
+
+For more information about ndpspoof options see `gohpts -h` and [https://github.com/shadowy-pycoder/ndpspoof](https://github.com/shadowy-pycoder/ndpspoof)
+
+Plese note that some options like `rdnss`, `gateway`, `interface` are set automatically by `gohpts` itself to properly function as a proxy.
+
+Since `gohpts` proxies all connections via upstream SOCKS5 server, you need to have a working server with IPv4/IPv6 and TCP/UDP support. Obviously, a remote machine (e.g. VPS) should also have IPv6 connectivity working. Needless to say, the machine on which `gohpts` should be part of network with IPv6 support.
+
+Example setup for NDP spoofing to work correctly:
+
+1. Connect to VPS
+
+```shell
+ssh remote@203.0.113.10
+```
+
+2. Install dependencies
+
+```shell
+GO_VERSION=$(curl 'https://go.dev/VERSION?m=text' | head -n1)
+cd ~/Downloads/ && wget https://go.dev/dl/$GO_VERSION.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf $GO_VERSION.linux-amd64.tar.gz
+```
+
+3. Setup SOCKS5 server (make sure firewall rules do not block used ports)
+
+```shell
+git clone https://github.com/wzshiming/socks5.git && cd socks5
+go build -o ./bin/socks5_server ./cmd/socks5/*.go
+./bin/socks5_server -a :3000
+```
+
+4. Go back to your host machine and install `gohpts` (see [Installation](#installation))
+
+5. Run `gohtps`:
+
+```shell
+
+gohpts -s 203.0.113.10:3000 -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -mark 100 -arpspoof "fullduplex true;debug true" -ndpspoof "ra true;debug true
+" -6 -d
+```
+
+6. Get another device (phone, tablet, etc) and connect it to the same network. Try to access Internet and check if some traffic appears on your host machine. Check public IP address with some online tools (it should match your VPS address `203.0.113.10` in this case or global IPv6 address)
+
+7. Stop proxy by hitting Ctrl+C
+
+8. Profit!
 
 ## Links
 

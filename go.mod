@@ -1,6 +1,6 @@
 module github.com/shadowy-pycoder/go-http-proxy-to-socks
 
-go 1.26.1
+go 1.26.2
 
 require (
 	github.com/goccy/go-yaml v1.18.0

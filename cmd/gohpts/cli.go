@@ -23,6 +23,7 @@ const usagePrefix string = `   _____       _    _ _____ _______ _____
 
 GoHPTS (HTTP(S) Proxy to SOCKS5 proxy) by shadowy-pycoder
 GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
+Codeberg: https://codeberg.org/shadowy-pycoder/go-http-proxy-to-socks
 
 Usage: gohpts [OPTIONS]
 OPTIONS:
@@ -40,7 +41,7 @@ OPTIONS:
   -U        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
   -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
   -i        Bind proxy to specific network interface (either by interface name or index)
-  -f        Path to server configuration file in YAML format (overrides proxy flags above)
+  -f        Path to proxy configuration file in YAML format
   -6        Enable IPv6 support for TCP and UDP
 
   Logs:
@@ -195,11 +196,6 @@ func root(args []string) error {
 				return fmt.Errorf("-dump requires -auto flag")
 			}
 		}
-		if seen["D"] {
-			if seen["u"] || seen["U"] {
-				return fmt.Errorf("-u and -U flags do not work in daemon mode")
-			}
-		}
 		if seen["snifflog"] {
 			if !seen["sniff"] {
 				return fmt.Errorf("-snifflog only works with -sniff flag")
@@ -209,6 +205,11 @@ func root(args []string) error {
 			if !seen["sniff"] {
 				return fmt.Errorf("-body only works with -sniff flag")
 			}
+		}
+	}
+	if seen["D"] {
+		if seen["u"] || seen["U"] {
+			return fmt.Errorf("-u and -U flags do not work in daemon mode")
 		}
 	}
 	if seen["u"] {

@@ -37,10 +37,7 @@ type Config struct {
 	Auto             bool
 	Dump             bool
 	Mark             uint
-	ARPSpoof         string
-	NDPSpoof         string
 	IgnoredPorts     string
-	DNS              DNSLists
 
 	// logging
 	Debug       bool
@@ -53,6 +50,13 @@ type Config struct {
 	Sniff        bool
 	SniffLogFile string
 	Body         bool
+
+	// spoofing
+	ARPSpoof string
+	NDPSpoof string
+
+	// DNS filters
+	DNS DNSLists
 }
 
 type ProxyEntry struct {
@@ -71,6 +75,7 @@ type ProxyChain struct {
 	Length  int    `yaml:"length"`
 }
 type DNSLists struct {
+	Enabled             bool     `yaml:"enabled"`
 	Whitelist           []string `yaml:"whitelist"`
 	Blacklist           []string `yaml:"blacklist"`
 	BlacklistEverything bool     `yaml:"blacklistEverything"`
@@ -175,14 +180,6 @@ func createConfigFromPath(path string) (*Config, error) {
 		}
 	}
 
-	if sconf.Arpspoof.Enabled {
-		conf.ARPSpoof = sconf.Arpspoof.Settings
-	}
-	if sconf.Ndpspoof.Enabled {
-		conf.NDPSpoof = sconf.Ndpspoof.Settings
-	}
-
-	conf.DNS = sconf.DNS
 	conf.Debug = sconf.Logging.Debug
 	conf.JSON = sconf.Logging.JSON
 	conf.LogFilePath = sconf.Logging.Logfile
@@ -193,6 +190,15 @@ func createConfigFromPath(path string) (*Config, error) {
 		conf.Sniff = true
 		conf.SniffLogFile = sconf.Sniffing.Snifflog
 		conf.Body = sconf.Sniffing.Body
+	}
+	if sconf.Arpspoof.Enabled {
+		conf.ARPSpoof = sconf.Arpspoof.Settings
+	}
+	if sconf.Ndpspoof.Enabled {
+		conf.NDPSpoof = sconf.Ndpspoof.Settings
+	}
+	if sconf.DNS.Enabled {
+		conf.DNS = sconf.DNS
 	}
 	return &conf, nil
 }
@@ -340,10 +346,46 @@ func parseConfig(conf *Config) error {
 			conf.SocksProxy[0].Address = addrSOCKS
 		}
 	}
-	if !slices.Contains(SupportedTProxyOS, runtime.GOOS) && (conf.TProxy != "" || conf.TProxyMode != "" || conf.TProxyUDP != "") {
-		conf.TProxy = ""
-		conf.TProxyMode = ""
-		conf.TProxyUDP = ""
+	if !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		if conf.TProxy != "" {
+			return fmt.Errorf("option `TProxy` is available only on linux/android systems")
+		}
+		if conf.TProxyWorkers > 0 {
+			return fmt.Errorf("option `TProxyWorkers` is available only on linux/android systems")
+		}
+		if conf.TProxyMode != "" {
+			return fmt.Errorf("option `TProxyMode` is available only on linux/android systems")
+		}
+		if conf.TProxyUDP != "" {
+			return fmt.Errorf("option `TProxyUDP` is available only on linux/android systems")
+		}
+		if conf.TProxyUDPWorkers > 0 {
+			return fmt.Errorf("option `TProxyUDPWorkers` is available only on linux/android systems")
+		}
+		if conf.Auto {
+			return fmt.Errorf("option `Auto` is available only on linux/android systems")
+		}
+		if conf.Dump {
+			return fmt.Errorf("option `Dump` is available only on linux/android systems")
+		}
+		if conf.Mark > 0 {
+			return fmt.Errorf("option `Mark` is available only on linux/android systems")
+		}
+		if conf.NoHTTP {
+			return fmt.Errorf("option `NoHTTP` is available only on linux/android systems")
+		}
+		if conf.ARPSpoof != "" {
+			return fmt.Errorf("option `ARPSpoof` is available only on linux/android systems")
+		}
+		if conf.NDPSpoof != "" {
+			return fmt.Errorf("option `NDPSpoof` is available only on linux/android systems")
+		}
+		if conf.IgnoredPorts != "" {
+			return fmt.Errorf("option `IgnoredPorts` is available only on linux/android systems")
+		}
+		if conf.DNS.Enabled {
+			return fmt.Errorf("option `DNS` is available only on linux/android systems")
+		}
 	} else if conf.TProxyMode == "" {
 		conf.TProxy = ""
 		conf.TProxyUDP = ""

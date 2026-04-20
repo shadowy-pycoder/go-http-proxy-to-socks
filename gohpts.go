@@ -275,24 +275,17 @@ func New(conf *Config) (*proxyapp, error) {
 
 		// calculate number of server instances
 		p.tproxyWorkers = conf.TProxyWorkers
-		if p.tproxyWorkers > 0 && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-			return nil, fmt.Errorf("setting the number of instances of transparent proxy is available only on linux/android systems")
-		} else if p.tproxyWorkers == 0 && slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		if p.tproxyWorkers == 0 && slices.Contains(SupportedTProxyOS, runtime.GOOS) {
 			p.tproxyWorkers = uint(runtime.NumCPU())
 		}
 		p.tproxyUDPWorkers = conf.TProxyUDPWorkers
-		if p.tproxyUDPWorkers > 0 && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-			return nil, fmt.Errorf("setting the number of instances of udp transparent proxy is available only on linux/android systems")
-		} else if p.tproxyUDPWorkers == 0 && slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		if p.tproxyUDPWorkers == 0 && slices.Contains(SupportedTProxyOS, runtime.GOOS) {
 			p.tproxyUDPWorkers = uint(runtime.NumCPU())
 		}
 
 		// misc stuff
 		p.auto = conf.Auto
 		if p.auto {
-			if !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-				return nil, fmt.Errorf("auto configuration is not available on %s", runtime.GOOS)
-			}
 			if os.Geteuid() != 0 {
 				return nil, fmt.Errorf("auto configuration requires root privileges")
 			}
@@ -300,9 +293,6 @@ func New(conf *Config) (*proxyapp, error) {
 
 		p.dumpRules = conf.Dump
 		if p.dumpRules {
-			if !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-				return nil, fmt.Errorf("dump is available only on linux/android systems")
-			}
 			if !p.auto {
 				return nil, fmt.Errorf("dumping rules is only possible in auto configuration")
 			}
@@ -310,11 +300,6 @@ func New(conf *Config) (*proxyapp, error) {
 		p.dump.WriteString("#!/usr/bin/env bash\n\nset -ex\n")
 
 		p.mark = conf.Mark
-		if p.mark > 0 {
-			if !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-				return nil, fmt.Errorf("option SO_MARK is available only on linux/android systems")
-			}
-		}
 		if p.mark > 0xFFFFFFFF {
 			return nil, fmt.Errorf("option SO_MARK is out of range")
 		}
@@ -476,6 +461,7 @@ func New(conf *Config) (*proxyapp, error) {
 
 	if slices.Contains(SupportedTProxyOS, runtime.GOOS) {
 		// getting default interface
+		// TODO: add support for non linux systems in network module
 		if p.iface == nil {
 			p.iface, err = network.GetDefaultInterface()
 			if err != nil {
@@ -488,64 +474,70 @@ func New(conf *Config) (*proxyapp, error) {
 				}
 			}
 		}
-
-		// configure arp spoofing
-		if conf.ARPSpoof != "" {
-			if !p.auto {
-				p.logger.Warn().Msg("arpspoof setup requires iptables configuration")
-			}
-			asc, err := arpspoof.NewARPSpoofConfig(conf.ARPSpoof, p.logger)
-			if err != nil {
-				return nil, fmt.Errorf("failed creating arp spoofer: %v", err)
-			}
-			asc.Interface = p.iface.Name
-			asc.Gateway = nil
-			p.arpspoofer, err = arpspoof.NewARPSpoofer(asc)
-			if err != nil {
-				return nil, fmt.Errorf("failed creating arp spoofer: %v", err)
-			}
-		}
-
-		// configure ndp spoofing
-		if conf.NDPSpoof != "" {
-			if !p.ipv6enabled {
-				return nil, fmt.Errorf("ndpspoof requires IPv6 enabled")
-			}
-			if !p.auto {
-				p.logger.Warn().Msg("nfpspoof setup requires iptables configuration")
-			}
-			nsc, err := ndpspoof.NewNDPSpoofConfig(conf.NDPSpoof, p.logger)
-			if err != nil {
-				return nil, fmt.Errorf("failed creating ndp spoofer: %v", err)
-			}
-			nsc.Interface = p.iface.Name
-			nsc.Gateway = nil
-			nsc.RDNSS = ""
-			nsc.Auto = false
-			if nsc.RA {
-				hostIP, err := network.GetHostIPv6GlobalUnicastFromRoute()
-				if err != nil {
-					return nil, err
-				}
-				nsc.RDNSS = hostIP.String() // use host ip as DNS server
-				p.raEnabled = true
-				p.hostDNS6 = &net.UDPAddr{IP: net.ParseIP(hostIP.String()), Port: 53}
-			}
-			p.ndpspoofer, err = ndpspoof.NewNDPSpoofer(nsc)
-			if err != nil {
-				return nil, fmt.Errorf("failed creating ndp spoofer: %v", err)
-			}
-		}
-		// configuring DNS
-		if p.arpspoofer != nil {
-			gw := p.arpspoofer.GatewayIP()
-			p.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
-		}
-		if p.ndpspoofer != nil {
-			p.gwDNS6 = p.getResolver()
-		}
-		// TODO: configure DNS filters
 	}
+
+	// configure arp spoofing
+	if conf.ARPSpoof != "" {
+		if p.iface == nil {
+			return nil, fmt.Errorf("failed getting network interface")
+		}
+		if !p.auto {
+			p.logger.Warn().Msg("arpspoof setup requires iptables configuration")
+		}
+		asc, err := arpspoof.NewARPSpoofConfig(conf.ARPSpoof, p.logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed creating arp spoofer: %v", err)
+		}
+		asc.Interface = p.iface.Name
+		asc.Gateway = nil
+		p.arpspoofer, err = arpspoof.NewARPSpoofer(asc)
+		if err != nil {
+			return nil, fmt.Errorf("failed creating arp spoofer: %v", err)
+		}
+	}
+
+	// configure ndp spoofing
+	if conf.NDPSpoof != "" {
+		if p.iface == nil {
+			return nil, fmt.Errorf("failed getting network interface")
+		}
+		if !p.ipv6enabled {
+			return nil, fmt.Errorf("ndpspoof requires IPv6 enabled")
+		}
+		if !p.auto {
+			p.logger.Warn().Msg("nfpspoof setup requires iptables configuration")
+		}
+		nsc, err := ndpspoof.NewNDPSpoofConfig(conf.NDPSpoof, p.logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed creating ndp spoofer: %v", err)
+		}
+		nsc.Interface = p.iface.Name
+		nsc.Gateway = nil
+		nsc.RDNSS = ""
+		nsc.Auto = false
+		if nsc.RA {
+			hostIP, err := network.GetHostIPv6GlobalUnicastFromRoute()
+			if err != nil {
+				return nil, err
+			}
+			nsc.RDNSS = hostIP.String() // use host ip as DNS server
+			p.raEnabled = true
+			p.hostDNS6 = &net.UDPAddr{IP: net.ParseIP(hostIP.String()), Port: 53}
+		}
+		p.ndpspoofer, err = ndpspoof.NewNDPSpoofer(nsc)
+		if err != nil {
+			return nil, fmt.Errorf("failed creating ndp spoofer: %v", err)
+		}
+	}
+	// configuring DNS
+	if p.arpspoofer != nil {
+		gw := p.arpspoofer.GatewayIP()
+		p.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
+	}
+	if p.ndpspoofer != nil {
+		p.gwDNS6 = p.getResolver()
+	}
+	// TODO: configure DNS filters
 
 	// logging which servers are enabled
 	if p.proxychain.Enabled {

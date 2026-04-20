@@ -102,6 +102,7 @@ ndpspoof:
 
 # dns filters require udp transparent proxy and arpspoof/ndpspoof
 dns:
+  enabled: true
   whitelist: []
   blacklist: []
   blacklistEverything: false

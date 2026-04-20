@@ -571,20 +571,23 @@ func New(conf *Config) (*proxyapp, error) {
 		if p.tproxyUDPWorkers != 1 {
 			suffix = "s"
 		}
-		p.logger.Info().Msgf("TPROXY (UDP): %s (%d instanse%s)", p.tproxyAddrUDP, p.tproxyUDPWorkers, suffix)
+		p.logger.Info().Msgf("TPROXY (udp): %s (%d instanse%s)", p.tproxyAddrUDP, p.tproxyUDPWorkers, suffix)
+	}
+
+	if p.tproxyAddrUDP != "" {
+		if p.gwDNS != nil {
+			p.logger.Info().Msgf("DNS (IPv4): %s", p.gwDNS)
+		}
+		if p.gwDNS6 != nil {
+			p.logger.Info().Msgf("DNS (IPv6): %s", p.gwDNS6)
+		}
+		if p.hostDNS6 != nil {
+			p.logger.Info().Msgf("DNS (host): %s", p.hostDNS6)
+		}
 	}
 
 	if p.pprofAddr != "" {
 		p.logger.Info().Msgf("PPROF: %s", p.pprofAddr)
-	}
-	if p.gwDNS != nil {
-		p.logger.Info().Msgf("DNS (IPv4): %s", p.gwDNS)
-	}
-	if p.gwDNS6 != nil {
-		p.logger.Info().Msgf("DNS (IPv6): %s", p.gwDNS6)
-	}
-	if p.hostDNS6 != nil {
-		p.logger.Info().Msgf("DNS (host): %s", p.hostDNS6)
 	}
 	return &p, nil
 }

@@ -63,11 +63,11 @@ func TestNewProxyErr(t *testing.T) {
 				AddrPprof:     "127.0.0.1:6060",
 				Sniff:         true,
 				Body:          true,
-				SniffLogFile:  "/var/log/gphpts_sniff.log",
+				SniffLogFile:  "/var/log/gohpts_sniff.log",
 				ARPSpoof:      "targets 192.168.10.0/24;fullduplex true;debug true;interval 10s",
 				NDPSpoof:      "ra true;debug true;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;interval 10s;mtu 1500;packet HRD F2 DSDS",
 			},
-			errMsg: "failed to open sniff log file: open /var/log/gphpts_sniff.log: permission denied",
+			errMsg: "failed to open sniff log file: open /var/log/gohpts_sniff.log: permission denied",
 		},
 		{
 			name: "malformed pprof address",

@@ -251,6 +251,10 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 	buf := make([]byte, udpBufferSize)
 	oob := make([]byte, 1500)
 	tsu.startingFlag.Store(false)
+	arrow := "→ "
+	if tsu.p.nocolor {
+		arrow = "->"
+	}
 	for {
 		select {
 		case <-tsu.quit:
@@ -276,12 +280,16 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 				if !found {
 					sockDialer, _, err := tsu.p.getSocks()
 					if err != nil {
-						tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed getting SOCKS5 client for %s→ %s", tsu.p.tproxyMode, srcAddr, dstAddr)
+						tsu.p.logger.Error().
+							Err(err).
+							Msgf("[udp %s] Failed getting SOCKS5 client for %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
 						continue
 					}
 					conn, err = newUDPConn(srcAddr, dstAddr, sockDialer, tsu.p.udp)
 					if err != nil {
-						tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed creating UDP connection for %s→ %s", tsu.p.tproxyMode, srcAddr, dstAddr)
+						tsu.p.logger.Error().
+							Err(err).
+							Msgf("[udp %s] Failed creating UDP connection for %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
 						continue
 					}
 					tsu.clients.Add(conn)
@@ -289,8 +297,9 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 						tsu.handleConnection(conn)
 					}()
 				}
-				srcConnStr := fmt.Sprintf("%s→ %s", srcAddr, dstAddr)
-				dstConnStr := fmt.Sprintf("%s→ %s→ %s", tsu.conn.LocalAddr(), conn.LocalAddr(), dstAddr)
+
+				srcConnStr := fmt.Sprintf("%s%s%s", srcAddr, arrow, dstAddr)
+				dstConnStr := fmt.Sprintf("%s%s%s%s%s", tsu.conn.LocalAddr(), arrow, conn.LocalAddr(), arrow, dstAddr)
 				tsu.p.logger.Debug().Msgf("[udp %s] src: %s - dst: %s", tsu.p.tproxyMode, srcConnStr, dstConnStr)
 				err = conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 				if err != nil {
@@ -343,7 +352,7 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 					if errors.Is(err, net.ErrClosed) {
 						continue
 					}
-					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed sending message %s→ %s", tsu.p.tproxyMode, srcAddr, dstAddr)
+					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
 					continue
 				}
 				conn.written.Add(uint64(nw))
@@ -372,9 +381,13 @@ func (tsu *tproxyServerUDP) handleConnection(conn *udpConn) {
 	}
 	tsu.wg.Add(1)
 	buf := make([]byte, udpBufferSize)
+	arrow := "→ "
+	if tsu.p.nocolor {
+		arrow = "->"
+	}
 	defer func() {
-		srcConnStr := fmt.Sprintf("%s→ %s", conn.srcAddr, conn.dstAddr)
-		dstConnStr := fmt.Sprintf("%s→ %s→ %s", tsu.conn.LocalAddr(), conn.LocalAddr(), conn.dstAddr)
+		srcConnStr := fmt.Sprintf("%s%s%s", conn.srcAddr, arrow, conn.dstAddr)
+		dstConnStr := fmt.Sprintf("%s%s%s%s%s", tsu.conn.LocalAddr(), arrow, conn.LocalAddr(), arrow, conn.dstAddr)
 		tsu.p.logger.Debug().Msgf("Copied %s for udp src: %s - dst: %s", network.PrettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
 		tsu.wg.Done()
 	}()
@@ -389,14 +402,14 @@ readLoop:
 				if errors.Is(er, net.ErrClosed) {
 					return
 				}
-				tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting read deadline %s→ %s", tsu.p.tproxyMode, conn.LocalAddr(), tsu.conn.LocalAddr())
+				tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting read deadline %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, tsu.conn.LocalAddr())
 				break readLoop
 			}
 			nr, er := conn.Read(buf)
 			if nr > 0 {
 				er := tsu.conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 				if er != nil {
-					tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting write deadline %s→ %s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), conn.srcAddr)
+					tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting write deadline %s%s%s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), arrow, conn.srcAddr)
 					break readLoop
 				}
 				if tsu.p.sniff {
@@ -421,7 +434,7 @@ readLoop:
 					}
 				}
 				if nr != nw {
-					tsu.p.logger.Debug().Err(io.ErrShortWrite).Msgf("[udp %s] Failed sending message %s→ %s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), conn.srcAddr)
+					tsu.p.logger.Debug().Err(io.ErrShortWrite).Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), arrow, conn.srcAddr)
 					break readLoop
 				}
 			}
@@ -485,6 +498,10 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 	}
 	tsu.wg.Add(1)
 	buf := make([]byte, udpBufferSize)
+	arrow := "→ "
+	if tsu.p.nocolor {
+		arrow = "->"
+	}
 	for {
 		select {
 		case <-tsu.quit:
@@ -502,11 +519,11 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 			if n > 0 {
 				conn, err := newDNSConn(srcAddr, gwDNS, tsu.p.mark, tsu.p.udp)
 				if err != nil {
-					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed creating UDP connection %s→ %s", tsu.p.tproxyMode, srcAddr, gwDNS)
+					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed creating UDP connection %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, gwDNS)
 					continue
 				}
-				srcConnStr := fmt.Sprintf("%s→ %s", srcAddr, gwConn.LocalAddr())
-				dstConnStr := fmt.Sprintf("%s→ %s", conn.LocalAddr(), conn.dstAddr)
+				srcConnStr := fmt.Sprintf("%s%s%s", srcAddr, arrow, gwConn.LocalAddr())
+				dstConnStr := fmt.Sprintf("%s%s%s", conn.LocalAddr(), arrow, conn.dstAddr)
 				tsu.p.logger.Debug().Msgf("[udp %s] src: %s - dst: %s", tsu.p.tproxyMode, srcConnStr, dstConnStr)
 				err = conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 				if err != nil {
@@ -562,7 +579,9 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 					if errors.Is(err, net.ErrClosed) {
 						continue
 					}
-					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed sending message %s→ %s", tsu.p.tproxyMode, conn.LocalAddr(), conn.dstAddr)
+					tsu.p.logger.Error().
+						Err(err).
+						Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.dstAddr)
 					continue
 				}
 				conn.written.Add(uint64(nw))
@@ -590,9 +609,13 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn, gwConn *net.UDPCo
 		return
 	}
 	tsu.wg.Add(1)
+	arrow := "→ "
+	if tsu.p.nocolor {
+		arrow = "->"
+	}
 	defer func() {
-		srcConnStr := fmt.Sprintf("%s→ %s", conn.srcAddr, gwConn.LocalAddr())
-		dstConnStr := fmt.Sprintf("%s→ %s", conn.LocalAddr(), conn.dstAddr)
+		srcConnStr := fmt.Sprintf("%s%s%s", conn.srcAddr, arrow, gwConn.LocalAddr())
+		dstConnStr := fmt.Sprintf("%s%s%s", conn.LocalAddr(), arrow, conn.dstAddr)
 		tsu.p.logger.Debug().Msgf("Copied %s for udp src: %s - dst: %s", network.PrettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
 		conn.close()
 		tsu.wg.Done()
@@ -603,7 +626,7 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn, gwConn *net.UDPCo
 		if errors.Is(er, net.ErrClosed) {
 			return
 		}
-		tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting read deadline %s→ %s", tsu.p.tproxyMode, conn.dstAddr, conn.LocalAddr())
+		tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting read deadline %s%s%s", tsu.p.tproxyMode, conn.dstAddr, arrow, conn.LocalAddr())
 		return
 	}
 	nr, er := conn.Read(buf)
@@ -613,7 +636,9 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn, gwConn *net.UDPCo
 			if errors.Is(er, net.ErrClosed) {
 				return
 			}
-			tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting write deadline %s→ %s", tsu.p.tproxyMode, conn.LocalAddr(), conn.srcAddr)
+			tsu.p.logger.Debug().
+				Err(er).
+				Msgf("[udp %s] Failed setting write deadline %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 			return
 		}
 		if tsu.p.sniff {
@@ -643,7 +668,7 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn, gwConn *net.UDPCo
 		if nr != nw {
 			tsu.p.logger.Debug().
 				Err(io.ErrShortWrite).
-				Msgf("[udp %s] Failed sending message %s→ %s", tsu.p.tproxyMode, conn.LocalAddr(), conn.srcAddr)
+				Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 			return
 		}
 	}

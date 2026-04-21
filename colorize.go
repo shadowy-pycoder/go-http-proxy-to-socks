@@ -118,7 +118,7 @@ func colorizeHTTP(
 		if req.ContentLength > 0 {
 			fmt.Fprintf(&sb, " Len: %d", req.ContentLength)
 		}
-		sb.WriteString(" →  ")
+		sb.WriteString(" -> ")
 		fmt.Fprintf(&sb, "%s %s ", resp.Proto, resp.Status)
 		if resp.ContentLength > 0 {
 			fmt.Fprintf(&sb, "Len: %d", resp.ContentLength)
@@ -201,7 +201,7 @@ func colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id str
 		if req.ALPN != nil {
 			fmt.Fprintf(&sb, " ALPN: %v", req.ALPN)
 		}
-		sb.WriteString(" →  ")
+		sb.WriteString(" -> ")
 		sb.WriteString("\n")
 		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
@@ -445,7 +445,7 @@ func colorizeConnections(srcRemote, srcLocal, dstRemote, dstLocal net.Addr, id s
 	if nocolor {
 		sb.WriteString(id)
 		fmt.Fprintf(&sb,
-			" Src: %s→ %s →  Dst: %s→ %s",
+			" Src: %s->%s -> Dst: %s->%s",
 			srcRemote,
 			srcLocal,
 			dstLocal,
@@ -480,7 +480,7 @@ func colorizeConnectionsTransparent(
 	var sb strings.Builder
 	if nocolor {
 		sb.WriteString(id)
-		fmt.Fprintf(&sb, " Src: %s→ %s →  Dst: %s→ %s Orig Dst: %s",
+		fmt.Fprintf(&sb, " Src: %s->%s -> Dst: %s->%s Orig Dst: %s",
 			srcRemote,
 			srcLocal,
 			dstLocal,

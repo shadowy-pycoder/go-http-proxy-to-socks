@@ -515,6 +515,7 @@ func New(conf *Config) (*proxyapp, error) {
 		nsc.Gateway = nil
 		nsc.RDNSS = ""
 		nsc.Auto = false
+		nsc.NoColor = p.nocolor
 		if nsc.RA {
 			hostIP, err := network.GetHostIPv6GlobalUnicastFromRoute()
 			if err != nil {
@@ -1058,8 +1059,12 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	defer srcConn.Close()
 
-	dstConnStr := fmt.Sprintf("%s→ %s→ %s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), r.Host)
-	srcConnStr := fmt.Sprintf("%s→ %s", srcConn.RemoteAddr().String(), srcConn.LocalAddr().String())
+	arrow := "→ "
+	if p.nocolor {
+		arrow = "->"
+	}
+	dstConnStr := fmt.Sprintf("%s%s%s%s%s", dstConn.LocalAddr().String(), arrow, dstConn.RemoteAddr().String(), arrow, r.Host)
+	srcConnStr := fmt.Sprintf("%s%s%s", srcConn.RemoteAddr().String(), arrow, srcConn.LocalAddr().String())
 
 	p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
 	p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
@@ -1094,7 +1099,12 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 
 func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
 	var sb strings.Builder
-	sb.WriteString("client →  ")
+	arrow := " →  "
+	if p.nocolor {
+		arrow = " -> "
+	}
+	sb.WriteString("client")
+	sb.WriteString(arrow)
 	if p.httpServerAddr != "" {
 		if p.certFile != "" && p.keyFile != "" {
 			fmt.Fprintf(&sb, "%s (https)", p.httpServerAddr)
@@ -1111,7 +1121,7 @@ func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
 			sb.WriteString(p.tproxyAddrUDP)
 			fmt.Fprintf(&sb, " (udp/%s)", p.tproxyMode)
 		}
-		sb.WriteString(" →  ")
+		sb.WriteString(arrow)
 	} else if p.tproxyAddr != "" || p.tproxyAddrUDP != "" {
 		if p.tproxyAddr != "" && p.tproxyAddrUDP != "" {
 			sb.WriteString(p.tproxyAddr)
@@ -1126,11 +1136,11 @@ func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
 			sb.WriteString(p.tproxyAddrUDP)
 			fmt.Fprintf(&sb, " (udp/%s)", p.tproxyMode)
 		}
-		sb.WriteString(" →  ")
+		sb.WriteString(arrow)
 	}
 	for _, pe := range pc {
 		sb.WriteString(pe.String())
-		sb.WriteString(" →  ")
+		sb.WriteString(arrow)
 	}
 	sb.WriteString("target")
 	return sb.String()

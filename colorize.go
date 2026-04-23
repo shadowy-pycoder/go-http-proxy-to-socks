@@ -357,6 +357,7 @@ func highlightPatterns(line string, nocolor bool) (string, bool) {
 	matched := false
 
 	// TODO: make this configurable
+	// TODO: write cred matches to separate file
 	// line, matched = replace(line, ipPortPattern, colors.YellowBg, matched, nocolor)
 	// line, matched = replace(line, domainPattern, colors.YellowBg, matched, nocolor)
 	line, matched = replace(line, jwtPattern, colors.Magenta, matched, nocolor)

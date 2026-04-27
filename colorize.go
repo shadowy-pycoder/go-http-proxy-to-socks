@@ -287,7 +287,7 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 	fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 	sb.WriteString(id)
 	if nocolor {
-		fmt.Fprintf(&sb, " DNS %s (%s) %#04x ", req.Flags.OPCodeDesc, req.Flags.QRDesc, req.TransactionID)
+		fmt.Fprintf(&sb, " DNS %s (%s) %#04x ", req.Flags.OPCode.Desc, req.Flags.QR.Desc, req.TransactionID)
 		for _, rec := range req.Questions {
 			fmt.Fprintf(&sb, "%s %s ", rec.Type.Name, rec.Name)
 		}
@@ -303,7 +303,7 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 		sb.WriteString("\n")
 		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
-		fmt.Fprintf(&sb, " DNS %s (%s) %#04x ", resp.Flags.OPCodeDesc, resp.Flags.QRDesc, resp.TransactionID)
+		fmt.Fprintf(&sb, " DNS %s (%s) %#04x ", resp.Flags.OPCode.Desc, resp.Flags.QR.Desc, resp.TransactionID)
 		for _, rec := range resp.Questions {
 			fmt.Fprintf(&sb, "%s %s ", rec.Type.Name, rec.Name)
 		}
@@ -317,7 +317,7 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 			sb.WriteString(rec.Summary())
 		}
 	} else {
-		sb.WriteString(colors.Gray(fmt.Sprintf(" DNS %s (%s)", req.Flags.OPCodeDesc, req.Flags.QRDesc)).Bold())
+		sb.WriteString(colors.Gray(fmt.Sprintf(" DNS %s (%s)", req.Flags.OPCode.Desc, req.Flags.QR.Desc)).Bold())
 		sb.WriteString(colors.Beige(fmt.Sprintf(" %#04x ", req.TransactionID)).String())
 		for _, rec := range req.Questions {
 			fmt.Fprintf(&sb, "%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rec.Name))
@@ -334,7 +334,7 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 		sb.WriteString("\033[K\n")
 		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
-		sb.WriteString(colors.Blue(fmt.Sprintf(" DNS %s (%s)", resp.Flags.OPCodeDesc, resp.Flags.QRDesc)).Bold())
+		sb.WriteString(colors.Blue(fmt.Sprintf(" DNS %s (%s)", resp.Flags.OPCode.Desc, resp.Flags.QR.Desc)).Bold())
 		sb.WriteString(colors.Beige(fmt.Sprintf(" %#04x ", resp.TransactionID)).String())
 		for _, rec := range resp.Questions {
 			fmt.Fprintf(&sb, "%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rec.Name))

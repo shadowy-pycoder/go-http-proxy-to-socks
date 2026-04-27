@@ -261,12 +261,12 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 			tsu.wg.Done()
 			return
 		default:
-			err := tsu.conn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
-			if err != nil {
-				if errors.Is(err, net.ErrClosed) {
+			erd := tsu.conn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
+			if erd != nil {
+				if errors.Is(erd, net.ErrClosed) {
 					continue
 				}
-				tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed setting read deadline", tsu.p.tproxyMode)
+				tsu.p.logger.Error().Err(erd).Msgf("[udp %s] Failed setting read deadline", tsu.p.tproxyMode)
 				continue
 			}
 			n, oobn, _, srcAddr, er := tsu.conn.ReadMsgUDP(buf, oob)
@@ -276,93 +276,192 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed getting original destination", tsu.p.tproxyMode)
 					continue
 				}
-				conn, found := tsu.clients.Get(srcAddr, dstAddr)
-				if !found {
-					sockDialer, _, err := tsu.p.getSocks()
-					if err != nil {
-						tsu.p.logger.Error().
-							Err(err).
-							Msgf("[udp %s] Failed getting SOCKS5 client for %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
-						continue
-					}
-					conn, err = newUDPConn(srcAddr, dstAddr, sockDialer, tsu.p.udp)
+				if dstAddr.Port == 53 {
+					conn, err := newDNSDirectConn(srcAddr, dstAddr, tsu.p.mark, tsu.p.udp)
 					if err != nil {
 						tsu.p.logger.Error().
 							Err(err).
 							Msgf("[udp %s] Failed creating UDP connection for %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
 						continue
 					}
-					tsu.clients.Add(conn)
-					go func() {
-						tsu.handleConnection(conn)
-					}()
-				}
-
-				srcConnStr := fmt.Sprintf("%s%s%s", srcAddr, arrow, dstAddr)
-				dstConnStr := fmt.Sprintf("%s%s%s%s%s", tsu.conn.LocalAddr(), arrow, conn.LocalAddr(), arrow, dstAddr)
-				tsu.p.logger.Debug().Msgf("[udp %s] src: %s - dst: %s", tsu.p.tproxyMode, srcConnStr, dstConnStr)
-				err = conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
-				if err != nil {
-					if errors.Is(err, net.ErrClosed) {
-						continue
-					}
-					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
-					continue
-				}
-				if tsu.p.sniff {
-					if next := layers.ParseNextLayer(buf[:n], conn.SrcPort(), conn.DstPort()); next != nil {
-						if tsu.closingFlag.Load() {
+					srcConnStr := fmt.Sprintf("%s%s%s", conn.srcAddr, arrow, conn.dstAddr)
+					dstConnStr := fmt.Sprintf("%s%s%s", conn.LocalAddr(), arrow, conn.dstAddr)
+					tsu.p.logger.Debug().Msgf("[udp %s] src: %s - dst: %s", tsu.p.tproxyMode, srcConnStr, dstConnStr)
+					ewd := conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
+					if ewd != nil {
+						if errors.Is(ewd, net.ErrClosed) {
 							continue
 						}
-						tsu.wg.Add(1)
-						sniffheader := make([]string, 0, 3)
-						id := getID(tsu.p.nocolor)
-						if tsu.p.json {
-							sniffheader = append(
-								sniffheader,
-								fmt.Sprintf(
-									"{\"connection\":{\"tproxy_mode\":%q,\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%s}}",
-									tsu.p.tproxyMode,
+						tsu.p.logger.Error().Err(ewd).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
+						continue
+					}
+					if tsu.p.sniff {
+						var replyDNS *layers.DNSMessage
+						dns := &layers.DNSMessage{}
+						if err := dns.Parse(buf[:n]); err == nil {
+							if tsu.closingFlag.Load() {
+								continue
+							}
+							fmt.Println(dns)
+							flags := layers.NewDNSFlags(
+								layers.QRFlagReply,
+								layers.OpCodeQuery,
+								false,
+								false,
+								dns.Flags.RD != 0,
+								true,
+								false,
+								false,
+								dns.Flags.NA != 0,
+								layers.RCodeNameError,
+							)
+							replyDNS, err = layers.NewDNSMessage(dns.TransactionID, flags, dns.Questions, nil, nil, nil)
+							if err != nil {
+								tsu.p.logger.Error().Err(err)
+								continue
+							}
+							err := conn.replyToClient(replyDNS.ToBytes())
+							if err != nil {
+								tsu.p.logger.Error().Err(err)
+								continue
+							}
+							continue
+							tsu.wg.Add(1)
+							sniffheader := make([]string, 0, 3)
+							id := getID(tsu.p.nocolor)
+							if tsu.p.json {
+								sniffheader = append(
+									sniffheader,
+									fmt.Sprintf(
+										"{\"connection\":{\"tproxy_mode\":%q,\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%q}}",
+										tsu.p.tproxyMode,
+										srcAddr,
+										conn.dstAddr,
+										conn.LocalAddr(),
+										conn.dstAddr,
+										conn.dstAddr.String(),
+									),
+								)
+							} else {
+								connections := colorizeConnectionsTransparent(
+									srcAddr,
+									conn.dstAddr,
+									conn.LocalAddr(),
+									conn.dstAddr,
+									conn.dstAddr.String(),
+									id, tsu.p.nocolor)
+								sniffheader = append(sniffheader, connections)
+							}
+							go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
+							conn.reqChan <- dns
+						}
+					}
+					_, err = conn.Write(buf[:n])
+					if err != nil {
+						if ne, ok := err.(net.Error); ok && ne.Timeout() {
+							continue
+						}
+						if errors.Is(err, net.ErrClosed) {
+							continue
+						}
+						tsu.p.logger.Error().
+							Err(err).
+							Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.dstAddr)
+						continue
+					}
+					go func() {
+						tsu.handleDNSDirectConnection(conn)
+					}()
+				} else {
+					conn, found := tsu.clients.Get(srcAddr, dstAddr)
+					if !found {
+						sockDialer, _, err := tsu.p.getSocks()
+						if err != nil {
+							tsu.p.logger.Error().
+								Err(err).
+								Msgf("[udp %s] Failed getting SOCKS5 client for %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
+							continue
+						}
+						conn, err = newUDPConn(srcAddr, dstAddr, sockDialer, tsu.p.udp)
+						if err != nil {
+							tsu.p.logger.Error().
+								Err(err).
+								Msgf("[udp %s] Failed creating UDP connection for %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
+							continue
+						}
+						tsu.clients.Add(conn)
+						go func() {
+							tsu.handleConnection(conn)
+						}()
+					}
+
+					srcConnStr := fmt.Sprintf("%s%s%s", srcAddr, arrow, dstAddr)
+					dstConnStr := fmt.Sprintf("%s%s%s%s%s", tsu.conn.LocalAddr(), arrow, conn.LocalAddr(), arrow, dstAddr)
+					tsu.p.logger.Debug().Msgf("[udp %s] src: %s - dst: %s", tsu.p.tproxyMode, srcConnStr, dstConnStr)
+					ewd := conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
+					if ewd != nil {
+						if errors.Is(ewd, net.ErrClosed) {
+							continue
+						}
+						tsu.p.logger.Error().Err(ewd).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
+						continue
+					}
+					if tsu.p.sniff {
+						if next := layers.ParseNextLayer(buf[:n], conn.SrcPort(), conn.DstPort()); next != nil {
+							if tsu.closingFlag.Load() {
+								continue
+							}
+							fmt.Println(next)
+							tsu.wg.Add(1)
+							sniffheader := make([]string, 0, 3)
+							id := getID(tsu.p.nocolor)
+							if tsu.p.json {
+								sniffheader = append(
+									sniffheader,
+									fmt.Sprintf(
+										"{\"connection\":{\"tproxy_mode\":%q,\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%s}}",
+										tsu.p.tproxyMode,
+										srcAddr,
+										conn.dstAddr,
+										tsu.conn.LocalAddr(),
+										conn.LocalAddr(),
+										conn.dstAddr,
+									),
+								)
+							} else {
+								connections := colorizeConnectionsTransparent(
 									srcAddr,
 									conn.dstAddr,
 									tsu.conn.LocalAddr(),
 									conn.LocalAddr(),
-									conn.dstAddr,
-								),
-							)
-						} else {
-							connections := colorizeConnectionsTransparent(
-								srcAddr,
-								conn.dstAddr,
-								tsu.conn.LocalAddr(),
-								conn.LocalAddr(),
-								conn.dstAddr.String(),
-								id, tsu.p.nocolor)
-							sniffheader = append(sniffheader, connections)
+									conn.dstAddr.String(),
+									id, tsu.p.nocolor)
+								sniffheader = append(sniffheader, connections)
+							}
+							go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
+							conn.reqChan <- next
 						}
-						go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
-						conn.reqChan <- next
 					}
-				}
-				nw, err := conn.WriteToUDP(buf[:n], dstAddr)
-				if err != nil {
-					if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					nw, err := conn.WriteToUDP(buf[:n], dstAddr)
+					if err != nil {
+						if ne, ok := err.(net.Error); ok && ne.Timeout() {
+							continue
+						}
+						if errors.Is(err, net.ErrClosed) {
+							continue
+						}
+						tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
 						continue
 					}
-					if errors.Is(err, net.ErrClosed) {
-						continue
-					}
-					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
-					continue
+					conn.written.Add(uint64(nw))
+					tsu.clients.UpdateLastSeen(conn)
 				}
-				conn.written.Add(uint64(nw))
-				tsu.clients.UpdateLastSeen(conn)
 			}
 			if er != nil {
 				if ne, ok := er.(net.Error); ok && ne.Timeout() {
 					continue
 				}
-				if errors.Is(err, net.ErrClosed) {
+				if errors.Is(er, net.ErrClosed) {
 					continue
 				}
 				if errors.Is(er, io.EOF) {
@@ -397,19 +496,19 @@ readLoop:
 		case <-tsu.quit:
 			return
 		default:
-			er := conn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
-			if er != nil {
-				if errors.Is(er, net.ErrClosed) {
+			erd := conn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
+			if erd != nil {
+				if errors.Is(erd, net.ErrClosed) {
 					return
 				}
-				tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting read deadline %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, tsu.conn.LocalAddr())
+				tsu.p.logger.Debug().Err(erd).Msgf("[udp %s] Failed setting read deadline %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, tsu.conn.LocalAddr())
 				break readLoop
 			}
 			nr, er := conn.Read(buf)
 			if nr > 0 {
-				er := tsu.conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
-				if er != nil {
-					tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting write deadline %s%s%s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), arrow, conn.srcAddr)
+				ewd := tsu.conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
+				if ewd != nil {
+					tsu.p.logger.Debug().Err(ewd).Msgf("[udp %s] Failed setting write deadline %s%s%s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), arrow, conn.srcAddr)
 					break readLoop
 				}
 				if tsu.p.sniff {
@@ -507,12 +606,12 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 		case <-tsu.quit:
 			return
 		default:
-			err := gwConn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
-			if err != nil {
-				if errors.Is(err, net.ErrClosed) {
+			erd := gwConn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
+			if erd != nil {
+				if errors.Is(erd, net.ErrClosed) {
 					continue
 				}
-				tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed setting read deadline", tsu.p.tproxyMode)
+				tsu.p.logger.Error().Err(erd).Msgf("[udp %s] Failed setting read deadline", tsu.p.tproxyMode)
 				continue
 			}
 			n, srcAddr, er := gwConn.ReadFromUDP(buf)
@@ -525,20 +624,45 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 				srcConnStr := fmt.Sprintf("%s%s%s", srcAddr, arrow, gwConn.LocalAddr())
 				dstConnStr := fmt.Sprintf("%s%s%s", conn.LocalAddr(), arrow, conn.dstAddr)
 				tsu.p.logger.Debug().Msgf("[udp %s] src: %s - dst: %s", tsu.p.tproxyMode, srcConnStr, dstConnStr)
-				err = conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
-				if err != nil {
-					if errors.Is(err, net.ErrClosed) {
+				ewd := conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
+				if ewd != nil {
+					if errors.Is(ewd, net.ErrClosed) {
 						continue
 					}
-					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
+					tsu.p.logger.Error().Err(ewd).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
 					continue
 				}
+				var replyDNS *layers.DNSMessage
 				if tsu.p.sniff {
 					dns := &layers.DNSMessage{}
 					if err := dns.Parse(buf[:n]); err == nil {
 						if tsu.closingFlag.Load() {
 							continue
 						}
+						fmt.Println(dns)
+						flags := layers.NewDNSFlags(
+							layers.QRFlagReply,
+							layers.OpCodeQuery,
+							false,
+							false,
+							dns.Flags.RD != 0,
+							true,
+							false,
+							false,
+							dns.Flags.NA != 0,
+							layers.RCodeNameError,
+						)
+						replyDNS, err = layers.NewDNSMessage(dns.TransactionID, flags, dns.Questions, nil, nil, nil)
+						if err != nil {
+							tsu.p.logger.Error().Err(err)
+							continue
+						}
+						_, err := gwConn.WriteToUDP(replyDNS.ToBytes(), conn.srcAddr)
+						if err != nil {
+							tsu.p.logger.Error().Err(err)
+							continue
+						}
+						continue
 						tsu.wg.Add(1)
 						sniffheader := make([]string, 0, 3)
 						id := getID(tsu.p.nocolor)
@@ -591,7 +715,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 				if ne, ok := er.(net.Error); ok && ne.Timeout() {
 					continue
 				}
-				if errors.Is(err, net.ErrClosed) {
+				if errors.Is(er, net.ErrClosed) {
 					continue
 				}
 				if errors.Is(er, io.EOF) {
@@ -621,23 +745,23 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn, gwConn *net.UDPCo
 		tsu.wg.Done()
 	}()
 	buf := make([]byte, udpBufferSize)
-	er := conn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
-	if er != nil {
-		if errors.Is(er, net.ErrClosed) {
+	erd := conn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
+	if erd != nil {
+		if errors.Is(erd, net.ErrClosed) {
 			return
 		}
-		tsu.p.logger.Debug().Err(er).Msgf("[udp %s] Failed setting read deadline %s%s%s", tsu.p.tproxyMode, conn.dstAddr, arrow, conn.LocalAddr())
+		tsu.p.logger.Debug().Err(erd).Msgf("[udp %s] Failed setting read deadline %s%s%s", tsu.p.tproxyMode, conn.dstAddr, arrow, conn.LocalAddr())
 		return
 	}
 	nr, er := conn.Read(buf)
 	if nr > 0 {
-		er := gwConn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
+		ewd := gwConn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 		if er != nil {
-			if errors.Is(er, net.ErrClosed) {
+			if errors.Is(ewd, net.ErrClosed) {
 				return
 			}
 			tsu.p.logger.Debug().
-				Err(er).
+				Err(ewd).
 				Msgf("[udp %s] Failed setting write deadline %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 			return
 		}
@@ -673,6 +797,173 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn, gwConn *net.UDPCo
 		}
 	}
 	if er != nil {
+		return
+	}
+}
+
+type dnsDirectConn struct {
+	*net.UDPConn
+	srcAddr  *net.UDPAddr
+	dstAddr  *net.UDPAddr
+	written  atomic.Uint64
+	reqChan  chan layers.Layer
+	respChan chan layers.Layer
+}
+
+func (ddc *dnsDirectConn) close() error {
+	close(ddc.reqChan)
+	close(ddc.respChan)
+	return ddc.Close()
+}
+
+func (ddc *dnsDirectConn) replyToClient(data []byte) error {
+	if ddc.dstAddr.IP.To4() != nil {
+		return replyToClient4(ddc.srcAddr, ddc.dstAddr, data)
+	}
+	return replyToClient6(ddc.srcAddr, ddc.dstAddr, data)
+}
+
+func replyToClient4(clientAddr, originalDst *net.UDPAddr, data []byte) error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+
+	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_TRANSPARENT, 1); err != nil {
+		return err
+	}
+
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
+		return err
+	}
+	bindAddr := &unix.SockaddrInet4{
+		Port: originalDst.Port,
+	}
+	copy(bindAddr.Addr[:], originalDst.IP.To4())
+	if err := unix.Bind(fd, bindAddr); err != nil {
+		return err
+	}
+	srcAddr := &unix.SockaddrInet4{
+		Port: clientAddr.Port,
+	}
+	copy(srcAddr.Addr[:], clientAddr.IP.To4())
+	if err := unix.Sendto(fd, data, 0, srcAddr); err != nil {
+		return err
+	}
+	return nil
+}
+
+func replyToClient6(clientAddr, originalDst *net.UDPAddr, data []byte) error {
+	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+
+	if err := unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_TRANSPARENT, 1); err != nil {
+		return err
+	}
+
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
+		return err
+	}
+	bindAddr := &unix.SockaddrInet6{
+		Port: originalDst.Port,
+	}
+	copy(bindAddr.Addr[:], originalDst.IP.To16())
+	if err := unix.Bind(fd, bindAddr); err != nil {
+		return err
+	}
+	srcAddr := &unix.SockaddrInet6{
+		Port: clientAddr.Port,
+	}
+	copy(srcAddr.Addr[:], clientAddr.IP.To16())
+	if err := unix.Sendto(fd, data, 0, srcAddr); err != nil {
+		return err
+	}
+	return nil
+}
+
+func newDNSDirectConn(srcAddr, dstAddr *net.UDPAddr, mark uint, network string) (*dnsDirectConn, error) {
+	dialer := getBaseDialer(timeout, mark)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	conn, err := dialer.DialContext(ctx, network, dstAddr.String())
+	if err != nil {
+		return nil, err
+	}
+	udpConn, ok := conn.(*net.UDPConn)
+	if !ok {
+		return nil, fmt.Errorf("failed obtaining dns connection")
+	}
+	return &dnsDirectConn{
+		UDPConn:  udpConn,
+		srcAddr:  srcAddr,
+		dstAddr:  dstAddr,
+		reqChan:  make(chan layers.Layer),
+		respChan: make(chan layers.Layer),
+	}, nil
+}
+
+func (tsu *tproxyServerUDP) handleDNSDirectConnection(conn *dnsDirectConn) {
+	if tsu.closingFlag.Load() {
+		return
+	}
+	tsu.wg.Add(1)
+	arrow := "→ "
+	if tsu.p.nocolor {
+		arrow = "->"
+	}
+	defer func() {
+		srcConnStr := fmt.Sprintf("%s%s%s", conn.srcAddr, arrow, conn.dstAddr)
+		dstConnStr := fmt.Sprintf("%s%s%s", conn.LocalAddr(), arrow, conn.dstAddr)
+		tsu.p.logger.Debug().Msgf("Copied %s for udp src: %s - dst: %s", network.PrettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
+		conn.close()
+		tsu.wg.Done()
+	}()
+	buf := make([]byte, udpBufferSize)
+	erd := conn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
+	if erd != nil {
+		if errors.Is(erd, net.ErrClosed) {
+			return
+		}
+		tsu.p.logger.Debug().Err(erd).Msgf("[udp %s] Failed setting read deadline %s%s%s", tsu.p.tproxyMode, conn.dstAddr, arrow, conn.LocalAddr())
+		return
+	}
+	nr, er := conn.Read(buf)
+	if nr > 0 {
+		ewd := conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
+		if ewd != nil {
+			if errors.Is(ewd, net.ErrClosed) {
+				return
+			}
+			tsu.p.logger.Debug().
+				Err(ewd).
+				Msgf("[udp %s] Failed setting write deadline %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+			return
+		}
+		if tsu.p.sniff {
+			dns := &layers.DNSMessage{}
+			if err := dns.Parse(buf[:nr]); err == nil {
+				conn.respChan <- dns
+			} else {
+				tsu.p.logger.Debug().Err(err).Msgf("%v", buf[:nr])
+			}
+		}
+		err := conn.replyToClient(buf[:nr])
+		if err != nil {
+			tsu.p.logger.Debug().
+				Err(io.ErrShortWrite).
+				Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+			return
+		}
+		conn.written.Add(uint64(nr)) // NOTE: do not have access to written bytes
+	}
+	if er != nil {
+		tsu.p.logger.Debug().
+			Err(er).
+			Msgf("[udp %s] Failed reading message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 		return
 	}
 }

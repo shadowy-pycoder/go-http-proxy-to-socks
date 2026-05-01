@@ -55,8 +55,8 @@ type Config struct {
 	ARPSpoof string
 	NDPSpoof string
 
-	// DNS filters
-	DNS DNSLists
+	// DNSFilter filters
+	DNSFilter DNSFilterLists
 }
 
 type ProxyEntry struct {
@@ -74,11 +74,12 @@ type ProxyChain struct {
 	Type    string `yaml:"type"`
 	Length  int    `yaml:"length"`
 }
-type DNSLists struct {
-	Enabled             bool     `yaml:"enabled"`
-	Whitelist           []string `yaml:"whitelist"`
-	Blacklist           []string `yaml:"blacklist"`
-	BlacklistEverything bool     `yaml:"blacklistEverything"`
+type DNSFilterLists struct {
+	Enabled      bool     `yaml:"enabled"`
+	Whitelist    []string `yaml:"whitelist"`
+	Blacklist    []string `yaml:"blacklist"`
+	BlacklistAll bool     `yaml:"blacklist_all"`
+	Spooflist    []string `yaml:"spooflist"`
 }
 
 type yamlConfig struct {
@@ -132,7 +133,7 @@ type yamlConfig struct {
 		Enabled  bool   `yaml:"enabled"`
 		Settings string `yaml:"settings"`
 	} `yaml:"ndpspoof"`
-	DNS DNSLists `yaml:"dns"`
+	DNSFilter DNSFilterLists `yaml:"dns_filter"`
 }
 
 func createConfigFromPath(path string) (*Config, error) {
@@ -197,8 +198,8 @@ func createConfigFromPath(path string) (*Config, error) {
 	if sconf.Ndpspoof.Enabled {
 		conf.NDPSpoof = sconf.Ndpspoof.Settings
 	}
-	if sconf.DNS.Enabled {
-		conf.DNS = sconf.DNS
+	if sconf.DNSFilter.Enabled {
+		conf.DNSFilter = sconf.DNSFilter
 	}
 	return &conf, nil
 }
@@ -337,6 +338,7 @@ func parseConfig(conf *Config) error {
 		if conf.IgnoredPorts == "" {
 			conf.IgnoredPorts = yamlConf.IgnoredPorts
 		}
+		conf.DNSFilter = yamlConf.DNSFilter
 	} else {
 		// only set defaults for http and socks
 		if conf.AddrHTTP == "" {
@@ -383,8 +385,8 @@ func parseConfig(conf *Config) error {
 		if conf.IgnoredPorts != "" {
 			return fmt.Errorf("option `IgnoredPorts` is available only on linux/android systems")
 		}
-		if conf.DNS.Enabled {
-			return fmt.Errorf("option `DNS` is available only on linux/android systems")
+		if conf.DNSFilter.Enabled {
+			return fmt.Errorf("option `DNSFilter` is available only on linux/android systems")
 		}
 	} else if conf.TProxyMode == "" {
 		conf.TProxy = ""

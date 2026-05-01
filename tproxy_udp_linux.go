@@ -48,6 +48,12 @@ func (uc *udpConn) DstPort() *uint16 {
 	return &dstPort
 }
 
+func (uc *udpConn) close() error {
+	close(uc.reqChan)
+	close(uc.respChan)
+	return uc.Close()
+}
+
 func newUDPConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer *socks5.Dialer, network string) (*udpConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -115,7 +121,7 @@ func (ucs *udpConnections) Cleanup() {
 		case <-ucs.quit:
 			ucs.Lock()
 			for _, conn := range ucs.clients {
-				conn.Close()
+				conn.close()
 			}
 			ucs.Unlock()
 			ucs.wg.Done()
@@ -124,7 +130,7 @@ func (ucs *udpConnections) Cleanup() {
 			ucs.Lock()
 			for k, conn := range ucs.clients {
 				if time.Since(conn.lastSeen) > idleTimeoutUDP {
-					conn.Close()
+					conn.close()
 					ucs.RemoveByAddr(k)
 				}
 			}
@@ -232,6 +238,8 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 	return tsu
 }
 
+// TODO: try to minimize code duplication here
+
 func (tsu *tproxyServerUDP) ListenAndServe() {
 	tsu.startingFlag.Store(true)
 	tsu.wg.Add(1)
@@ -290,85 +298,152 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 					ewd := conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 					if ewd != nil {
 						if errors.Is(ewd, net.ErrClosed) {
+							conn.close()
 							continue
 						}
 						tsu.p.logger.Error().Err(ewd).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
+						conn.close()
 						continue
 					}
-					if tsu.p.sniff {
-						var replyDNS *layers.DNSMessage
-						dns := &layers.DNSMessage{}
-						if err := dns.Parse(buf[:n]); err == nil {
+					if tsu.p.sniff || tsu.p.filter != nil {
+						dnsQuery := &layers.DNSMessage{}
+						if err := dnsQuery.Parse(buf[:n]); err == nil {
 							if tsu.closingFlag.Load() {
+								conn.close()
 								continue
 							}
-							fmt.Println(dns)
-							flags := layers.NewDNSFlags(
-								layers.QRFlagReply,
-								layers.OpCodeQuery,
-								false,
-								false,
-								dns.Flags.RD != 0,
-								true,
-								false,
-								false,
-								dns.Flags.NA != 0,
-								layers.RCodeNameError,
-							)
-							replyDNS, err = layers.NewDNSMessage(dns.TransactionID, flags, dns.Questions, nil, nil, nil)
-							if err != nil {
-								tsu.p.logger.Error().Err(err)
-								continue
-							}
-							err := conn.replyToClient(replyDNS.ToBytes())
-							if err != nil {
-								tsu.p.logger.Error().Err(err)
-								continue
-							}
-							continue
-							tsu.wg.Add(1)
-							sniffheader := make([]string, 0, 3)
-							id := getID(tsu.p.nocolor)
-							if tsu.p.json {
-								sniffheader = append(
-									sniffheader,
-									fmt.Sprintf(
-										"{\"connection\":{\"tproxy_mode\":%q,\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%q}}",
-										tsu.p.tproxyMode,
+							if tsu.p.sniff {
+								tsu.wg.Add(1)
+								sniffheader := make([]string, 0, 3)
+								id := getID(tsu.p.nocolor)
+								if tsu.p.json {
+									sniffheader = append(
+										sniffheader,
+										fmt.Sprintf(
+											"{\"connection\":{\"tproxy_mode\":%q,\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%q}}",
+											tsu.p.tproxyMode,
+											srcAddr,
+											conn.dstAddr,
+											conn.LocalAddr(),
+											conn.dstAddr,
+											conn.dstAddr.String(),
+										),
+									)
+								} else {
+									connections := colorizeConnectionsTransparent(
 										srcAddr,
 										conn.dstAddr,
 										conn.LocalAddr(),
 										conn.dstAddr,
 										conn.dstAddr.String(),
-									),
-								)
-							} else {
-								connections := colorizeConnectionsTransparent(
-									srcAddr,
-									conn.dstAddr,
-									conn.LocalAddr(),
-									conn.dstAddr,
-									conn.dstAddr.String(),
-									id, tsu.p.nocolor)
-								sniffheader = append(sniffheader, connections)
+										id, tsu.p.nocolor)
+									sniffheader = append(sniffheader, connections)
+								}
+								go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
+								conn.reqChan <- dnsQuery
 							}
-							go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
-							conn.reqChan <- dns
+							// NOTE: checking only the first record of questions
+							if tsu.p.filter != nil {
+								question := dnsQuery.Questions[0]
+								domain := question.Name
+								typ := question.Type
+								addr, ok := tsu.p.filter.domainIsSpoofed(domain)
+								var dnsReply *layers.DNSMessage
+								if ok {
+									flags := layers.NewDNSFlags(
+										layers.QRFlagReply,
+										layers.OpCodeQuery,
+										false,
+										false,
+										dnsQuery.Flags.RD != 0,
+										true,
+										false,
+										false,
+										dnsQuery.Flags.NA != 0,
+										layers.RCodeNoError,
+									)
+									answers := []*layers.ResourceRecord{}
+									var rdata layers.RData
+									if typ.Val == layers.RecTypeA && addr.Is4() { // answer IPv4 for A query
+										rdata = &layers.RDataA{Address: addr}
+									} else if typ.Val == layers.RecTypeAAAA && network.Is6(addr) { // AAAA
+										rdata = &layers.RDataAAAA{Address: addr}
+									}
+									if rdata != nil {
+										rdlen := uint16(len(rdata.ToBytes()))
+										answers = append(answers, &layers.ResourceRecord{
+											Name:     domain,
+											Type:     typ,
+											Class:    question.Class,
+											TTL:      3600,
+											RDLength: rdlen,
+											RData:    rdata,
+										})
+									}
+									dnsReply, err = layers.NewDNSMessage(dnsQuery.TransactionID, flags, dnsQuery.Questions, answers, nil, nil)
+									if err != nil {
+										tsu.p.logger.Error().Err(err).
+											Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+										goto reply // reply normally
+									}
+								} else if tsu.p.filter.domainIsBlacklisted(domain) {
+									flags := layers.NewDNSFlags(
+										layers.QRFlagReply,
+										layers.OpCodeQuery,
+										false,
+										false,
+										dnsQuery.Flags.RD != 0,
+										true,
+										false,
+										false,
+										dnsQuery.Flags.NA != 0,
+										layers.RCodeNameError,
+									)
+									dnsReply, err = layers.NewDNSMessage(dnsQuery.TransactionID, flags, dnsQuery.Questions, nil, nil, nil)
+									if err != nil {
+										tsu.p.logger.Error().Err(err).
+											Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+										goto reply
+									}
+								}
+								if dnsReply != nil {
+									if err := conn.replyToClient(dnsReply.ToBytes()); err != nil {
+										tsu.p.logger.Error().Err(err).
+											Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+										goto reply
+									}
+									if tsu.p.sniff {
+										conn.respChan <- dnsReply
+									}
+									conn.written.Add(uint64(len(dnsReply.ToBytes())))
+									srcConnStr := fmt.Sprintf("%s%s%s", conn.srcAddr, arrow, conn.dstAddr)
+									dstConnStr := fmt.Sprintf("%s%s%s", conn.LocalAddr(), arrow, conn.dstAddr)
+									tsu.p.logger.Debug().
+										Msgf("Copied %s for udp src: %s - dst: %s", network.PrettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
+									conn.close()
+									continue
+								}
+							}
 						}
 					}
-					_, err = conn.Write(buf[:n])
+				reply:
+					nw, err := conn.Write(buf[:n])
 					if err != nil {
 						if ne, ok := err.(net.Error); ok && ne.Timeout() {
+							conn.close()
 							continue
 						}
 						if errors.Is(err, net.ErrClosed) {
+							conn.close()
 							continue
 						}
 						tsu.p.logger.Error().
 							Err(err).
 							Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.dstAddr)
+						conn.close()
 						continue
 					}
+					conn.written.Add(uint64(nw))
 					go func() {
 						tsu.handleDNSDirectConnection(conn)
 					}()
@@ -411,7 +486,7 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 							if tsu.closingFlag.Load() {
 								continue
 							}
-							fmt.Println(next)
+							// NOTE: assume no dns messages here, otherwise call direct dns handling
 							tsu.wg.Add(1)
 							sniffheader := make([]string, 0, 3)
 							id := getID(tsu.p.nocolor)
@@ -627,85 +702,150 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 				ewd := conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 				if ewd != nil {
 					if errors.Is(ewd, net.ErrClosed) {
+						conn.close()
 						continue
 					}
 					tsu.p.logger.Error().Err(ewd).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
+					conn.close()
 					continue
 				}
-				var replyDNS *layers.DNSMessage
-				if tsu.p.sniff {
-					dns := &layers.DNSMessage{}
-					if err := dns.Parse(buf[:n]); err == nil {
+				if tsu.p.sniff || tsu.p.filter != nil {
+					dnsQuery := &layers.DNSMessage{}
+					if err := dnsQuery.Parse(buf[:n]); err == nil {
 						if tsu.closingFlag.Load() {
+							conn.close()
 							continue
 						}
-						fmt.Println(dns)
-						flags := layers.NewDNSFlags(
-							layers.QRFlagReply,
-							layers.OpCodeQuery,
-							false,
-							false,
-							dns.Flags.RD != 0,
-							true,
-							false,
-							false,
-							dns.Flags.NA != 0,
-							layers.RCodeNameError,
-						)
-						replyDNS, err = layers.NewDNSMessage(dns.TransactionID, flags, dns.Questions, nil, nil, nil)
-						if err != nil {
-							tsu.p.logger.Error().Err(err)
-							continue
-						}
-						_, err := gwConn.WriteToUDP(replyDNS.ToBytes(), conn.srcAddr)
-						if err != nil {
-							tsu.p.logger.Error().Err(err)
-							continue
-						}
-						continue
-						tsu.wg.Add(1)
-						sniffheader := make([]string, 0, 3)
-						id := getID(tsu.p.nocolor)
-						if tsu.p.json {
-							sniffheader = append(
-								sniffheader,
-								fmt.Sprintf(
-									"{\"connection\":{\"tproxy_mode\":%q,\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%q}}",
-									tsu.p.tproxyMode,
+						if tsu.p.sniff {
+							tsu.wg.Add(1)
+							sniffheader := make([]string, 0, 3)
+							id := getID(tsu.p.nocolor)
+							if tsu.p.json {
+								sniffheader = append(
+									sniffheader,
+									fmt.Sprintf(
+										"{\"connection\":{\"tproxy_mode\":%q,\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q,\"original_dst\":%q}}",
+										tsu.p.tproxyMode,
+										srcAddr,
+										gwConn.LocalAddr(),
+										conn.LocalAddr(),
+										conn.dstAddr,
+										gwConn.LocalAddr(),
+									),
+								)
+							} else {
+								connections := colorizeConnectionsTransparent(
 									srcAddr,
 									gwConn.LocalAddr(),
 									conn.LocalAddr(),
 									conn.dstAddr,
-									gwConn.LocalAddr(),
-								),
-							)
-						} else {
-							connections := colorizeConnectionsTransparent(
-								srcAddr,
-								gwConn.LocalAddr(),
-								conn.LocalAddr(),
-								conn.dstAddr,
-								gwConn.LocalAddr().String(),
-								id, tsu.p.nocolor)
-							sniffheader = append(sniffheader, connections)
+									gwConn.LocalAddr().String(),
+									id, tsu.p.nocolor)
+								sniffheader = append(sniffheader, connections)
+							}
+							go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
+							conn.reqChan <- dnsQuery
 						}
-						go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
-						conn.reqChan <- dns
-					} else {
-						tsu.p.logger.Error().Err(err).Msgf("%v", buf[:n])
+
+						if tsu.p.filter != nil {
+							question := dnsQuery.Questions[0]
+							domain := question.Name
+							typ := question.Type
+							addr, ok := tsu.p.filter.domainIsSpoofed(domain)
+							var dnsReply *layers.DNSMessage
+							if ok {
+								flags := layers.NewDNSFlags(
+									layers.QRFlagReply,
+									layers.OpCodeQuery,
+									false,
+									false,
+									dnsQuery.Flags.RD != 0,
+									true,
+									false,
+									false,
+									dnsQuery.Flags.NA != 0,
+									layers.RCodeNoError,
+								)
+								answers := []*layers.ResourceRecord{}
+								var rdata layers.RData
+								if typ.Val == layers.RecTypeA && addr.Is4() {
+									rdata = &layers.RDataA{Address: addr}
+								} else if typ.Val == layers.RecTypeAAAA && network.Is6(addr) {
+									rdata = &layers.RDataAAAA{Address: addr}
+								}
+								if rdata != nil {
+									rdlen := uint16(len(rdata.ToBytes()))
+									answers = append(answers, &layers.ResourceRecord{
+										Name:     domain,
+										Type:     typ,
+										Class:    question.Class,
+										TTL:      3600,
+										RDLength: rdlen,
+										RData:    rdata,
+									})
+								}
+								dnsReply, err = layers.NewDNSMessage(dnsQuery.TransactionID, flags, dnsQuery.Questions, answers, nil, nil)
+								if err != nil {
+									tsu.p.logger.Error().Err(err).
+										Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+									goto gwReply
+								}
+							} else if tsu.p.filter.domainIsBlacklisted(domain) {
+								flags := layers.NewDNSFlags(
+									layers.QRFlagReply,
+									layers.OpCodeQuery,
+									false,
+									false,
+									dnsQuery.Flags.RD != 0,
+									true,
+									false,
+									false,
+									dnsQuery.Flags.NA != 0,
+									layers.RCodeNameError,
+								)
+								dnsReply, err = layers.NewDNSMessage(dnsQuery.TransactionID, flags, dnsQuery.Questions, nil, nil, nil)
+								if err != nil {
+									tsu.p.logger.Error().Err(err).
+										Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+									goto gwReply
+								}
+							}
+							if dnsReply != nil {
+								nw, err := gwConn.WriteToUDP(dnsReply.ToBytes(), conn.srcAddr)
+								if err != nil {
+									tsu.p.logger.Error().Err(err).
+										Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+									goto gwReply
+								}
+								if tsu.p.sniff {
+									conn.respChan <- dnsReply
+								}
+								conn.written.Add(uint64(nw))
+								srcConnStr := fmt.Sprintf("%s%s%s", conn.srcAddr, arrow, conn.dstAddr)
+								dstConnStr := fmt.Sprintf("%s%s%s", conn.LocalAddr(), arrow, conn.dstAddr)
+								tsu.p.logger.Debug().
+									Msgf("Copied %s for udp src: %s - dst: %s", network.PrettifyBytes(int64(conn.written.Load())), srcConnStr, dstConnStr)
+								conn.close()
+								continue
+							}
+						}
 					}
 				}
+			gwReply:
 				nw, err := conn.Write(buf[:n])
 				if err != nil {
 					if ne, ok := err.(net.Error); ok && ne.Timeout() {
+						conn.close()
 						continue
 					}
 					if errors.Is(err, net.ErrClosed) {
+						conn.close()
 						continue
 					}
 					tsu.p.logger.Error().
 						Err(err).
 						Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.dstAddr)
+					conn.close()
 					continue
 				}
 				conn.written.Add(uint64(nw))
@@ -713,6 +853,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 			}
 			if er != nil {
 				if ne, ok := er.(net.Error); ok && ne.Timeout() {
+					// NOTE: conn can still be created and open
 					continue
 				}
 				if errors.Is(er, net.ErrClosed) {

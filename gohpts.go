@@ -119,6 +119,7 @@ type proxyapp struct {
 	dumpRules        bool
 	dump             strings.Builder
 	closeConn        chan bool
+	filter           *dnsFilter
 
 	mu             sync.RWMutex
 	availProxyList []ProxyEntry
@@ -538,7 +539,11 @@ func New(conf *Config) (*proxyapp, error) {
 	if p.ndpspoofer != nil {
 		p.gwDNS6 = p.getResolver()
 	}
-	// TODO: configure DNS filters
+
+	// configuring DNS filters
+	if conf.DNSFilter.Enabled {
+		p.filter = newDNSFilter(&conf.DNSFilter, p.logger)
+	}
 
 	// logging which servers are enabled
 	if p.proxychain.Enabled {

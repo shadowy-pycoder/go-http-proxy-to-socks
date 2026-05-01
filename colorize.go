@@ -303,7 +303,8 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 		sb.WriteString("\n")
 		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
-		fmt.Fprintf(&sb, " DNS %s (%s) %#04x ", resp.Flags.OPCode.Desc, resp.Flags.QR.Desc, resp.TransactionID)
+
+		fmt.Fprintf(&sb, " DNS %s (%s) %s %#04x ", resp.Flags.OPCode.Desc, resp.Flags.QR.Desc, resp.Flags.RCode.Desc, resp.TransactionID)
 		for _, rec := range resp.Questions {
 			fmt.Fprintf(&sb, "%s %s ", rec.Type.Name, rec.Name)
 		}
@@ -335,6 +336,7 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
 		sb.WriteString(colors.Blue(fmt.Sprintf(" DNS %s (%s)", resp.Flags.OPCode.Desc, resp.Flags.QR.Desc)).Bold())
+		sb.WriteString(colors.Gray(fmt.Sprintf(" %s", resp.Flags.RCode.Desc)).String())
 		sb.WriteString(colors.Beige(fmt.Sprintf(" %#04x ", resp.TransactionID)).String())
 		for _, rec := range resp.Questions {
 			fmt.Fprintf(&sb, "%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rec.Name))

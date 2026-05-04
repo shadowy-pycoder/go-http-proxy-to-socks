@@ -30,7 +30,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/goccy/go-yaml"
 	"github.com/rs/zerolog"
 	"github.com/shadowy-pycoder/arpspoof"
 	"github.com/shadowy-pycoder/mshark/layers"
@@ -40,6 +39,8 @@ import (
 )
 
 const (
+	addrSOCKS                string        = "127.0.0.1:1080"
+	addrHTTP                 string        = "127.0.0.1:8080"
 	readTimeout              time.Duration = 30 * time.Second
 	writeTimeout             time.Duration = 30 * time.Second
 	timeout                  time.Duration = 10 * time.Second
@@ -58,40 +59,6 @@ var (
 	errInvalidWrite      = errors.New("invalid write result")
 )
 
-type Config struct {
-	AddrHTTP         string
-	AddrSOCKS        string
-	AddrPprof        string
-	User             string
-	Pass             string
-	ServerUser       string
-	ServerPass       string
-	CertFile         string
-	KeyFile          string
-	Interface        string
-	ServerConfPath   string
-	IPv6Enabled      bool
-	TProxy           string
-	TProxyOnly       string
-	TProxyUDP        string
-	TProxyMode       string
-	TProxyWorkers    uint
-	TProxyUDPWorkers uint
-	Auto             bool
-	Dump             bool
-	Mark             uint
-	ARPSpoof         string
-	NDPSpoof         string
-	IgnoredPorts     string
-	LogFilePath      string
-	Debug            bool
-	JSON             bool
-	Sniff            bool
-	SniffLogFile     string
-	NoColor          bool
-	Body             bool
-}
-
 type logWriter struct {
 	file *os.File
 }
@@ -109,34 +76,6 @@ func (writer jsonLogWriter) Write(bytes []byte) (int, error) {
 		time.Now().Format(time.RFC3339), strings.TrimRight(string(bytes), "\n"))
 }
 
-type proxyEntry struct {
-	Address  string `yaml:"address"`
-	Username string `yaml:"username,omitempty"`
-	Password string `yaml:"password,omitempty"`
-}
-
-func (pe proxyEntry) String() string {
-	return pe.Address
-}
-
-type server struct {
-	Address   string `yaml:"address"`
-	Interface string `yaml:"interface,omitempty"`
-	Username  string `yaml:"username,omitempty"`
-	Password  string `yaml:"password,omitempty"`
-	CertFile  string `yaml:"cert_file,omitempty"`
-	KeyFile   string `yaml:"key_file,omitempty"`
-}
-type chain struct {
-	Type   string `yaml:"type"`
-	Length int    `yaml:"length"`
-}
-
-type serverConfig struct {
-	Chain     chain        `yaml:"chain"`
-	ProxyList []proxyEntry `yaml:"proxy_list"`
-	Server    server       `yaml:"server"`
-}
 type proxyapp struct {
 	httpServer       *http.Server
 	sockClient       *http.Client
@@ -162,12 +101,14 @@ type proxyapp struct {
 	arpspoofer       *arpspoof.ARPSpoofer
 	ndpspoofer       *ndpspoof.NDPSpoofer
 	raEnabled        bool
-	hostIPGlobal     netip.Addr
+	gwDNS            *net.UDPAddr
+	gwDNS6           *net.UDPAddr
+	hostDNS6         *net.UDPAddr
 	ignoredPorts     string
 	user             string
 	pass             string
-	proxychain       chain
-	proxylist        []proxyEntry
+	proxychain       ProxyChain
+	proxylist        []ProxyEntry
 	rrIndex          uint32
 	rrIndexReset     uint32
 	sniff            bool
@@ -178,38 +119,49 @@ type proxyapp struct {
 	dumpRules        bool
 	dump             strings.Builder
 	closeConn        chan bool
+	filter           *dnsFilter
 
 	mu             sync.RWMutex
-	availProxyList []proxyEntry
+	availProxyList []ProxyEntry
 }
 
-func New(conf *Config) *proxyapp {
+func New(conf *Config) (*proxyapp, error) {
+	if err := parseConfig(conf); err != nil {
+		return nil, fmt.Errorf("failed parsing configuration file: %v", err)
+	}
+
 	var logger, snifflogger zerolog.Logger
 	var p proxyapp
 	logfile := os.Stdout
 	var snifflog *os.File
 	var err error
+
+	// setup loggers
 	p.sniff = conf.Sniff
 	p.body = conf.Body
 	p.json = conf.JSON
+	p.nocolor = conf.JSON || conf.NoColor
+	p.debug = conf.Debug
+
 	if conf.LogFilePath != "" {
 		f, err := os.OpenFile(conf.LogFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
-			log.Fatalf("Failed to open log file: %v", err)
+			return nil, fmt.Errorf("failed to open log file: %v", err)
 		}
 		logfile = f
 	}
+
 	if conf.SniffLogFile != "" && conf.SniffLogFile != conf.LogFilePath {
 		f, err := os.OpenFile(conf.SniffLogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
-			log.Fatalf("Failed to open sniff log file: %v", err)
+			return nil, fmt.Errorf("failed to open sniff log file: %v", err)
 		}
 		snifflog = f
 	} else {
 		snifflog = logfile
 	}
-	p.nocolor = conf.JSON || conf.NoColor
-	if conf.JSON {
+
+	if p.json {
 		log.SetFlags(0)
 		jsonWriter := jsonLogWriter{file: logfile}
 		log.SetOutput(jsonWriter)
@@ -263,23 +215,25 @@ func New(conf *Config) *proxyapp {
 	}
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	lvl := zerolog.InfoLevel
-	if conf.Debug {
+	if p.debug {
 		lvl = zerolog.DebugLevel
-	}
-	p.debug = conf.Debug
-	if conf.AddrPprof != "" {
-		var pprofAddr netip.AddrPort
-		pprofAddr, err = network.ParseAddrPort(conf.AddrPprof, "127.0.0.1")
-		if err != nil {
-			p.logger.Fatal().Err(err).Msg("")
-		}
-		p.pprofAddr = pprofAddr.String()
 	}
 	// the only way I found to make debug level independent between loggers
 	l := logger.Level(lvl)
 	sl := snifflogger.Level(lvl)
 	p.logger = &l
 	p.snifflogger = &sl
+	// set pprof address
+	if conf.AddrPprof != "" {
+		var pprofAddr netip.AddrPort
+		pprofAddr, err = network.ParseAddrPort(conf.AddrPprof, "127.0.0.1")
+		if err != nil {
+			return nil, err
+		}
+		p.pprofAddr = pprofAddr.String()
+	}
+
+	// enable ipv6
 	if conf.IPv6Enabled {
 		p.tcp = "tcp"
 		p.udp = "udp"
@@ -289,225 +243,163 @@ func New(conf *Config) *proxyapp {
 		p.udp = "udp4"
 		p.ipv6enabled = false
 	}
-	if slices.Contains(SupportedTProxyOS, runtime.GOOS) && conf.TProxy != "" && conf.TProxyOnly != "" {
-		p.logger.Fatal().Msg("Cannot specify TPRoxy and TProxyOnly at the same time")
-	} else if slices.Contains(SupportedTProxyOS, runtime.GOOS) && conf.TProxyMode != "" && !slices.Contains(SupportedTProxyModes, conf.TProxyMode) {
-		p.logger.Fatal().Msg("Incorrect TProxyMode provided")
-	} else if !slices.Contains(SupportedTProxyOS, runtime.GOOS) && (conf.TProxy != "" || conf.TProxyOnly != "" || conf.TProxyMode != "" || conf.TProxyUDP != "") {
-		conf.TProxy = ""
-		conf.TProxyOnly = ""
-		conf.TProxyMode = ""
-		conf.TProxyUDP = ""
-		p.logger.Warn().Msgf("[%s] functionality only available on linux or android systems", conf.TProxyMode)
-	}
-	p.tproxyMode = conf.TProxyMode
-	tproxyonly := conf.TProxyOnly != ""
-	var tAddr string
-	if tproxyonly {
-		tAddr = conf.TProxyOnly
-	} else {
-		tAddr = conf.TProxy
-	}
-	if p.tproxyMode != "" {
-		var tproxyAddr netip.AddrPort
-		tproxyAddr, err = network.ParseAddrPort(tAddr, "0.0.0.0")
-		if err != nil {
-			p.logger.Fatal().Err(err).Msg("")
+
+	// transparent proxy setup
+	if conf.TProxyMode != "" && (conf.TProxy != "" || conf.TProxyUDP != "") {
+		p.tproxyMode = conf.TProxyMode
+		if !slices.Contains(SupportedTProxyModes, p.tproxyMode) {
+			return nil, fmt.Errorf("unknown transparent proxy mode: %s", p.tproxyMode)
 		}
-		p.tproxyAddr = tproxyAddr.String()
+		// check addresses for transparent proxy
+		if conf.TProxy != "" {
+			var tproxyAddr netip.AddrPort
+			tproxyAddr, err = network.ParseAddrPort(conf.TProxy, "0.0.0.0")
+			if err != nil {
+				return nil, err
+			}
+			p.tproxyAddr = tproxyAddr.String()
+		}
 		if conf.TProxyUDP != "" {
 			if p.tproxyMode != "tproxy" {
-				p.logger.Warn().Msgf("[%s] transparent UDP server only supports tproxy mode", conf.TProxyMode)
+				return nil, fmt.Errorf("[%s] transparent UDP server only supports tproxy mode", conf.TProxyMode)
 			}
 			var tproxyAddrUDP netip.AddrPort
 			tproxyAddrUDP, err = network.ParseAddrPort(conf.TProxyUDP, "0.0.0.0")
 			if err != nil {
-				p.logger.Fatal().Err(err).Msg("")
+				return nil, err
 			}
 			p.tproxyAddrUDP = tproxyAddrUDP.String()
-		}
-	} else {
-		p.tproxyAddr = ""
-	}
-	if network.AddrEqual(p.tproxyAddr, p.tproxyAddrUDP) {
-		p.logger.Fatal().Msgf("%s: address already in use", p.tproxyAddrUDP)
-	}
-	p.tproxyWorkers = conf.TProxyWorkers
-	if p.tproxyWorkers > 0 && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-		p.logger.Fatal().Msg("Setting the number of instances of transparent proxy is available only on linux/android systems")
-	} else if p.tproxyWorkers == 0 && slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-		p.tproxyWorkers = uint(runtime.NumCPU())
-	}
-	p.tproxyUDPWorkers = conf.TProxyUDPWorkers
-	if p.tproxyUDPWorkers > 0 && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-		p.logger.Fatal().Msg("Setting the number of instances of transparent proxy is available only on linux/android systems")
-	} else if p.tproxyUDPWorkers == 0 && slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-		p.tproxyUDPWorkers = uint(runtime.NumCPU())
-	}
-	p.auto = conf.Auto
-	if p.auto && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-		p.logger.Fatal().Msg("Auto setup is available only on linux/android systems")
-	}
-	p.dumpRules = conf.Dump
-	if p.dumpRules && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-		p.logger.Fatal().Msg("Dump is available only on linux/android systems")
-	}
-	p.dump.WriteString("#!/usr/bin/env bash\n\nset -ex\n")
-	p.mark = conf.Mark
-	if p.mark > 0 && !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-		p.logger.Fatal().Msg("SO_MARK is available only on linux/android systems")
-	}
-	if p.mark > 0xFFFFFFFF {
-		p.logger.Fatal().Msg("SO_MARK is out of range")
-	}
-	if p.mark == 0 && p.tproxyMode == "tproxy" {
-		p.mark = 100
-	}
-	if conf.IgnoredPorts != "" {
-		if !p.auto {
-			p.logger.Fatal().Msg("Ignoring ports is only possible in auto configuration")
-		}
-		if !portsPattern.MatchString(conf.IgnoredPorts) {
-			p.logger.Fatal().Msg("Ignored ports must be a comma separated list of port numbers")
-		}
-		p.ignoredPorts = conf.IgnoredPorts
-	}
-	var addrHTTP, addrSOCKS, certFile, keyFile string
-	if conf.ServerConfPath != "" {
-		var sconf serverConfig
-		yamlFile, err := os.ReadFile(expandPath(conf.ServerConfPath))
-		if err != nil {
-			p.logger.Fatal().Err(err).Msg("[yaml config] Parsing failed")
-		}
-		err = yaml.Unmarshal(yamlFile, &sconf)
-		if err != nil {
-			p.logger.Fatal().Err(err).Msg("[yaml config] Parsing failed")
-		}
-		if !tproxyonly {
-			if sconf.Server.Address == "" {
-				p.logger.Fatal().Err(err).Msg("[yaml config] Server address is empty")
+			if network.AddrEqual(p.tproxyAddr, p.tproxyAddrUDP) {
+				return nil, fmt.Errorf("%s: address already in use", p.tproxyAddrUDP)
 			}
-			if sconf.Server.Interface != "" {
-				p.iface, err = net.InterfaceByName(sconf.Server.Interface)
-				if err != nil {
-					if ifIdx, err := strconv.Atoi(sconf.Server.Interface); err == nil {
-						p.iface, err = net.InterfaceByIndex(ifIdx)
-						if err != nil {
-							p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", sconf.Server.Interface)
-						}
-					} else {
-						p.logger.Warn().Msgf("Failed binding to %s, using default interface", sconf.Server.Interface)
-					}
-				}
+		}
+
+		// calculate number of server instances
+		p.tproxyWorkers = conf.TProxyWorkers
+		if p.tproxyWorkers == 0 && slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+			p.tproxyWorkers = uint(runtime.NumCPU())
+		}
+		p.tproxyUDPWorkers = conf.TProxyUDPWorkers
+		if p.tproxyUDPWorkers == 0 && slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+			p.tproxyUDPWorkers = uint(runtime.NumCPU())
+		}
+
+		// misc stuff
+		p.auto = conf.Auto
+		if p.auto {
+			if os.Geteuid() != 0 {
+				return nil, fmt.Errorf("auto configuration requires root privileges")
 			}
-			iAddr, err := getAddressFromInterface(p.iface)
+		}
+
+		p.dumpRules = conf.Dump
+		if p.dumpRules {
+			if !p.auto {
+				return nil, fmt.Errorf("dumping rules is only possible in auto configuration")
+			}
+		}
+		p.dump.WriteString("#!/usr/bin/env bash\n\nset -ex\n")
+
+		p.mark = conf.Mark
+		if p.mark > 0xFFFFFFFF {
+			return nil, fmt.Errorf("option SO_MARK is out of range")
+		}
+		if p.mark == 0 && p.tproxyMode == "tproxy" {
+			p.mark = 100
+		}
+
+		if conf.IgnoredPorts != "" {
+			if !p.auto {
+				return nil, fmt.Errorf("ignoring ports is only possible in auto configuration")
+			}
+			if !portsPattern.MatchString(conf.IgnoredPorts) {
+				return nil, fmt.Errorf("ignored ports must be a comma separated list of port numbers")
+			}
+			p.ignoredPorts = conf.IgnoredPorts
+		}
+	}
+	// configure http address
+	httpEnabled := !conf.NoHTTP
+	if httpEnabled {
+		iAddr, err := getAddressFromInterface(p.iface)
+		if err != nil {
+			p.iface = nil
+			p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", conf.Interface)
+		}
+		var hostPortHTTP netip.AddrPort
+		if iAddr == "" {
+			hostPortHTTP, err = network.ParseAddrPort(conf.AddrHTTP, "127.0.0.1")
 			if err != nil {
-				p.iface = nil
-				p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", sconf.Server.Interface)
+				return nil, err
 			}
-			var hostPortHTTP netip.AddrPort
-			if iAddr == "" {
-				hostPortHTTP, err = network.ParseAddrPort(conf.AddrHTTP, "127.0.0.1")
-				if err != nil {
-					p.logger.Fatal().Err(err).Msg("")
-				}
-			} else {
-				parsedAddrHTTP, err := network.ParseAddrPort(conf.AddrHTTP, iAddr)
-				if err != nil {
-					p.logger.Fatal().Err(err).Msg("")
-				}
-				hostPortHTTP = netip.AddrPortFrom(netip.MustParseAddr(iAddr), parsedAddrHTTP.Port())
+		} else {
+			parsedAddrHTTP, err := network.ParseAddrPort(conf.AddrHTTP, iAddr)
+			if err != nil {
+				return nil, err
 			}
-			addrHTTP = hostPortHTTP.String()
-			p.httpServerAddr = addrHTTP
-			certFile = expandPath(sconf.Server.CertFile)
-			keyFile = expandPath(sconf.Server.KeyFile)
-			p.user = sconf.Server.Username
-			p.pass = sconf.Server.Password
+			hostPortHTTP = netip.AddrPortFrom(netip.MustParseAddr(iAddr), parsedAddrHTTP.Port())
 		}
-		p.proxychain = sconf.Chain
-		p.proxylist = sconf.ProxyList
-		p.availProxyList = make([]proxyEntry, 0, len(p.proxylist))
-		if len(p.proxylist) == 0 {
-			p.logger.Fatal().Msg("[yaml config] Proxy list is empty")
+		addrHTTP := hostPortHTTP.String()
+		p.httpServerAddr = addrHTTP
+		if conf.CertFile != "" {
+			p.certFile = expandPath(conf.CertFile)
+			if _, err := os.Stat(p.certFile); err != nil {
+				return nil, err
+			}
 		}
+		if conf.KeyFile != "" {
+			p.keyFile = expandPath(conf.KeyFile)
+			if _, err := os.Stat(p.keyFile); err != nil {
+				return nil, err
+			}
+		}
+		p.user = conf.ServerUser
+		p.pass = conf.ServerPass
+	}
+
+	// configure socks5 addresses
+	var addrSOCKS string
+	p.proxychain = conf.SocksProxyChain
+	if p.proxychain.Enabled {
+		p.proxylist = conf.SocksProxy
+		p.availProxyList = make([]ProxyEntry, 0, len(p.proxylist))
 		seen := make(map[string]struct{})
 		for idx, pr := range p.proxylist {
 			hpAddr, err := network.ParseAddrPort(pr.Address, "127.0.0.1")
 			if err != nil {
-				p.logger.Fatal().Err(err).Msg("")
+				return nil, err
 			}
 			addr := hpAddr.String()
 			if _, ok := seen[addr]; !ok {
 				seen[addr] = struct{}{}
 				p.proxylist[idx].Address = addr
 			} else {
-				p.logger.Fatal().Msgf("[yaml config] Duplicate entry `%s`", addr)
+				return nil, fmt.Errorf("proxy list duplicate entry `%s`", addr)
 			}
 		}
 		addrSOCKS = p.printProxyChain(p.proxylist)
 		chainType := p.proxychain.Type
 		if !slices.Contains(supportedChainTypes, chainType) {
-			p.logger.Fatal().Msgf("[yaml config] Chain type `%s` is not supported", chainType)
+			return nil, fmt.Errorf("chain type `%s` is not supported", chainType)
 		}
 		p.rrIndexReset = rrIndexMax
 	} else {
-		if !tproxyonly {
-			if conf.Interface != "" {
-				p.iface, err = net.InterfaceByName(conf.Interface)
-				if err != nil {
-					if ifIdx, err := strconv.Atoi(conf.Interface); err == nil {
-						p.iface, err = net.InterfaceByIndex(ifIdx)
-						if err != nil {
-							p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", conf.Interface)
-						}
-					} else {
-						p.logger.Warn().Msgf("Failed binding to %s, using default interface", conf.Interface)
-					}
-				}
-			}
-			iAddr, err := getAddressFromInterface(p.iface)
-			if err != nil {
-				p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", conf.Interface)
-				p.iface = nil
-			}
-			var hostPortHTTP netip.AddrPort
-			if iAddr == "" {
-				hostPortHTTP, err = network.ParseAddrPort(conf.AddrHTTP, "127.0.0.1")
-				if err != nil {
-					p.logger.Fatal().Err(err).Msg("")
-				}
-			} else {
-				parsedAddrHTTP, err := network.ParseAddrPort(conf.AddrHTTP, iAddr)
-				if err != nil {
-					p.logger.Fatal().Err(err).Msg("")
-				}
-				hostPortHTTP = netip.AddrPortFrom(netip.MustParseAddr(iAddr), parsedAddrHTTP.Port())
-			}
-			addrHTTP = hostPortHTTP.String()
-			p.httpServerAddr = addrHTTP
-			certFile = expandPath(conf.CertFile)
-			keyFile = expandPath(conf.KeyFile)
-			p.user = conf.ServerUser
-			p.pass = conf.ServerPass
-		}
-		var hostPortSOCKS netip.AddrPort
-		hostPortSOCKS, err = network.ParseAddrPort(conf.AddrSOCKS, "127.0.0.1")
+		socksProxy := conf.SocksProxy[0]
+		hostPortSOCKS, err := network.ParseAddrPort(socksProxy.Address, "127.0.0.1")
 		if err != nil {
-			p.logger.Fatal().Err(err).Msg("")
+			return nil, err
 		}
-
 		addrSOCKS = hostPortSOCKS.String()
 		auth := auth{
-			User:     conf.User,
-			Password: conf.Pass,
+			User:     socksProxy.Username,
+			Password: socksProxy.Password,
 		}
 		dialer, err := newSOCKS5Dialer(addrSOCKS, &auth, getBaseDialer(timeout, p.mark), p.tcp)
 		if err != nil {
-			p.logger.Fatal().Err(err).Msg("Unable to create SOCKS5 dialer")
+			return nil, fmt.Errorf("unable to create SOCKS5 dialer: %v", err)
 		}
 		p.sockDialer = dialer
-		if !tproxyonly {
+		if httpEnabled {
 			p.sockClient = &http.Client{
 				Transport: &http.Transport{
 					DialContext: dialer.DialContext,
@@ -518,7 +410,24 @@ func New(conf *Config) *proxyapp {
 			}
 		}
 	}
-	if !tproxyonly {
+
+	// getting interface
+	if conf.Interface != "" {
+		p.iface, err = net.InterfaceByName(conf.Interface)
+		if err != nil {
+			if ifIdx, err := strconv.Atoi(conf.Interface); err == nil {
+				p.iface, err = net.InterfaceByIndex(ifIdx)
+				if err != nil {
+					p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", conf.Interface)
+				}
+			} else {
+				p.logger.Warn().Msgf("Failed binding to %s, using default interface", conf.Interface)
+			}
+		}
+	}
+
+	// configure http server
+	if httpEnabled {
 		hs := &http.Server{
 			Addr:           addrHTTP,
 			ReadTimeout:    readTimeout,
@@ -550,75 +459,107 @@ func New(conf *Config) *proxyapp {
 			Timeout: timeout,
 		}
 	}
+
+	if slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		// getting default interface
+		// TODO: add support for non linux systems in network module
+		if p.iface == nil {
+			p.iface, err = network.GetDefaultInterface()
+			if err != nil {
+				p.iface, err = network.GetDefaultInterfaceFromRoute()
+				if err != nil {
+					p.iface, err = network.GetDefaultInterfaceFromRouteIPv6()
+					if err != nil {
+						return nil, fmt.Errorf("failed getting default network interface")
+					}
+				}
+			}
+		}
+	}
+
+	// configure arp spoofing
 	if conf.ARPSpoof != "" {
-		if !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-			p.logger.Fatal().Msg("ARP spoof setup is available only on linux/android systems")
+		if p.iface == nil {
+			return nil, fmt.Errorf("failed getting network interface")
 		}
 		if !p.auto {
-			p.logger.Warn().Msg("ARP spoof setup requires iptables configuration")
+			p.logger.Warn().Msg("arpspoof setup requires iptables configuration")
 		}
 		asc, err := arpspoof.NewARPSpoofConfig(conf.ARPSpoof, p.logger)
 		if err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed creating arp spoofer")
+			return nil, fmt.Errorf("failed creating arp spoofer: %v", err)
 		}
-		asc.Interface = ""
+		asc.Interface = p.iface.Name
 		asc.Gateway = nil
-		if p.iface != nil {
-			asc.Interface = p.iface.Name
-		}
 		p.arpspoofer, err = arpspoof.NewARPSpoofer(asc)
 		if err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed creating arp spoofer")
+			return nil, fmt.Errorf("failed creating arp spoofer: %v", err)
 		}
 	}
+
+	// configure ndp spoofing
 	if conf.NDPSpoof != "" {
-		if !p.ipv6enabled {
-			p.logger.Fatal().Msg("NDP spoof requires IPv6 enabled")
+		if p.iface == nil {
+			return nil, fmt.Errorf("failed getting network interface")
 		}
-		if !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-			p.logger.Fatal().Msg("NDP spoof setup is available only on linux/android systems")
+		if !p.ipv6enabled {
+			return nil, fmt.Errorf("ndpspoof requires IPv6 enabled")
 		}
 		if !p.auto {
-			p.logger.Warn().Msg("NDP spoof setup requires iptables configuration")
+			p.logger.Warn().Msg("nfpspoof setup requires iptables configuration")
 		}
 		nsc, err := ndpspoof.NewNDPSpoofConfig(conf.NDPSpoof, p.logger)
 		if err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed creating ndp spoofer")
+			return nil, fmt.Errorf("failed creating ndp spoofer: %v", err)
 		}
-		nsc.Interface = ""
+		nsc.Interface = p.iface.Name
 		nsc.Gateway = nil
-		if p.iface != nil {
-			nsc.Interface = p.iface.Name
-		}
 		nsc.RDNSS = ""
 		nsc.Auto = false
+		nsc.NoColor = p.nocolor
 		if nsc.RA {
 			hostIP, err := network.GetHostIPv6GlobalUnicastFromRoute()
-			if err == nil {
-				nsc.RDNSS = hostIP.String() // use host ip as DNS server
-				p.raEnabled = true
-				p.hostIPGlobal = hostIP
+			if err != nil {
+				return nil, err
 			}
+			nsc.RDNSS = hostIP.String() // use host ip as DNS server
+			p.raEnabled = true
+			p.hostDNS6 = &net.UDPAddr{IP: net.ParseIP(hostIP.String()), Port: 53}
 		}
 		p.ndpspoofer, err = ndpspoof.NewNDPSpoofer(nsc)
 		if err != nil {
-			p.logger.Fatal().Err(err).Msg("Failed creating ndp spoofer")
+			return nil, fmt.Errorf("failed creating ndp spoofer: %v", err)
 		}
 	}
-	if conf.ServerConfPath != "" {
+	// configuring DNS
+	if p.arpspoofer != nil {
+		gw := p.arpspoofer.GatewayIP()
+		p.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
+	}
+	if p.ndpspoofer != nil {
+		p.gwDNS6 = p.getResolver()
+	}
+
+	// configuring DNS filters
+	if conf.DNSFilter.Enabled {
+		p.filter = newDNSFilter(&conf.DNSFilter, p.logger)
+	}
+
+	// logging which servers are enabled
+	if p.proxychain.Enabled {
 		p.logger.Info().Msgf("SOCKS5 Proxy [%s] chain: %s", p.proxychain.Type, addrSOCKS)
 	} else {
 		p.logger.Info().Msgf("SOCKS5 Proxy: %s", addrSOCKS)
 	}
-	if !tproxyonly {
-		if certFile != "" && keyFile != "" {
-			p.certFile = certFile
-			p.keyFile = keyFile
+
+	if httpEnabled {
+		if p.certFile != "" && p.keyFile != "" {
 			p.logger.Info().Msgf("HTTPS Proxy: %s", p.httpServerAddr)
 		} else {
 			p.logger.Info().Msgf("HTTP Proxy: %s", p.httpServerAddr)
 		}
 	}
+
 	if p.tproxyAddr != "" {
 		suffix := ""
 		if p.tproxyWorkers != 1 {
@@ -630,17 +571,31 @@ func New(conf *Config) *proxyapp {
 			p.logger.Info().Msgf("REDIRECT: %s (%d instance%s)", p.tproxyAddr, p.tproxyWorkers, suffix)
 		}
 	}
+
 	if p.tproxyAddrUDP != "" {
 		suffix := ""
 		if p.tproxyUDPWorkers != 1 {
 			suffix = "s"
 		}
-		p.logger.Info().Msgf("TPROXY (UDP): %s (%d instanse%s)", p.tproxyAddrUDP, p.tproxyUDPWorkers, suffix)
+		p.logger.Info().Msgf("TPROXY (udp): %s (%d instanse%s)", p.tproxyAddrUDP, p.tproxyUDPWorkers, suffix)
 	}
+
+	if p.tproxyAddrUDP != "" {
+		if p.gwDNS != nil {
+			p.logger.Info().Msgf("DNS (IPv4): %s", p.gwDNS)
+		}
+		if p.gwDNS6 != nil {
+			p.logger.Info().Msgf("DNS (IPv6): %s", p.gwDNS6)
+		}
+		if p.hostDNS6 != nil {
+			p.logger.Info().Msgf("DNS (host): %s", p.hostDNS6)
+		}
+	}
+
 	if p.pprofAddr != "" {
 		p.logger.Info().Msgf("PPROF: %s", p.pprofAddr)
 	}
-	return &p
+	return &p, nil
 }
 
 func (p *proxyapp) Run() {
@@ -687,7 +642,7 @@ func (p *proxyapp) Run() {
 			tproxyUDPServers[0].ApplyRedirectRules(opts)
 		}
 	}
-	if p.proxylist != nil {
+	if p.proxychain.Enabled {
 		chainType := p.proxychain.Type
 		ctl := colorizeChainType(chainType, p.nocolor)
 		go func() {
@@ -892,6 +847,21 @@ func (p *proxyapp) Run() {
 	p.logger.Info().Msg("Proxy stopped")
 }
 
+func (p *proxyapp) getResolver() *net.UDPAddr {
+	if resolvers, err := network.GetSystemNameservers(); err == nil {
+		for _, r := range resolvers {
+			if network.Is6(r) {
+				var zone string
+				if r.IsLinkLocalUnicast() {
+					zone = p.iface.Name
+				}
+				return &net.UDPAddr{IP: net.ParseIP(r.String()), Port: 53, Zone: zone}
+			}
+		}
+	}
+	return &net.UDPAddr{IP: net.ParseIP("2001:4860:4860::8888"), Port: 53}
+}
+
 func (p *proxyapp) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
@@ -1094,8 +1064,12 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	defer srcConn.Close()
 
-	dstConnStr := fmt.Sprintf("%s→ %s→ %s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), r.Host)
-	srcConnStr := fmt.Sprintf("%s→ %s", srcConn.RemoteAddr().String(), srcConn.LocalAddr().String())
+	arrow := "→ "
+	if p.nocolor {
+		arrow = "->"
+	}
+	dstConnStr := fmt.Sprintf("%s%s%s%s%s", dstConn.LocalAddr().String(), arrow, dstConn.RemoteAddr().String(), arrow, r.Host)
+	srcConnStr := fmt.Sprintf("%s%s%s", srcConn.RemoteAddr().String(), arrow, srcConn.LocalAddr().String())
 
 	p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
 	p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
@@ -1128,24 +1102,50 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 }
 
-func (p *proxyapp) printProxyChain(pc []proxyEntry) string {
+func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
 	var sb strings.Builder
-	sb.WriteString("client →  ")
+	arrow := " →  "
+	if p.nocolor {
+		arrow = " -> "
+	}
+	sb.WriteString("client")
+	sb.WriteString(arrow)
 	if p.httpServerAddr != "" {
-		sb.WriteString(p.httpServerAddr)
+		if p.certFile != "" && p.keyFile != "" {
+			fmt.Fprintf(&sb, "%s (https)", p.httpServerAddr)
+		} else {
+			fmt.Fprintf(&sb, "%s (http)", p.httpServerAddr)
+		}
 		if p.tproxyAddr != "" {
 			sb.WriteString(" | ")
 			sb.WriteString(p.tproxyAddr)
-			fmt.Fprintf(&sb, " (%s)", p.tproxyMode)
+			fmt.Fprintf(&sb, " (tcp/%s)", p.tproxyMode)
 		}
-	} else if p.tproxyAddr != "" {
-		sb.WriteString(p.tproxyAddr)
-		fmt.Fprintf(&sb, " (%s)", p.tproxyMode)
+		if p.tproxyAddrUDP != "" {
+			sb.WriteString(" | ")
+			sb.WriteString(p.tproxyAddrUDP)
+			fmt.Fprintf(&sb, " (udp/%s)", p.tproxyMode)
+		}
+		sb.WriteString(arrow)
+	} else if p.tproxyAddr != "" || p.tproxyAddrUDP != "" {
+		if p.tproxyAddr != "" && p.tproxyAddrUDP != "" {
+			sb.WriteString(p.tproxyAddr)
+			fmt.Fprintf(&sb, " (tcp/%s)", p.tproxyMode)
+			sb.WriteString(" | ")
+			sb.WriteString(p.tproxyAddrUDP)
+			fmt.Fprintf(&sb, " (udp/%s)", p.tproxyMode)
+		} else if p.tproxyAddr != "" {
+			sb.WriteString(p.tproxyAddr)
+			fmt.Fprintf(&sb, " (tcp/%s)", p.tproxyMode)
+		} else {
+			sb.WriteString(p.tproxyAddrUDP)
+			fmt.Fprintf(&sb, " (udp/%s)", p.tproxyMode)
+		}
+		sb.WriteString(arrow)
 	}
-	sb.WriteString(" →  ")
 	for _, pe := range pc {
 		sb.WriteString(pe.String())
-		sb.WriteString(" →  ")
+		sb.WriteString(arrow)
 	}
 	sb.WriteString("target")
 	return sb.String()
@@ -1182,7 +1182,7 @@ func (p *proxyapp) updateSocksList() {
 			}
 			continue
 		} else {
-			p.availProxyList = append(p.availProxyList, proxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
+			p.availProxyList = append(p.availProxyList, ProxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
 			if conn != nil {
 				conn.Close()
 			}
@@ -1217,14 +1217,14 @@ func (p *proxyapp) updateSocksList() {
 		}
 		conn.Close()
 		currentDialer = dialer
-		p.availProxyList = append(p.availProxyList, proxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
+		p.availProxyList = append(p.availProxyList, ProxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
 	}
 	p.logger.Debug().Msgf("%s Available SOCKS5 Proxy [%d/%d]: %s", ctl,
 		len(p.availProxyList), len(p.proxylist), p.printProxyChain(p.availProxyList))
 }
 
 // https://www.calhoun.io/how-to-shuffle-arrays-and-slices-in-go/
-func shuffle(vals []proxyEntry) {
+func shuffle(vals []ProxyEntry) {
 	r := rand.New(rand.NewSource(time.Now().Unix()))
 	for len(vals) > 0 {
 		n := len(vals)
@@ -1235,7 +1235,7 @@ func shuffle(vals []proxyEntry) {
 }
 
 func (p *proxyapp) getSocks() (*socks5.Dialer, *http.Client, error) {
-	if p.proxylist == nil {
+	if !p.proxychain.Enabled {
 		return p.sockDialer, p.sockClient, nil
 	}
 	p.mu.RLock()
@@ -1252,7 +1252,7 @@ func (p *proxyapp) getSocks() (*socks5.Dialer, *http.Client, error) {
 	} else {
 		chainLength = p.proxychain.Length
 	}
-	copyProxyList := make([]proxyEntry, 0, len(p.availProxyList))
+	copyProxyList := make([]ProxyEntry, 0, len(p.availProxyList))
 	switch chainType {
 	case "strict", "dynamic":
 		copyProxyList = p.availProxyList
@@ -1678,12 +1678,13 @@ func (p *proxyapp) runRuleCmd(rule string) {
 		cmd.Stdout = nil
 	}
 	if err := cmd.Run(); err != nil {
-		p.logger.Fatal().Err(err).Msgf("[%s] Failed while configuring iptables. Are you root?", p.tproxyMode)
+		p.logger.Fatal().Err(err).Msgf("[%s] Failed running rule command", p.tproxyMode)
 	}
 	p.dump.WriteString(rule)
 }
 
 func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {
+	// TODO: add support for nftables
 	var setex string
 	if p.debug {
 		setex = "set -ex"
@@ -1768,19 +1769,6 @@ ip6tables -t filter -X GOHPTS  2>/dev/null || true
 `
 		p.runRuleCmd(cmdClearForward1)
 	}
-	var iface *net.Interface
-	var err error
-	if p.iface != nil {
-		iface = p.iface
-	} else {
-		iface, err = network.GetDefaultInterface()
-		if err != nil {
-			iface, err = network.GetDefaultInterfaceFromRoute()
-			if err != nil {
-				p.logger.Fatal().Err(err).Msg("failed getting default network interface")
-			}
-		}
-	}
 	cmdForwardFilter0 := fmt.Sprintf(`
 iptables -t filter -N GOHPTS 2>/dev/null
 iptables -t filter -F GOHPTS
@@ -1788,7 +1776,7 @@ iptables -t filter -A FORWARD -j GOHPTS
 iptables -t filter -A GOHPTS -i %s -j ACCEPT
 iptables -t filter -A GOHPTS -o %s -j ACCEPT
 `,
-		iface.Name, iface.Name)
+		p.iface.Name, p.iface.Name)
 
 	p.runRuleCmd(cmdForwardFilter0)
 	if p.ipv6enabled {
@@ -1798,7 +1786,7 @@ ip6tables -t filter -F GOHPTS
 ip6tables -t filter -A FORWARD -j GOHPTS
 ip6tables -t filter -A GOHPTS -i %s -j ACCEPT
 ip6tables -t filter -A GOHPTS -o %s -j ACCEPT
-`, iface.Name, iface.Name)
+`, p.iface.Name, p.iface.Name)
 		p.runRuleCmd(cmdForwardFilter1)
 		if p.raEnabled {
 			cmdForwardFilter2 := `

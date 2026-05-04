@@ -208,8 +208,12 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	}
 	defer dstConn.Close()
 
-	dstConnStr := fmt.Sprintf("%s→ %s→ %s", dstConn.LocalAddr().String(), dstConn.RemoteAddr().String(), dst)
-	srcConnStr := fmt.Sprintf("%s→ %s", srcConn.RemoteAddr().String(), srcConn.LocalAddr().String())
+	arrow := "→ "
+	if ts.p.nocolor {
+		arrow = "->"
+	}
+	dstConnStr := fmt.Sprintf("%s%s%s%s%s", dstConn.LocalAddr().String(), arrow, dstConn.RemoteAddr().String(), arrow, dst)
+	srcConnStr := fmt.Sprintf("%s%s%s", srcConn.RemoteAddr().String(), arrow, srcConn.LocalAddr().String())
 
 	ts.p.logger.Debug().Msgf("[tcp %s] src: %s - dst: %s", ts.p.tproxyMode, srcConnStr, dstConnStr)
 
@@ -454,8 +458,8 @@ ip6tables -t mangle -A GOHPTS -p tcp -d ff00::/8 -j RETURN
 ip6tables -t mangle -A GOHPTS -p tcp -d fe80::/10 -j RETURN
 `
 			ts.p.runRuleCmd(cmdInit01)
-			if ts.p.raEnabled {
-				cmdInit02 := fmt.Sprintf(`ip6tables -t mangle -A GOHPTS -p tcp -d %s -j RETURN`, ts.p.hostIPGlobal)
+			if ts.p.raEnabled && ts.p.hostDNS6 != nil {
+				cmdInit02 := fmt.Sprintf(`ip6tables -t mangle -A GOHPTS -p tcp -d %s -j RETURN`, ts.p.hostDNS6.IP)
 				ts.p.runRuleCmd(cmdInit02)
 			}
 		}

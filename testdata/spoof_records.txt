@@ -1,0 +1,7 @@
+0.0.0.0 3lift.org
+:: 448ff4fcfcd199a.com
+[ff02::1] 44chan.me
+127.0.0.1 4ourkidsky.com
+5kv261gjmq04c9.com 0.0.0.0
+0.0.0.0 *.88chan*.pw
+8.8.8.8 *.new.915yzt.cn

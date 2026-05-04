@@ -1,0 +1,11 @@
+proxy_list:
+  - address: 127.0.0.1:1080
+    username: username
+    password: password
+  - address: 127.0.0.1:1081
+  - address: 127.0.0.1:1082
+
+proxy_chain:
+  enabled: true
+  type: strict
+  length: 2

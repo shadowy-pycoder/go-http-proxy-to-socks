@@ -118,7 +118,7 @@ func colorizeHTTP(
 		if req.ContentLength > 0 {
 			fmt.Fprintf(&sb, " Len: %d", req.ContentLength)
 		}
-		sb.WriteString(" →  ")
+		sb.WriteString(" -> ")
 		fmt.Fprintf(&sb, "%s %s ", resp.Proto, resp.Status)
 		if resp.ContentLength > 0 {
 			fmt.Fprintf(&sb, "Len: %d", resp.ContentLength)
@@ -201,7 +201,7 @@ func colorizeTLS(req *layers.TLSClientHello, resp *layers.TLSServerHello, id str
 		if req.ALPN != nil {
 			fmt.Fprintf(&sb, " ALPN: %v", req.ALPN)
 		}
-		sb.WriteString(" →  ")
+		sb.WriteString(" -> ")
 		sb.WriteString("\n")
 		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
@@ -287,7 +287,7 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 	fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 	sb.WriteString(id)
 	if nocolor {
-		fmt.Fprintf(&sb, " DNS %s (%s) %#04x ", req.Flags.OPCodeDesc, req.Flags.QRDesc, req.TransactionID)
+		fmt.Fprintf(&sb, " DNS %s (%s) %#04x ", req.Flags.OPCode.Desc, req.Flags.QR.Desc, req.TransactionID)
 		for _, rec := range req.Questions {
 			fmt.Fprintf(&sb, "%s %s ", rec.Type.Name, rec.Name)
 		}
@@ -303,7 +303,8 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 		sb.WriteString("\n")
 		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
-		fmt.Fprintf(&sb, " DNS %s (%s) %#04x ", resp.Flags.OPCodeDesc, resp.Flags.QRDesc, resp.TransactionID)
+
+		fmt.Fprintf(&sb, " DNS %s (%s) %s %#04x ", resp.Flags.OPCode.Desc, resp.Flags.QR.Desc, resp.Flags.RCode.Desc, resp.TransactionID)
 		for _, rec := range resp.Questions {
 			fmt.Fprintf(&sb, "%s %s ", rec.Type.Name, rec.Name)
 		}
@@ -317,7 +318,7 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 			sb.WriteString(rec.Summary())
 		}
 	} else {
-		sb.WriteString(colors.Gray(fmt.Sprintf(" DNS %s (%s)", req.Flags.OPCodeDesc, req.Flags.QRDesc)).Bold())
+		sb.WriteString(colors.Gray(fmt.Sprintf(" DNS %s (%s)", req.Flags.OPCode.Desc, req.Flags.QR.Desc)).Bold())
 		sb.WriteString(colors.Beige(fmt.Sprintf(" %#04x ", req.TransactionID)).String())
 		for _, rec := range req.Questions {
 			fmt.Fprintf(&sb, "%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rec.Name))
@@ -334,7 +335,8 @@ func colorizeDNS(req, resp *layers.DNSMessage, id string, nocolor bool) string {
 		sb.WriteString("\033[K\n")
 		fmt.Fprintf(&sb, "%s ", colorizeTimestamp(time.Now(), nocolor))
 		sb.WriteString(id)
-		sb.WriteString(colors.Blue(fmt.Sprintf(" DNS %s (%s)", resp.Flags.OPCodeDesc, resp.Flags.QRDesc)).Bold())
+		sb.WriteString(colors.Blue(fmt.Sprintf(" DNS %s (%s)", resp.Flags.OPCode.Desc, resp.Flags.QR.Desc)).Bold())
+		sb.WriteString(colors.Gray(fmt.Sprintf(" %s", resp.Flags.RCode.Desc)).String())
 		sb.WriteString(colors.Beige(fmt.Sprintf(" %#04x ", resp.TransactionID)).String())
 		for _, rec := range resp.Questions {
 			fmt.Fprintf(&sb, "%s %s ", colors.LightBlue(rec.Type.Name), colors.Gray(rec.Name))
@@ -357,6 +359,7 @@ func highlightPatterns(line string, nocolor bool) (string, bool) {
 	matched := false
 
 	// TODO: make this configurable
+	// TODO: write cred matches to separate file
 	// line, matched = replace(line, ipPortPattern, colors.YellowBg, matched, nocolor)
 	// line, matched = replace(line, domainPattern, colors.YellowBg, matched, nocolor)
 	line, matched = replace(line, jwtPattern, colors.Magenta, matched, nocolor)
@@ -445,7 +448,7 @@ func colorizeConnections(srcRemote, srcLocal, dstRemote, dstLocal net.Addr, id s
 	if nocolor {
 		sb.WriteString(id)
 		fmt.Fprintf(&sb,
-			" Src: %s→ %s →  Dst: %s→ %s",
+			" Src: %s->%s -> Dst: %s->%s",
 			srcRemote,
 			srcLocal,
 			dstLocal,
@@ -480,7 +483,7 @@ func colorizeConnectionsTransparent(
 	var sb strings.Builder
 	if nocolor {
 		sb.WriteString(id)
-		fmt.Fprintf(&sb, " Src: %s→ %s →  Dst: %s→ %s Orig Dst: %s",
+		fmt.Fprintf(&sb, " Src: %s->%s -> Dst: %s->%s Orig Dst: %s",
 			srcRemote,
 			srcLocal,
 			dstLocal,

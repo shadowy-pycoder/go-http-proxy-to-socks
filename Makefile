@@ -1,5 +1,4 @@
 APP_NAME=gohpts
-TEST_FILE=${APP_NAME}.test
 
 .PHONY: all
 all: build
@@ -8,9 +7,9 @@ all: build
 build:
 	CGO_ENABLED=0 go build -ldflags "-s -w" -trimpath -o ./bin/${APP_NAME} ./cmd/${APP_NAME}/*.go
 
-.PHONY: bench test
-bench:
-	go test -bench=. -benchmem -run=^$$ -benchtime 512x -cpuprofile='cpu.prof' -memprofile='mem.prof'
+.PHONY: test
+test:
+	go test ./... -v
 
 .PHONY: clean
 clean:

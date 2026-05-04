@@ -30,6 +30,7 @@
 - [IPv6 support](#ipv6-support)
 - [ARP spoofing](#arp-spoofing)
 - [NDP spoofing](#ndp-spoofing)
+- [DNS spoofing](#dns-spoofing)
 - [Links](#links)
 - [Contributing](#contributing)
 - [License](#license)
@@ -79,6 +80,9 @@ Specify http server in proxy configuration of Postman
 
 - **NDP spoofing**\
   Proxy IPv6 connections using Router/Neighbor Advertisement and RDNSS injections.
+
+- **DNS spoofing**\
+  Redirect clients to arbitrary domains using DNS records manipulation
 
 - **DNS Leak Protection**\
   DNS resolution occurs on SOCKS5 server side.
@@ -907,6 +911,85 @@ gohpts -s 203.0.113.10:3000 -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -mark 
 7. Stop proxy by hitting Ctrl+C
 
 8. Profit!
+
+### DNS spoofing
+
+[[Back]](#table-of-contents)
+
+To enforce DNS filters and spoof targets by changing DNS records, host running `GoHPTS` should become a default gateway for LAN devices. For this to work, just run transparent proxy with udp enabled and also run ARP/NDP spoofing to make targets use your DNS server.
+
+DNS replies created by `GoHPTS` look like normal packets coming from router or trusted DNS servers (Google, Cloudflare), which results in clients updating their cache with what you tell them. Keep in mind, however, that it only works for "standard" unencrypted DNS traffic (`DOT`/`DOH` not filtered or spoofed).
+
+DNS filters and domains for spoofing can be configured in `dns_filter` section of yaml file configuration. All lists accept URLs, file paths and entries similar to those usually found in hosts file, see [https://en.wikipedia.org/wiki/Hosts\_(file)](<https://en.wikipedia.org/wiki/Hosts_(file)>).
+
+Example:
+
+```yaml
+# dns filters require udp transparent proxy and arpspoof/ndpspoof
+# filters accept hosts like entries (use either links, file paths or just plain comma separated lists
+dns_filter:
+  enabled: true
+  whitelist: ["/tmp/whitelisted_domains.txt", "example.com", "*.google.com"] # ip is optional, domains can start with *. to match all subdomains
+  blacklist:
+    ["https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"]
+  blacklist_all: false # block all non whitelisted domains
+  spooflist: ["127.0.0.1 example.com"] # ip address is required here
+```
+
+Use cases:
+
+- Ad and tracker blocker for all LAN devices
+- Parental control via blocking specific categories of websites
+- Block known phishing and malware domains
+- Traffic redirection for analysis
+- Credential harvesting via redirection
+- Traffic hijacking and manipulation (inject ads, scripts, tracking)
+- Surveillance and profiling
+
+Mimimal config for this setup:
+
+```yaml
+# gohpts_dns_spoof.yaml
+proxy_list:
+  - address: 127.0.0.1:1080 # point to socks5 server supporting TCP/UDP
+
+sniffing:
+  enabled: true
+  body: true
+
+transparent_proxy:
+  tcp:
+    enabled: true
+    address: 0.0.0.0:8888
+  udp:
+    enabled: true
+    address: 0.0.0.0:8889
+  mode: "tproxy"
+  disable_http: true
+  auto: true
+
+arpspoof:
+  enabled: true
+  settings: "fullduplex 1;debug 1;interval 1s"
+
+dns_filter:
+  enabled: true
+  whitelist: []
+  blacklist: [
+      "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+    ] # list of domains to filter
+  blacklist_all: true
+  # all requests for example.com will be redirected to 0.0.0.0 address
+  spooflist: ["0.0.0.0 example.com"]
+```
+
+Run:
+
+```shell
+sudo ./gohpts -f ./gohpts_dns_spoof.yaml
+```
+
+More information can be found here: [https://en.wikipedia.org/wiki/DNS_spoofing](https://en.wikipedia.org/wiki/DNS_spoofing)
 
 ## Links
 

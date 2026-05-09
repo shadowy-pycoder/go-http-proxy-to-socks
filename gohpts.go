@@ -1371,7 +1371,14 @@ func (p *proxyapp) gatherSniffData(req, resp layers.Layer, sniffdata *[]string, 
 	switch reqt := req.(type) {
 	case *layers.HTTPMessage:
 		var reqBodySaved, respBodySaved []byte
-		rest := resp.(*layers.HTTPMessage)
+		var rest *layers.HTTPMessage
+		// TODO: find out why req and resp sometimes confused
+		if reqt.Response != nil {
+			rest = reqt
+			reqt = resp.(*layers.HTTPMessage)
+		} else {
+			rest = resp.(*layers.HTTPMessage)
+		}
 		if p.body {
 			reqBodySaved, _ = io.ReadAll(reqt.Request.Body)
 			respBodySaved, _ = io.ReadAll(rest.Response.Body)

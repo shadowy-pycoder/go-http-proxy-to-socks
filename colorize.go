@@ -21,7 +21,7 @@ var (
 		`(?:(?:\[(?:[0-9a-fA-F:.]+(?:%[a-zA-Z0-9_.-]+)?)\]|(?:\d{1,3}\.){3}\d{1,3})(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?|(?:[0-9a-fA-F:]+:+[0-9a-fA-F:]+(?:%[a-zA-Z0-9_.-]+)?))`,
 	)
 	domainPattern = regexp.MustCompile(
-		`\b(?:[a-zA-Z0-9-]{1,63}\.)+(?:com|net|org|io|co|uk|ru|de|edu|gov|info|biz|dev|app|ai|tv)(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
+		`\b(?:[a-zA-Z0-9-]{1,63}\.)+(?:com|net|org|io|co|uk|ru|de|edu|gov|info|biz|dev|app|ai|tv|local)(?::(6553[0-5]|655[0-2]\d|65[0-4]\d{2}|6[0-4]\d{3}|[1-5]?\d{1,4}))?\b`,
 	)
 	jwtPattern  = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)
 	authPattern = regexp.MustCompile(
@@ -447,7 +447,8 @@ func colorizeConnections(srcRemote, srcLocal, dstRemote, dstLocal net.Addr, id s
 	var sb strings.Builder
 	if nocolor {
 		sb.WriteString(id)
-		fmt.Fprintf(&sb,
+		fmt.Fprintf(
+			&sb,
 			" Src: %s->%s -> Dst: %s->%s",
 			srcRemote,
 			srcLocal,
@@ -483,7 +484,8 @@ func colorizeConnectionsTransparent(
 	var sb strings.Builder
 	if nocolor {
 		sb.WriteString(id)
-		fmt.Fprintf(&sb, " Src: %s->%s -> Dst: %s->%s Orig Dst: %s",
+		fmt.Fprintf(
+			&sb, " Src: %s->%s -> Dst: %s->%s Orig Dst: %s",
 			srcRemote,
 			srcLocal,
 			dstLocal,

@@ -1373,11 +1373,12 @@ func (p *proxyapp) gatherSniffData(req, resp layers.Layer, sniffdata *[]string, 
 		var reqBodySaved, respBodySaved []byte
 		var rest *layers.HTTPMessage
 		// TODO: find out why req and resp sometimes confused
-		if reqt.Response != nil {
-			rest = reqt
-			reqt = resp.(*layers.HTTPMessage)
-		} else {
-			rest = resp.(*layers.HTTPMessage)
+		if reqt.Request == nil {
+			return fmt.Errorf("empty request")
+		}
+		rest = resp.(*layers.HTTPMessage)
+		if rest.Response == nil {
+			return fmt.Errorf("empty response")
 		}
 		if p.body {
 			reqBodySaved, _ = io.ReadAll(reqt.Request.Body)

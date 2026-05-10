@@ -118,7 +118,7 @@ Specify http server in proxy configuration of Postman
 yay -S gohpts
 ```
 
-- Download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page.
+- Download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page:
 
 ```shell
 GOHPTS_RELEASE=v1.13.3; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
@@ -139,6 +139,12 @@ git clone https://github.com/shadowy-pycoder/go-http-proxy-to-socks.git
 cd go-http-proxy-to-socks
 make build
 ./bin/gohpts
+```
+
+- Run in docker:
+
+```shell
+docker run -it --privileged --network host -v "$PWD/gohpts.yaml:/config.yaml" shadowypycoder/gohpts:latest -f config.yaml
 ```
 
 ## Usage

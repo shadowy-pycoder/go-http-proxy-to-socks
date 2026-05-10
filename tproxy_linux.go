@@ -246,7 +246,8 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 				srcConn.LocalAddr(),
 				dstConn.LocalAddr(),
 				dstConn.RemoteAddr(),
-				dst, id, ts.p.nocolor)
+				dst, id, ts.p.nocolor,
+			)
 			sniffheader = append(sniffheader, connections)
 		}
 		go ts.p.sniffreporter(&wg, &sniffheader, reqChan, respChan, id)
@@ -529,7 +530,10 @@ ip6tables -t mangle -A PREROUTING -p tcp -j GOHPTS
 	}
 	cmdCheckBBR := exec.Command("bash", "-c", fmt.Sprintf(`
     %s
+	if command -v lsmod >/dev/null 2>&1 && command -v modprobe >/dev/null 2>&1
+	then
 	lsmod | grep -q '^tcp_bbr' || modprobe tcp_bbr
+	fi
     `, setex))
 	cmdCheckBBR.Stdout = os.Stdout
 	cmdCheckBBR.Stderr = os.Stderr

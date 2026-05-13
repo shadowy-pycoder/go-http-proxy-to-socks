@@ -33,4 +33,6 @@ models/**/*
 *.vocab
 *.yaml
 rules.sh
+*.txt
+*.pcap*
 

@@ -57,6 +57,9 @@ type Config struct {
 
 	// DNSFilter filters
 	DNSFilter DNSFilterLists
+
+	// packet capture
+	Pcap string
 }
 
 type ProxyEntry struct {
@@ -134,6 +137,10 @@ type yamlConfig struct {
 		Settings string `yaml:"settings"`
 	} `yaml:"ndpspoof"`
 	DNSFilter DNSFilterLists `yaml:"dns_filter"`
+	Pcap      struct {
+		Enabled  bool   `yaml:"enabled"`
+		Settings string `yaml:"settings"`
+	} `yaml:"pcap"`
 }
 
 func createConfigFromPath(path string) (*Config, error) {
@@ -200,6 +207,9 @@ func createConfigFromPath(path string) (*Config, error) {
 	}
 	if sconf.DNSFilter.Enabled {
 		conf.DNSFilter = sconf.DNSFilter
+	}
+	if sconf.Pcap.Enabled {
+		conf.Pcap = sconf.Pcap.Settings
 	}
 	return &conf, nil
 }
@@ -335,6 +345,10 @@ func parseConfig(conf *Config) error {
 			conf.NDPSpoof = yamlConf.NDPSpoof
 		}
 
+		if conf.Pcap == "" {
+			conf.Pcap = yamlConf.Pcap
+		}
+
 		if conf.IgnoredPorts == "" {
 			conf.IgnoredPorts = yamlConf.IgnoredPorts
 		}
@@ -381,6 +395,9 @@ func parseConfig(conf *Config) error {
 		}
 		if conf.NDPSpoof != "" {
 			return fmt.Errorf("option `NDPSpoof` is available only on linux/android systems")
+		}
+		if conf.Pcap != "" {
+			return fmt.Errorf("option `Pcap` is available only on linux/android systems")
 		}
 		if conf.IgnoredPorts != "" {
 			return fmt.Errorf("option `IgnoredPorts` is available only on linux/android systems")

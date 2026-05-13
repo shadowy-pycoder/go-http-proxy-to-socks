@@ -10,8 +10,10 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/shadowy-pycoder/mshark/network"
 	"github.com/wzshiming/socks5"
@@ -178,4 +180,13 @@ func runSysctlOptCmd(opt, value, setex string, opts map[string]string, debug boo
 	dump.WriteString(cmdOpt)
 	dump.WriteString("\n")
 	return nil
+}
+
+func createPcapFile(app, ext string) (*os.File, error) {
+	path := fmt.Sprintf("./%s_%s.%s", app, time.Now().UTC().Format("20060102_150405"), ext)
+	f, err := os.OpenFile(filepath.FromSlash(path), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file: %v", err)
+	}
+	return f, nil
 }

@@ -12,8 +12,6 @@ import (
 	"golang.org/x/term"
 )
 
-const app string = "gohpts"
-
 const usagePrefix string = `   _____       _    _ _____ _______ _____
   / ____|     | |  | |  __ \__   __/ ____|
  | |  __  ___ | |__| | |__) | | | | (___
@@ -73,11 +71,14 @@ const usageTproxy string = `
   Spoofing:
   -arpspoof Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true;interval 10s")
   -ndpspoof Enable NDP spoof proxy for selected targets (Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4;fullduplex false;debug true;interval 10s")
+
+  Packet Capture:
+  -pcap     Enable packet capture (Example: "promisc true;expr ip proto tcp;snaplen 65535;timeout 10s;packet_count 100;packet_buffer 8192;exts txt,pcap,pcapng")
 `
 
 func root(args []string) error {
 	conf := gohpts.Config{}
-	flags := flag.NewFlagSet(app, flag.ExitOnError)
+	flags := flag.NewFlagSet(gohpts.App, flag.ExitOnError)
 	addrSocks := flags.String("s", "", "")
 	userSocks := flags.String("u", "", "")
 	passSocks := ""
@@ -90,7 +91,7 @@ func root(args []string) error {
 	flags.StringVar(&conf.Interface, "i", "", "")
 	flags.BoolFunc("I", "", func(flagValue string) error {
 		if err := network.DisplayInterfaces(false); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", app, err)
+			fmt.Fprintf(os.Stderr, "%s: %v\n", gohpts.App, err)
 			os.Exit(2)
 		}
 		os.Exit(0)
@@ -102,7 +103,7 @@ func root(args []string) error {
 		flags.StringVar(&conf.TProxyUDP, "Tu", "", "")
 		flags.Func("M", "", func(flagValue string) error {
 			if !slices.Contains(gohpts.SupportedTProxyModes, flagValue) {
-				fmt.Fprintf(os.Stderr, "%s: %s is not supported (type '%s -h' for help)\n", app, flagValue, app)
+				fmt.Fprintf(os.Stderr, "%s: %s is not supported (type '%s -h' for help)\n", gohpts.App, flagValue, gohpts.App)
 				os.Exit(2)
 			}
 			conf.TProxyMode = flagValue
@@ -115,6 +116,7 @@ func root(args []string) error {
 		flags.UintVar(&conf.Mark, "mark", 0, "")
 		flags.StringVar(&conf.ARPSpoof, "arpspoof", "", "")
 		flags.StringVar(&conf.NDPSpoof, "ndpspoof", "", "")
+		flags.StringVar(&conf.Pcap, "pcap", "", "")
 		flags.StringVar(&conf.IgnoredPorts, "P", "", "")
 		flags.BoolVar(&conf.Dump, "dump", false, "")
 	}
@@ -262,7 +264,7 @@ func root(args []string) error {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("%s pid: %d\n", app, process.Pid)
+			fmt.Printf("%s pid: %d\n", gohpts.App, process.Pid)
 			process.Release()
 			os.Exit(0)
 		}

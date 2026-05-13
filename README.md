@@ -31,6 +31,7 @@
 - [ARP spoofing](#arp-spoofing)
 - [NDP spoofing](#ndp-spoofing)
 - [DNS spoofing](#dns-spoofing)
+- [Packet Capture](#packet-capture)
 - [Links](#links)
 - [Contributing](#contributing)
 - [License](#license)
@@ -84,6 +85,9 @@ Specify http server in proxy configuration of Postman
 - **DNS spoofing**\
   Redirect clients to arbitrary domains using DNS records manipulation
 
+- **Packet Capture**\
+  Capture traffic into txt/pcap/pcapng files and analyze with Wireshark
+
 - **DNS Leak Protection**\
   DNS resolution occurs on SOCKS5 server side.
 
@@ -121,7 +125,7 @@ yay -S gohpts
 - Download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page:
 
 ```shell
-GOHPTS_RELEASE=v1.13.3; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+GOHPTS_RELEASE=v1.13.4; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
 ```
 
 - Install using `go install` command (requires Go [1.26](https://go.dev/doc/install) or later):
@@ -996,6 +1000,35 @@ sudo ./gohpts -f ./gohpts_dns_spoof.yaml
 ```
 
 More information can be found here: [https://en.wikipedia.org/wiki/DNS_spoofing](https://en.wikipedia.org/wiki/DNS_spoofing)
+
+### Packet Capture
+
+[[Back]](#table-of-contents)
+
+Traffic can be captured into pcap, pcapng or custom txt formats and later analyzed with tools like Wireshark, tcpdump and many others.
+
+First, make sure `GoHPTS` executable has elevated privileges to be able to capture raw packets, you have two options:
+
+- Run `sudo setcap cap_net_raw+ep ~/go/bin/gohpts` one time to give proxy raw traffic access
+- Run proxy with `sudo` when you need to specify `-pcap` flag in CLI or `pcap.enabled` in file configuration.
+
+Configure proxy using CLI:
+
+```shell
+gohpts -pcap "promisc true;timeout 10s;exts txt,pcap,pcapng"
+```
+
+Configuration file:
+
+```yaml
+pcap:
+  enabled: true
+  settings: "promisc true;expr ip proto tcp;snaplen 65535;timeout 10s;packet_count 100;packet_buffer 8192;exts txt,pcap,pcapng"
+```
+
+These commands produce three packet capture files with corresponding formats that later can be analyzed by various tools.
+
+For more information about pcap options see `gohpts -h` and [https://github.com/shadowy-pycoder/mshark](https://github.com/shadowy-pycoder/mshark)
 
 ## Links
 

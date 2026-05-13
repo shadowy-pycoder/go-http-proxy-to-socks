@@ -14,4 +14,6 @@ test:
 .PHONY: clean
 clean:
 	find ./bin ! -name '.gitignore' -type f -exec rm -vrf {} +
+	rm -vf *.pcap*
+	rm -vf *.txt
 

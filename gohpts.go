@@ -32,13 +32,17 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/shadowy-pycoder/arpspoof"
+	"github.com/shadowy-pycoder/mshark"
 	"github.com/shadowy-pycoder/mshark/layers"
+	"github.com/shadowy-pycoder/mshark/mpcap"
+	"github.com/shadowy-pycoder/mshark/mpcapng"
 	"github.com/shadowy-pycoder/mshark/network"
 	"github.com/shadowy-pycoder/ndpspoof"
 	"github.com/wzshiming/socks5"
 )
 
 const (
+	App                      string        = "gohpts"
 	addrSOCKS                string        = "127.0.0.1:1080"
 	addrHTTP                 string        = "127.0.0.1:8080"
 	readTimeout              time.Duration = 30 * time.Second
@@ -120,6 +124,8 @@ type proxyapp struct {
 	dump             strings.Builder
 	closeConn        chan bool
 	filter           *dnsFilter
+	pcapConf         *mshark.Config
+	pcapW            []mshark.PacketWriter
 
 	mu             sync.RWMutex
 	availProxyList []ProxyEntry
@@ -531,6 +537,71 @@ func New(conf *Config) (*proxyapp, error) {
 			return nil, fmt.Errorf("failed creating ndp spoofer: %v", err)
 		}
 	}
+	// configure packet capture
+	if conf.Pcap != "" {
+		if p.iface == nil {
+			return nil, fmt.Errorf("failed getting network interface")
+		}
+		pcc, err := mshark.NewConfig(conf.Pcap)
+		if err != nil {
+			return nil, fmt.Errorf("failed configuring packet capture: %v", err)
+		}
+		pcc.Device = p.iface
+		pcc.Promisc = true
+		for _, ext := range pcc.Exts {
+			switch ext {
+			case "txt":
+				f, err := createPcapFile(App, ext)
+				if err != nil {
+					return nil, err
+				}
+				w := mshark.NewWriter(f, true)
+				if err := w.WriteHeader(pcc); err != nil {
+					w.Close()
+					return nil, err
+				}
+				p.pcapW = append(p.pcapW, w)
+			case "pcap":
+				f, err := createPcapFile(App, ext)
+				if err != nil {
+					return nil, err
+				}
+				w := mpcap.NewWriter(f)
+				if err := w.WriteHeader(pcc.Snaplen); err != nil {
+					w.Close()
+					return nil, err
+				}
+				p.pcapW = append(p.pcapW, w)
+			case "pcapng":
+				f, err := createPcapFile(App, ext)
+				if err != nil {
+					return nil, err
+				}
+				w := mpcapng.NewWriter(f)
+				if err := w.WriteHeader(App, pcc.Device, pcc.Expr, pcc.Snaplen); err != nil {
+					w.Close()
+					return nil, err
+				}
+				p.pcapW = append(p.pcapW, w)
+			default:
+				return nil, fmt.Errorf("unsupported file format: %s", ext)
+			}
+		}
+		if len(p.pcapW) == 0 {
+			f, err := createPcapFile(App, "pcapng")
+			if err != nil {
+				return nil, err
+			}
+			defer f.Close()
+			w := mpcapng.NewWriter(f)
+			if err := w.WriteHeader(App, pcc.Device, pcc.Expr, pcc.Snaplen); err != nil {
+				return nil, err
+			}
+			p.pcapW = append(p.pcapW, w)
+
+		}
+		p.pcapConf = pcc
+	}
 	// configuring DNS
 	if p.arpspoofer != nil {
 		gw := p.arpspoofer.GatewayIP()
@@ -618,6 +689,15 @@ func (p *proxyapp) Run() {
 	if p.ndpspoofer != nil {
 		go p.ndpspoofer.Start()
 	}
+
+	var pcapWg sync.WaitGroup
+	if p.pcapConf != nil {
+		pcapWg.Go(func() {
+			if err := mshark.OpenLive(p.pcapConf, p.pcapW...); err != nil {
+				p.logger.Error().Err(err).Msg("Failed capturing packets")
+			}
+		})
+	}
 	tproxyEnabled := p.tproxyAddr != ""
 	tproxyServers := make([]*tproxyServer, p.tproxyWorkers)
 	opts := make(map[string]string, 20)
@@ -667,6 +747,10 @@ func (p *proxyapp) Run() {
 				if err != nil {
 					p.logger.Error().Err(err).Msg("Failed stopping ndp spoofer")
 				}
+			}
+			if p.pcapConf != nil {
+				p.logger.Info().Msg("Shutting down packet capture..")
+				pcapWg.Wait()
 			}
 			close(p.closeConn)
 			var wg sync.WaitGroup
@@ -762,6 +846,10 @@ func (p *proxyapp) Run() {
 					p.logger.Error().Err(err).Msg("Failed stopping ndp spoofer")
 				}
 			}
+			if p.pcapConf != nil {
+				p.logger.Info().Msg("Shutting down packet capture..")
+				pcapWg.Wait()
+			}
 			close(p.closeConn)
 			var wg sync.WaitGroup
 			if tproxyEnabled {
@@ -855,7 +943,11 @@ func (p *proxyapp) getResolver() *net.UDPAddr {
 				if r.IsLinkLocalUnicast() {
 					zone = p.iface.Name
 				}
-				return &net.UDPAddr{IP: net.ParseIP(r.String()), Port: 53, Zone: zone}
+				ip := net.ParseIP(r.String())
+				if ip == nil {
+					continue
+				}
+				return &net.UDPAddr{IP: ip, Port: 53, Zone: zone}
 			}
 		}
 	}

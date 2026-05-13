@@ -109,3 +109,8 @@ dns_filter:
     ["https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"]
   blacklist_all: false # block all non whitelisted domains
   spooflist: ["127.0.0.1 example.com"]
+
+pcap:
+  enabled: false
+  # see https://github.com/shadowy-pycoder/mshark for settings explanation
+  settings: "promisc true;expr ip proto tcp;snaplen 65535;timeout 10s;packet_count 100;packet_buffer 8192;exts txt,pcap,pcapng"

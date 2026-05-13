@@ -214,6 +214,9 @@ OPTIONS:
   Spoofing:
   -arpspoof Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true;interval 10s")
   -ndpspoof Enable NDP spoof proxy for selected targets (Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4;fullduplex false;debug true;interval 10s")
+
+  Packet Capture:
+  -pcap     Enable packet capture (Example: "promisc true;expr ip proto tcp;snaplen 65535;timeout 10s;packet_count 100;packet_buffer 8192;exts txt,pcap,pcapng")
 ```
 
 ### Configuration via CLI flags

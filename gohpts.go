@@ -648,7 +648,7 @@ func New(conf *Config) (*proxyapp, error) {
 		if p.tproxyUDPWorkers != 1 {
 			suffix = "s"
 		}
-		p.logger.Info().Msgf("TPROXY (udp): %s (%d instanse%s)", p.tproxyAddrUDP, p.tproxyUDPWorkers, suffix)
+		p.logger.Info().Msgf("TPROXY (udp): %s (%d instance%s)", p.tproxyAddrUDP, p.tproxyUDPWorkers, suffix)
 	}
 
 	if p.tproxyAddrUDP != "" {

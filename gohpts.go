@@ -448,11 +448,15 @@ func New(conf *Config) (*proxyapp, error) {
 					tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
 					tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
 					tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+					tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+					tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 				},
 			},
 		}
 		hs.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
 		hs.Protocols.SetHTTP1(true)
+		hs.Protocols.SetHTTP2(true)
+		hs.Protocols.SetUnencryptedHTTP2(true)
 		p.httpServer = hs
 		p.httpClient = &http.Client{
 			Transport: &http.Transport{
@@ -608,7 +612,7 @@ func New(conf *Config) (*proxyapp, error) {
 		p.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
 	}
 	if p.ndpspoofer != nil {
-		p.gwDNS6 = p.getResolver()
+		p.gwDNS6 = network.GetIPv6Resolver(p.iface)
 	}
 
 	// configuring DNS filters
@@ -933,25 +937,6 @@ func (p *proxyapp) Run() {
 		}
 	}
 	p.logger.Info().Msg("Proxy stopped")
-}
-
-func (p *proxyapp) getResolver() *net.UDPAddr {
-	if resolvers, err := network.GetSystemNameservers(); err == nil {
-		for _, r := range resolvers {
-			if network.Is6(r) {
-				var zone string
-				if r.IsLinkLocalUnicast() {
-					zone = p.iface.Name
-				}
-				ip := net.ParseIP(network.StripZone(r).String()) // netip.Addr contains zone so we need to strip it first
-				if ip == nil {
-					continue
-				}
-				return &net.UDPAddr{IP: ip, Port: 53, Zone: zone}
-			}
-		}
-	}
-	return &net.UDPAddr{IP: net.ParseIP("2001:4860:4860::8888"), Port: 53}
 }
 
 func (p *proxyapp) handler() http.HandlerFunc {

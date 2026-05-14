@@ -35,4 +35,5 @@ models/**/*
 rules.sh
 *.txt
 *.pcap*
+*.pem
 

@@ -125,7 +125,7 @@ Specify http server in proxy configuration of Postman
   Or using `paru`:
 
   ```shell
-  paru -S mshark
+  paru -S gohpts
   ```
 
 - Download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page:

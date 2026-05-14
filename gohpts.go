@@ -943,7 +943,7 @@ func (p *proxyapp) getResolver() *net.UDPAddr {
 				if r.IsLinkLocalUnicast() {
 					zone = p.iface.Name
 				}
-				ip := net.ParseIP(r.String())
+				ip := net.ParseIP(network.StripZone(r).String()) // netip.Addr contains zone so we need to strip it first
 				if ip == nil {
 					continue
 				}

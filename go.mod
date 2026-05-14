@@ -8,7 +8,7 @@ require (
 	github.com/rs/zerolog v1.34.0
 	github.com/shadowy-pycoder/arpspoof v0.0.4
 	github.com/shadowy-pycoder/colors v0.0.2
-	github.com/shadowy-pycoder/mshark v0.0.26
+	github.com/shadowy-pycoder/mshark v0.0.27
 	github.com/shadowy-pycoder/ndpspoof v0.0.8
 	github.com/stretchr/testify v1.9.0
 	github.com/wzshiming/socks5 v0.5.2

@@ -1124,59 +1124,82 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	defer dstConn.Close()
-	w.WriteHeader(http.StatusOK)
-
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		p.logger.Error().Msg("webserver doesn't support hijacking")
-		http.Error(w, "webserver doesn't support hijacking", http.StatusInternalServerError)
-		return
-	}
-	srcConn, _, err := hj.Hijack()
-	if err != nil {
-		p.logger.Error().Err(err).Msg("Failed hijacking src connection")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer srcConn.Close()
-
 	arrow := "→ "
 	if p.nocolor {
 		arrow = "->"
 	}
-	dstConnStr := fmt.Sprintf("%s%s%s%s%s", dstConn.LocalAddr().String(), arrow, dstConn.RemoteAddr().String(), arrow, r.Host)
-	srcConnStr := fmt.Sprintf("%s%s%s", srcConn.RemoteAddr().String(), arrow, srcConn.LocalAddr().String())
-
-	p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
-	p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
-	reqChan := make(chan layers.Layer)
-	respChan := make(chan layers.Layer)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go p.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr, reqChan)
-	go p.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr, respChan)
-	if p.sniff {
-		wg.Add(1)
-		sniffdata := make([]string, 0, 6)
-		id := getID(p.nocolor)
-		if p.json {
-			sniffdata = append(
-				sniffdata,
-				fmt.Sprintf("{\"connection\":{\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q}}",
-					srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()),
-			)
-			j, err := json.Marshal(&layers.HTTPMessage{Request: r})
-			if err == nil {
-				sniffdata = append(sniffdata, string(j))
-			}
-		} else {
-			connections := colorizeConnections(srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.RemoteAddr(), dstConn.LocalAddr(), id, r, p.nocolor)
-			sniffdata = append(sniffdata, connections)
+	defer dstConn.Close()
+	w.WriteHeader(http.StatusOK)
+	if r.ProtoMajor == 2 {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			p.logger.Error().Msg("webserver doesn't support flushing")
+			http.Error(w, "webserver doesn't support flushing", http.StatusInternalServerError)
+			return
 		}
-		go p.sniffreporter(&wg, &sniffdata, reqChan, respChan, id)
+		flusher.Flush()
+		dstConnStr := fmt.Sprintf("%s%s%s%s%s", dstConn.LocalAddr().String(), arrow, dstConn.RemoteAddr().String(), arrow, r.Host)
+		srcConnStr := fmt.Sprintf("%s%s%s", r.RemoteAddr, arrow, r.Host)
+
+		p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
+		p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
+		p.transferHTTP2(w, r, dstConn, dstConnStr, srcConnStr)
+	} else {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			p.logger.Error().Msg("webserver doesn't support hijacking")
+			http.Error(w, "webserver doesn't support hijacking", http.StatusInternalServerError)
+			return
+		}
+		srcConn, _, err := hj.Hijack()
+		if err != nil {
+			p.logger.Error().Err(err).Msg("Failed hijacking src connection")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer srcConn.Close()
+
+		dstConnStr := fmt.Sprintf("%s%s%s%s%s", dstConn.LocalAddr().String(), arrow, dstConn.RemoteAddr().String(), arrow, r.Host)
+		srcConnStr := fmt.Sprintf("%s%s%s", srcConn.RemoteAddr().String(), arrow, srcConn.LocalAddr().String())
+
+		p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
+		p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
+		reqChan := make(chan layers.Layer)
+		respChan := make(chan layers.Layer)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go p.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr, reqChan)
+		go p.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr, respChan)
+		if p.sniff {
+			wg.Add(1)
+			sniffdata := make([]string, 0, 6)
+			id := getID(p.nocolor)
+			if p.json {
+				sniffdata = append(
+					sniffdata,
+					fmt.Sprintf("{\"connection\":{\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q}}",
+						srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()),
+				)
+				j, err := json.Marshal(&layers.HTTPMessage{Request: r})
+				if err == nil {
+					sniffdata = append(sniffdata, string(j))
+				}
+			} else {
+				connections := colorizeConnections(
+					srcConn.RemoteAddr(),
+					srcConn.LocalAddr(),
+					dstConn.RemoteAddr(),
+					dstConn.LocalAddr(),
+					id,
+					r,
+					p.nocolor,
+				)
+				sniffdata = append(sniffdata, connections)
+			}
+			go p.sniffreporter(&wg, &sniffdata, reqChan, respChan, id)
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 }
 
 func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
@@ -1439,7 +1462,7 @@ func (p *proxyapp) transfer(
 		p.logger.Error().Err(err).Msgf("Error during copy from %s to %s: %v", srcName, destName, err)
 	}
 	if n > 0 {
-		p.logger.Debug().Msgf("copied %s from %s to %s", network.PrettifyBytes(n), srcName, destName)
+		p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(n), srcName, destName)
 	}
 	src.Close()
 }
@@ -1653,6 +1676,143 @@ func dispatch(data []byte) (layers.Layer, error) {
 	return nil, fmt.Errorf("failed sniffing traffic")
 }
 
+func (p *proxyapp) transferHTTP2(w http.ResponseWriter, r *http.Request, dst net.Conn, destName, srcName string) {
+	var writtenSrcDst, writtenDstSrc int64
+	defer func() {
+		if writtenSrcDst > 0 {
+			p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenSrcDst), srcName, destName)
+		}
+		if writtenDstSrc > 0 {
+			p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenDstSrc), destName, srcName)
+		}
+	}()
+
+	ctx := r.Context()
+	flusher := w.(http.Flusher)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		defer dst.Close()
+		buf := make([]byte, 32*1024)
+		for {
+			nr, er := r.Body.Read(buf)
+			if nr > 0 {
+				ewd := dst.SetWriteDeadline(time.Now().Add(writeTimeout))
+				if ewd != nil {
+					if !errors.Is(ewd, net.ErrClosed) {
+						p.logger.Error().Err(ewd).Msgf("Error during copy from %s to %s: ", srcName, destName)
+					}
+					return
+				}
+				nw, ew := dst.Write(buf[:nr])
+				if nw < 0 || nr < nw {
+					nw = 0
+					if ew == nil {
+						ew = errInvalidWrite
+					}
+				}
+				writtenSrcDst += int64(nw)
+				if ew != nil {
+					if ne, ok := ew.(net.Error); ok && ne.Timeout() {
+						return
+					}
+					if errors.Is(ew, net.ErrClosed) {
+						return
+					}
+					p.logger.Error().Err(ew).Msgf("Error during copy from %s to %s: ", srcName, destName)
+					return
+				}
+				if nr != nw {
+					p.logger.Error().Err(io.ErrShortWrite).Msgf("Error during copy from %s to %s: ", srcName, destName)
+					return
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.closeConn:
+				return
+			default:
+			}
+			if er != nil {
+				if errors.Is(er, net.ErrClosed) {
+					return
+				}
+				if errors.Is(er, io.EOF) {
+					return
+				}
+				p.logger.Error().Err(er).Msgf("Error during copy from %s to %s: ", srcName, destName)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 32*1024)
+		for {
+			erd := dst.SetReadDeadline(time.Now().Add(readTimeout))
+			if erd != nil {
+				if errors.Is(erd, net.ErrClosed) {
+					return
+				}
+				p.logger.Error().Err(erd).Msgf("Error during copy from %s to %s: ", destName, srcName)
+				return
+			}
+			nr, er := dst.Read(buf)
+			if nr > 0 {
+				nw, ew := w.Write(buf[:nr])
+				if nw < 0 || nr < nw {
+					nw = 0
+					if ew == nil {
+						ew = errInvalidWrite
+					}
+				}
+				writtenDstSrc += int64(nw)
+				if ew != nil {
+					if ne, ok := ew.(net.Error); ok && ne.Timeout() {
+						return
+					}
+					if errors.Is(ew, net.ErrClosed) {
+						return
+					}
+					p.logger.Error().Err(ew).Msgf("Error during copy from %s to %s: ", destName, srcName)
+					return
+				}
+				if nr != nw {
+					p.logger.Error().Err(io.ErrShortWrite).Msgf("Error during copy from %s to %s: ", destName, srcName)
+					return
+				}
+				flusher.Flush()
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.closeConn:
+				return
+			default:
+			}
+			if er != nil {
+				if ne, ok := er.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				if errors.Is(er, net.ErrClosed) {
+					return
+				}
+				if errors.Is(er, io.EOF) {
+					return
+				}
+				p.logger.Error().Err(er).Msgf("Error during copy from %s to %s: ", destName, srcName)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+}
+
 func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- layers.Layer) (written int64, err error) {
 	buf := make([]byte, 32*1024)
 readLoop:
@@ -1661,22 +1821,22 @@ readLoop:
 		case <-p.closeConn:
 			break readLoop
 		default:
-			er := src.SetReadDeadline(time.Now().Add(readTimeout))
-			if er != nil {
-				if errors.Is(er, net.ErrClosed) {
+			erd := src.SetReadDeadline(time.Now().Add(readTimeout))
+			if erd != nil {
+				if errors.Is(erd, net.ErrClosed) {
 					break readLoop
 				}
-				err = er
+				err = erd
 				break readLoop
 			}
 			nr, er := src.Read(buf)
 			if nr > 0 {
-				er := dst.SetWriteDeadline(time.Now().Add(writeTimeout))
-				if er != nil {
-					if errors.Is(er, net.ErrClosed) {
+				ewd := dst.SetWriteDeadline(time.Now().Add(writeTimeout))
+				if ewd != nil {
+					if errors.Is(ewd, net.ErrClosed) {
 						break readLoop
 					}
-					err = er
+					err = ewd
 					break readLoop
 				}
 				if p.sniff {
@@ -1692,6 +1852,7 @@ readLoop:
 						ew = errInvalidWrite
 					}
 				}
+				// TODO: detect overflow and convert to megabytes/gigabytes
 				written += int64(nw)
 				if ew != nil {
 					if ne, ok := ew.(net.Error); ok && ne.Timeout() {
@@ -1744,7 +1905,7 @@ func (p *proxyapp) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 		w.Header().Set("Proxy-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
-		http.Error(w, "Proxy Authentication Required", http.StatusProxyAuthRequired)
+		w.WriteHeader(http.StatusProxyAuthRequired)
 	})
 }
 

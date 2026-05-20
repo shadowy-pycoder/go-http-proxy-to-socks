@@ -27,6 +27,7 @@
 - [Traffic sniffing](#traffic-sniffing)
   - [JSON format](#json-format)
   - [Colored format](#colored-format)
+- [HTTP2/HTTP3 support](#http2http3-support)
 - [IPv6 support](#ipv6-support)
 - [ARP spoofing](#arp-spoofing)
 - [NDP spoofing](#ndp-spoofing)
@@ -93,6 +94,9 @@ Specify http server in proxy configuration of Postman
 
 - **CONNECT Method Support**\
   Supports HTTP CONNECT tunneling, enabling HTTPS and other TCP-based protocols.
+
+- **HTTP2/HTTP3 Support**\
+  Supports modern HTTP/2 and HTTP/3 transport, enabling efficient multiplexed connections over TLS 1.3
 
 - **Trailer Headers Support**\
   Handles HTTP trailer headers
@@ -799,9 +803,115 @@ To disable colors add `-nocolor`:
 gohpts -sniff -body -nocolor
 ```
 
-## IPv6 support
+## HTTP2/HTTP3 support
 
 [[Back]](#table-of-contents)
+
+`GoHPTS` proxy handles HTTP/1.1, HTTP/2, and HTTP/3 requests using the same server address and TLS certificate. This allows clients to automatically choose the best available protocol without changing configuration. TLS certificate can be obtained in several ways: cloud providers (Google, AWS, Cloudflare), free certificate from Let's Encrypt, or you can create self-signed certificate using `openssl` (Linux/macOS) or `New-SelfSignedCertificate` (Windows).
+
+Example setup using self-signed certificate:
+
+- Create `key.pem` and `cert.pem` files:
+
+  ```shell
+  openssl req -x509 -newkey rsa:2048 \
+  -keyout key.pem \
+  -out cert.pem \
+  -sha256 \
+  -days 365 \
+  -nodes \
+  -subj "/C=XX/ST=StateName/L=CityName/O=CompanyName/OU=CompanySectionName/CN=127.0.0.1" \
+  -addext "subjectAltName=IP:127.0.0.1"
+  ```
+
+- Prepare socks5 server with UDP ASSOCIATE support
+
+  ```shell
+  git clone https://github.com/wzshiming/socks5.git && cd socks5
+  go build -o socks5_server ./cmd/socks5/main.go
+  ./bin/socks5_server -a 0.0.0.0:1080
+  ```
+
+- Open another terminal and install `GoHPTS` proxy:
+
+  ```shell
+  go install github.com/shadowy-pycoder/go-http-proxy-to-socks/cmd/gohpts@latest
+  ```
+
+  You can use other methods described in [Installation](#installation) section.
+
+- Finally:
+  1. Create minimal config for your proxy
+
+  ```yaml
+  # gohpts_config.yaml
+  http_server:
+    enabled: true
+    address: 127.0.0.1:8080
+    cert_file: ./cert.pem
+    key_file: ./key.pem
+
+  proxy_list:
+    - address: 127.0.0.1:1080
+
+  logging:
+    debug: true
+
+  sniffing:
+    enabled: true
+    body: true
+  ```
+
+  Run the proxy:
+
+  ```shell
+  gohpts -f ./gohpts_config.yaml
+  ```
+
+  2. Or if you prefer command line arguments:
+
+  ```shell
+  gohpts -l :8080 -s 1080 -c ./cert.pem -k ./key.pem -d -sniff -body
+  ```
+
+  You should see something like that:
+
+  ```shell
+    [15:20:32] INF SOCKS5 Proxy: 127.0.0.1:1080
+    [15:20:32] INF HTTPS Proxy: 127.0.0.1:8080
+    [15:20:32] INF HTTP3 Proxy (QUIC): 127.0.0.1:8080
+  ```
+
+- Test connection
+
+  For HTTP/2 proxy server you can use `curl`:
+
+  ```shell
+    curl -Nvk --http2 --proxy-insecure --proxy-http2 --proxy https://localhost:8080 "https://stream.wikimedia.org/v2/stream/recentchange"
+  ```
+
+  Press `Ctrl+C` to stop running stream.
+
+  For HTTP/3 it is different since (at the time of writing) `curl` doesn't support HTTP3 proxy, so I will use my custom client I created for testing purposes.
+
+  Download and install [Simple HTTP3 to SOCKS5 proxy example](https://github.com/shadowy-pycoder/http3-socks-proxy):
+
+  ```shell
+  git clone https://github.com/shadowy-pycoder/http3-socks-proxy.git && cd http3-socks-proxy
+  make
+  ```
+
+  Run the following command:
+
+  ```shell
+  ./bin/client -a 127.0.0.1:8080 www.google.com
+  ```
+
+  You should see some gibberish resembling HTML page.
+
+  Go to terminal tab with `GoHPTS` proxy and check logs, you should see all your requests there.
+
+## IPv6 support
 
 To enable IPv6 handling just add `-6` flag, for example when using with transparent proxy:
 

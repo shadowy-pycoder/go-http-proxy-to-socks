@@ -1,4 +1,3 @@
-// Package gohpts transform SOCKS5 proxy into HTTP(S) proxy with support for Transparent Proxy (Redirect and TProxy), Proxychains and Traffic Sniffing
 package gohpts
 
 import (
@@ -163,7 +162,7 @@ type proxyapp struct {
 	// credetials used in HTTP BasicAuth
 	user, pass string
 
-	// allow run HTTP server over TLS (required for HTTP/2 and HTTP/3)
+	// allows running HTTP server over TLS (required for HTTP/2 and HTTP/3)
 	certFile, keyFile string
 
 	// proxychain

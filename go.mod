@@ -10,7 +10,7 @@ require (
 	github.com/shadowy-pycoder/arpspoof v0.0.4
 	github.com/shadowy-pycoder/colors v0.0.2
 	github.com/shadowy-pycoder/mshark v0.0.28
-	github.com/shadowy-pycoder/ndpspoof v0.0.8
+	github.com/shadowy-pycoder/ndpspoof v0.0.9
 	github.com/stretchr/testify v1.11.1
 	github.com/wzshiming/socks5 v0.5.2
 	golang.org/x/sys v0.35.0

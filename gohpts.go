@@ -565,7 +565,7 @@ func New(conf *Config) (*proxyapp, error) {
 			p.httpServer.Protocols.SetUnencryptedHTTP2(true)
 			hs3 := &http3.Server{
 				Addr:           addrHTTP,
-				Handler:        httpHandler,
+				Handler:        p.replayCheck(httpHandler),
 				MaxHeaderBytes: 1 << 20,
 				TLSConfig: &tls.Config{
 					MinVersion: tls.VersionTLS13,
@@ -578,6 +578,7 @@ func New(conf *Config) (*proxyapp, error) {
 					MaxIncomingUniStreams:   100,
 					HandshakeIdleTimeout:    10 * time.Second,
 					DisablePathMTUDiscovery: false,
+					Allow0RTT:               true,
 				},
 			}
 			p.http3Server = hs3
@@ -2061,6 +2062,19 @@ readLoop:
 		}
 	}
 	return written, err
+}
+
+func (p *proxyapp) replayCheck(next http.Handler) http.Handler {
+	// https://quic-go.net/docs/http3/server/#0-rtt
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !r.TLS.HandshakeComplete {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				w.WriteHeader(http.StatusTooEarly)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (p *proxyapp) proxyAuth(next http.HandlerFunc) http.HandlerFunc {

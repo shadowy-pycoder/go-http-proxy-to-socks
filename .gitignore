@@ -27,13 +27,15 @@ tls/
 
 *.prof
 
-# llm stuff
-models/**/*
-*.model
-*.vocab
 *.yaml
 rules.sh
 *.txt
 *.pcap*
 *.pem
+*.cnf
+*.crt
+*.ext
+*.key
+*.srl
+*.csr
 

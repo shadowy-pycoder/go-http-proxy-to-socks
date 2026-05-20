@@ -400,7 +400,7 @@ func colorizeTimestamp(ts time.Time, nocolor bool) string {
 	return colors.Gray(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
 }
 
-func colorizeErr(e string, nocolor bool) string {
+func colorizeErr(nocolor bool) string {
 	if nocolor {
 		return "ERR"
 	}

@@ -1086,7 +1086,6 @@ func (p *proxyapp) Run() {
 
 func (p *proxyapp) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("Hello")
 		if p.http3Server != nil && r.ProtoMajor < 3 {
 			p.http3Server.SetQUICHeaders(w.Header())
 		}

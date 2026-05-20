@@ -809,7 +809,7 @@ gohpts -sniff -body -nocolor
 
 `GoHPTS` proxy handles HTTP/1.1, HTTP/2, and HTTP/3 requests using the same server address and TLS certificate. This allows clients to automatically choose the best available protocol without changing configuration. TLS certificate can be obtained in several ways: cloud providers (Google, AWS, Cloudflare), free certificate from Let's Encrypt, or you can create self-signed certificate using `openssl` (Linux/macOS) or `New-SelfSignedCertificate` (Windows).
 
-Example setup using self-signed certificate:
+### Example setup using self-signed certificate:
 
 - Create `key.pem` and `cert.pem` files:
 
@@ -882,9 +882,9 @@ Example setup using self-signed certificate:
     [15:20:32] INF HTTP3 Proxy (QUIC): 127.0.0.1:8080
   ```
 
-- Test connection
+### Test connection
 
-  For HTTP/2 proxy server you can use `curl`:
+- For HTTP/2 proxy server you can use `curl`:
 
   ```shell
     curl -Nvk --http2 --proxy-insecure --proxy-http2 --proxy https://localhost:8080 "https://stream.wikimedia.org/v2/stream/recentchange"
@@ -892,7 +892,7 @@ Example setup using self-signed certificate:
 
   Press `Ctrl+C` to stop running stream.
 
-  For HTTP/3 it is different since (at the time of writing) `curl` doesn't support HTTP3 proxy, so I will use my custom client I created for testing purposes.
+- For HTTP/3 it is different since (at the time of writing) `curl` doesn't support HTTP3 proxy, so I will use my custom client I created for testing purposes.
 
   Download and install [Simple HTTP3 to SOCKS5 proxy example](https://github.com/shadowy-pycoder/http3-socks-proxy):
 
@@ -910,6 +910,45 @@ Example setup using self-signed certificate:
   You should see some gibberish resembling HTML page.
 
   Go to terminal tab with `GoHPTS` proxy and check logs, you should see all your requests there.
+
+### Test connection in a browser
+
+- Create proper self-signed ceritificate for browser:
+
+  ```shell
+  git clone https://github.com/shadowy-pycoder/go-http-proxy-to-socks.git
+  cd go-http-proxy-to-socks
+  cp ./resources/makecert.sh makecert.sh && chmod +x makecert.sh
+  ./makecert.sh
+  ```
+
+  More information can be found here: [Creating a browser trusted, self signed, SSL certificate](https://medium.com/@tbusser/creating-a-browser-trusted-self-signed-ssl-certificate-2709ce43fd15)
+
+- Add newly created `rootCA.crt` to system trust store:
+  1. Debian/Ubuntu:
+
+  ```shell
+  sudo cp rootCA.crt /usr/local/share/ca-certificates/rootCA.crt
+  sudo update-ca-certificates
+  ```
+
+  2. Arch Linux/CachyOS/EndeavourOS:
+
+  ```shell
+  sudo trust anchor rootCA.crt
+  ```
+
+- Run the proxy using `server.crt` and `server.key`:
+
+  ```shell
+  gohpts -l :8080 -s 1080 -c ./server.crt -k ./server.key -d -sniff -body
+  ```
+
+- Run the browser and go to any website:
+
+  ```shell
+  chromium --proxy-server="https://127.0.0.1:8080"
+  ```
 
 ## IPv6 support
 

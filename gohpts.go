@@ -65,11 +65,14 @@ var (
 )
 
 type logWriter struct {
-	file *os.File
+	file    *os.File
+	nocolor bool
 }
 
-func (writer logWriter) Write(bytes []byte) (int, error) {
-	return fmt.Fprintf(writer.file, "%s ERR %s", time.Now().Format(time.RFC3339), string(bytes))
+func (w logWriter) Write(bytes []byte) (int, error) {
+	ts := colorizeTimestamp(time.Now(), w.nocolor)
+	msg := colorizeErrMessage(string(bytes), w.nocolor)
+	return fmt.Fprintf(w.file, "%s %s %s", ts, colorizeErr(w.nocolor), msg)
 }
 
 type jsonLogWriter struct {
@@ -282,7 +285,7 @@ func New(conf *Config) (*proxyapp, error) {
 		snifflogger = zerolog.New(snifflog).With().Timestamp().Logger()
 	} else {
 		log.SetFlags(0)
-		logWriter := logWriter{file: logfile}
+		logWriter := logWriter{file: logfile, nocolor: p.nocolor}
 		log.SetOutput(logWriter)
 		output := zerolog.ConsoleWriter{Out: logfile, NoColor: p.nocolor}
 
@@ -1083,6 +1086,7 @@ func (p *proxyapp) Run() {
 
 func (p *proxyapp) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("Hello")
 		if p.http3Server != nil && r.ProtoMajor < 3 {
 			p.http3Server.SetQUICHeaders(w.Header())
 		}

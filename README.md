@@ -8,7 +8,7 @@
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/shadowy-pycoder/go-http-proxy-to-socks/total)
 ![GitHub Downloads (all assets, latest release)](https://img.shields.io/github/downloads/shadowy-pycoder/go-http-proxy-to-socks/latest/total)
 
-<p align="center"><img alt="MrGopher" src="resources/mr_gopher_small.png"/>
+![GoHPTS - Colors example](resources/sniffing_color.png)
 
 ## Table of contents
 
@@ -641,6 +641,8 @@ transparent_proxy:
 
 [[Back]](#table-of-contents)
 
+<p align="center"><img alt="MrGopher" src="resources/mr_gopher_small.png"/>
+
 `GoHPTS` proxy allows one to capture and monitor traffic that goes through the service. This procces is known as `traffic sniffing`, `packet sniffing` or just `sniffing`. In particular, proxy tries to identify whether it is a plain text (HTTP) or TLS traffic, and after identification is done, it parses request/response metadata and writes it to the file or console. In the case of `GoHTPS` proxy a parsed metadata looks like the following (TLS Handshake):
 
 ### JSON format
@@ -780,8 +782,6 @@ gohpts -sniff -snifflog ~/sniff.log -j
 ### Colored format
 
 [[Back]](#table-of-contents)
-
-![GoHPTS - Colors example](resources/sniffing_color.png)
 
 You can see the example of colored output in the picture above. In this mode, `GoHPTS` tries to highlight import information such as TLS Handshake, HTTP metadata, something that looks line login/passwords or different types of auth and secret tokens. The output is limited comparing to JSON but way easier to read for humans.
 

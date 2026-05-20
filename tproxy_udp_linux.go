@@ -451,7 +451,7 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 				} else {
 					conn, found := tsu.clients.Get(srcAddr, dstAddr)
 					if !found {
-						sockDialer, _, err := tsu.p.getSocks()
+						sockDialer, err := tsu.p.getSockDialer()
 						if err != nil {
 							tsu.p.logger.Error().
 								Err(err).

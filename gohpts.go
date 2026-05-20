@@ -30,6 +30,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	quic "github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/rs/zerolog"
 	"github.com/shadowy-pycoder/arpspoof"
 	"github.com/shadowy-pycoder/mshark"
@@ -80,55 +82,161 @@ func (writer jsonLogWriter) Write(bytes []byte) (int, error) {
 		time.Now().Format(time.RFC3339), strings.TrimRight(string(bytes), "\n"))
 }
 
+type httpClienter interface {
+	io.Closer
+	Do(req *http.Request) (*http.Response, error)
+}
+
+var (
+	_ httpClienter = &httpClient{}
+	_ httpClienter = &http3Client{}
+)
+
+func newHTTPClient(dialer contextDialer) *httpClient {
+	c := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			DialContext:     dialer.DialContext,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return &httpClient{Client: c}
+}
+
+type httpClient struct {
+	*http.Client
+}
+
+func (c *httpClient) Close() error {
+	c.CloseIdleConnections()
+	return nil
+}
+
+func newHTTP3Client(dialer func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error)) *http3Client {
+	tr := &http3.Transport{
+		Dial: dialer,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{http3.NextProtoH3},
+		},
+	}
+	c := &http.Client{
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return &http3Client{Client: c, tr: tr}
+}
+
+type http3Client struct {
+	*http.Client
+	tr *http3.Transport
+}
+
+func (c *http3Client) Close() error {
+	c.CloseIdleConnections()
+	return c.tr.Close()
+}
+
 type proxyapp struct {
-	httpServer       *http.Server
-	sockClient       *http.Client
-	httpClient       *http.Client
-	sockDialer       *socks5.Dialer
-	logger           *zerolog.Logger
-	snifflogger      *zerolog.Logger
-	certFile         string
-	keyFile          string
-	httpServerAddr   string
-	pprofAddr        string
-	iface            *net.Interface
-	tcp              string
-	udp              string
-	ipv6enabled      bool
-	tproxyAddr       string
-	tproxyAddrUDP    string
-	tproxyMode       string
-	tproxyWorkers    uint
-	tproxyUDPWorkers uint
-	auto             bool
-	mark             uint
-	arpspoofer       *arpspoof.ARPSpoofer
-	ndpspoofer       *ndpspoof.NDPSpoofer
-	raEnabled        bool
-	gwDNS            *net.UDPAddr
-	gwDNS6           *net.UDPAddr
-	hostDNS6         *net.UDPAddr
-	ignoredPorts     string
-	user             string
-	pass             string
-	proxychain       ProxyChain
-	proxylist        []ProxyEntry
-	rrIndex          uint32
-	rrIndexReset     uint32
-	sniff            bool
-	nocolor          bool
-	body             bool
-	json             bool
-	debug            bool
-	dumpRules        bool
-	dump             strings.Builder
-	closeConn        chan bool
-	filter           *dnsFilter
-	pcapConf         *mshark.Config
-	pcapW            []mshark.PacketWriter
+	// httpServerAddr for HTTP/1.2, HTTP/2 (tcp) and HTTP/3 (udp) servers
+	httpServerAddr string
+	// HTTP server for HTTP/1.1 and HTTP/2 handling
+	httpServer *http.Server
+	// http client with socks5 proxy dialer
+	httpClient *httpClient
+	// http client for local connections
+	httpLocalClient *httpClient
+	// HTTP server for HTTP/3 handling
+	http3Server *http3.Server
+	// http3 client with socks5 proxy dialer
+	http3Client *http3Client
+	// http3 client for local connections
+	http3LocalClient *http3Client
+	// socks5 dialer with UDP ASSOCIATE support
+	sockDialer *socks5.Dialer
+	// net.Dialer with timeout (used for local connections and as a forward dialer in socks5 proxy)
+	baseDialer *net.Dialer
+	// credetials used in HTTP BasicAuth
+	user, pass string
+
+	// allow run HTTP server over TLS (required for HTTP/2 and HTTP/3)
+	certFile, keyFile string
+
+	// proxychain
+
+	proxychain   ProxyChain
+	proxylist    []ProxyEntry
+	rrIndex      uint32
+	rrIndexReset uint32
 
 	mu             sync.RWMutex
 	availProxyList []ProxyEntry
+
+	// logging
+
+	logger, snifflogger *zerolog.Logger
+	// enables sniffing
+	sniff bool
+	//  capture request and response body in HTTP request
+	body bool
+	// disable colorized output
+	nocolor bool
+	// logs in JSON format
+	json bool
+	// enable debug output
+	debug bool
+
+	// address of a server with profiling data
+	pprofAddr string
+
+	// network interface proxy bound to, also used in spoofing tools
+	//
+	// if not specified, servers bound to loopback address
+	iface *net.Interface
+
+	// network types ("tcp", "udp" when IPv6 is enabled, "tcp4" and "udp4" otherwise)
+	tcp, udp    string
+	ipv6enabled bool
+
+	// address of tcp transparent proxy
+	tproxyAddr string
+	// address of udp transparent proxy
+	tproxyAddrUDP string
+	// tproxy or redirect
+	tproxyMode string
+	// number of tcp transparent proxy servers
+	tproxyWorkers uint
+	// number of udp transparent proxy servers
+	tproxyUDPWorkers uint
+	// indicates whether auto configuaration is enabled
+	auto bool
+	// used to indicate proxy outbound traffic
+	mark         uint
+	ignoredPorts string
+	// dump iptables rules and kernel parameters generated by auto
+	dumpRules bool
+	dump      strings.Builder
+
+	// spoofing
+
+	arpspoofer *arpspoof.ARPSpoofer
+	ndpspoofer *ndpspoof.NDPSpoofer
+	raEnabled  bool
+	gwDNS      *net.UDPAddr
+	gwDNS6     *net.UDPAddr
+	hostDNS6   *net.UDPAddr
+	filter     *dnsFilter
+
+	// packet capture
+
+	pcapConf *mshark.Config
+	pcapW    []mshark.PacketWriter
+
+	closeConn chan bool
 }
 
 func New(conf *Config) (*proxyapp, error) {
@@ -229,15 +337,6 @@ func New(conf *Config) (*proxyapp, error) {
 	sl := snifflogger.Level(lvl)
 	p.logger = &l
 	p.snifflogger = &sl
-	// set pprof address
-	if conf.AddrPprof != "" {
-		var pprofAddr netip.AddrPort
-		pprofAddr, err = network.ParseAddrPort(conf.AddrPprof, "127.0.0.1")
-		if err != nil {
-			return nil, err
-		}
-		p.pprofAddr = pprofAddr.String()
-	}
 
 	// enable ipv6
 	if conf.IPv6Enabled {
@@ -324,29 +423,48 @@ func New(conf *Config) (*proxyapp, error) {
 			p.ignoredPorts = conf.IgnoredPorts
 		}
 	}
+	// configure base dialer
+	p.baseDialer = getBaseDialer(timeout, p.mark)
+
+	// getting interface
+	if conf.Interface != "" {
+		p.iface, err = net.InterfaceByName(conf.Interface)
+		if err != nil {
+			if ifIdx, err := strconv.Atoi(conf.Interface); err == nil {
+				p.iface, err = net.InterfaceByIndex(ifIdx)
+				if err != nil {
+					p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", conf.Interface)
+				}
+			} else {
+				p.logger.Warn().Msgf("Failed binding to %s, using default interface", conf.Interface)
+			}
+		}
+	}
+
+	// getting address from interface
+	ifaceAddr, err := getAddressFromInterface(p.iface, p.ipv6enabled)
+	if err != nil {
+		return nil, err
+	}
+
+	// set pprof address
+	if conf.AddrPprof != "" {
+		parsedAddrPprof, err := network.ParseAddrPort(conf.AddrPprof, ifaceAddr)
+		if err != nil {
+			return nil, err
+		}
+		p.pprofAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrPprof.Port()).String()
+	}
+
 	// configure http address
 	httpEnabled := !conf.NoHTTP
+	var httpHandler http.Handler
 	if httpEnabled {
-		iAddr, err := getAddressFromInterface(p.iface)
+		parsedAddrHTTP, err := network.ParseAddrPort(conf.AddrHTTP, ifaceAddr)
 		if err != nil {
-			p.iface = nil
-			p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", conf.Interface)
+			return nil, err
 		}
-		var hostPortHTTP netip.AddrPort
-		if iAddr == "" {
-			hostPortHTTP, err = network.ParseAddrPort(conf.AddrHTTP, "127.0.0.1")
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			parsedAddrHTTP, err := network.ParseAddrPort(conf.AddrHTTP, iAddr)
-			if err != nil {
-				return nil, err
-			}
-			hostPortHTTP = netip.AddrPortFrom(netip.MustParseAddr(iAddr), parsedAddrHTTP.Port())
-		}
-		addrHTTP := hostPortHTTP.String()
-		p.httpServerAddr = addrHTTP
+		p.httpServerAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrHTTP.Port()).String()
 		if conf.CertFile != "" {
 			p.certFile = expandPath(conf.CertFile)
 			if _, err := os.Stat(p.certFile); err != nil {
@@ -361,6 +479,11 @@ func New(conf *Config) (*proxyapp, error) {
 		}
 		p.user = conf.ServerUser
 		p.pass = conf.ServerPass
+		if p.user != "" && p.pass != "" {
+			httpHandler = p.proxyAuth(p.handler())
+		} else {
+			httpHandler = p.handler()
+		}
 	}
 
 	// configure socks5 addresses
@@ -371,7 +494,7 @@ func New(conf *Config) (*proxyapp, error) {
 		p.availProxyList = make([]ProxyEntry, 0, len(p.proxylist))
 		seen := make(map[string]struct{})
 		for idx, pr := range p.proxylist {
-			hpAddr, err := network.ParseAddrPort(pr.Address, "127.0.0.1")
+			hpAddr, err := network.ParseAddrPort(pr.Address, ifaceAddr)
 			if err != nil {
 				return nil, err
 			}
@@ -391,7 +514,7 @@ func New(conf *Config) (*proxyapp, error) {
 		p.rrIndexReset = rrIndexMax
 	} else {
 		socksProxy := conf.SocksProxy[0]
-		hostPortSOCKS, err := network.ParseAddrPort(socksProxy.Address, "127.0.0.1")
+		hostPortSOCKS, err := network.ParseAddrPort(socksProxy.Address, ifaceAddr)
 		if err != nil {
 			return nil, err
 		}
@@ -400,42 +523,18 @@ func New(conf *Config) (*proxyapp, error) {
 			User:     socksProxy.Username,
 			Password: socksProxy.Password,
 		}
-		dialer, err := newSOCKS5Dialer(addrSOCKS, &auth, getBaseDialer(timeout, p.mark), p.tcp)
+		dialer, err := newSOCKS5Dialer(addrSOCKS, &auth, p.baseDialer, p.tcp)
 		if err != nil {
 			return nil, fmt.Errorf("unable to create SOCKS5 dialer: %v", err)
 		}
 		p.sockDialer = dialer
-		if httpEnabled {
-			p.sockClient = &http.Client{
-				Transport: &http.Transport{
-					DialContext: dialer.DialContext,
-				},
-				CheckRedirect: func(req *http.Request, via []*http.Request) error {
-					return http.ErrUseLastResponse
-				},
-			}
-		}
 	}
 
-	// getting interface
-	if conf.Interface != "" {
-		p.iface, err = net.InterfaceByName(conf.Interface)
-		if err != nil {
-			if ifIdx, err := strconv.Atoi(conf.Interface); err == nil {
-				p.iface, err = net.InterfaceByIndex(ifIdx)
-				if err != nil {
-					p.logger.Warn().Err(err).Msgf("Failed binding to %s, using default interface", conf.Interface)
-				}
-			} else {
-				p.logger.Warn().Msgf("Failed binding to %s, using default interface", conf.Interface)
-			}
-		}
-	}
-
-	// configure http server
 	if httpEnabled {
+		// configure http server
 		hs := &http.Server{
 			Addr:           addrHTTP,
+			Handler:        httpHandler,
 			ReadTimeout:    readTimeout,
 			WriteTimeout:   writeTimeout,
 			MaxHeaderBytes: 1 << 20,
@@ -455,25 +554,45 @@ func New(conf *Config) (*proxyapp, error) {
 		}
 		hs.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
 		hs.Protocols.SetHTTP1(true)
-		hs.Protocols.SetHTTP2(true)
-		hs.Protocols.SetUnencryptedHTTP2(true)
 		p.httpServer = hs
-		p.httpClient = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-				DialContext:     getBaseDialer(timeout, p.mark).DialContext,
-			},
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-			Timeout: timeout,
+		p.httpLocalClient = newHTTPClient(p.baseDialer)
+		if p.sockDialer != nil {
+			p.httpClient = newHTTPClient(p.sockDialer)
+		}
+
+		// configure HTTP/2 and HTTP/3 support
+		if p.certFile != "" && p.keyFile != "" {
+			p.httpServer.Protocols.SetHTTP2(true)
+			p.httpServer.Protocols.SetUnencryptedHTTP2(true)
+			hs3 := &http3.Server{
+				Addr:           addrHTTP,
+				Handler:        httpHandler,
+				MaxHeaderBytes: 1 << 20,
+				TLSConfig: &tls.Config{
+					MinVersion: tls.VersionTLS13,
+					NextProtos: []string{http3.NextProtoH3},
+				},
+				QUICConfig: &quic.Config{
+					MaxIdleTimeout:          30 * time.Second,
+					KeepAlivePeriod:         10 * time.Second,
+					MaxIncomingStreams:      1000,
+					MaxIncomingUniStreams:   100,
+					HandshakeIdleTimeout:    10 * time.Second,
+					DisablePathMTUDiscovery: false,
+				},
+			}
+			p.http3Server = hs3
+			p.http3LocalClient = newHTTP3Client(getQUICDialer(p.baseDialer))
+			if p.sockDialer != nil {
+				p.http3Client = newHTTP3Client(getQUICDialer(p.sockDialer))
+			}
 		}
 	}
 
 	if slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-		// getting default interface
 		// TODO: add support for non linux systems in network module
 		if p.iface == nil {
+			// getting default interface
 			p.iface, err = network.GetDefaultInterface()
 			if err != nil {
 				p.iface, err = network.GetDefaultInterfaceFromRoute()
@@ -630,6 +749,7 @@ func New(conf *Config) (*proxyapp, error) {
 	if httpEnabled {
 		if p.certFile != "" && p.keyFile != "" {
 			p.logger.Info().Msgf("HTTPS Proxy: %s", p.httpServerAddr)
+			p.logger.Info().Msgf("HTTP3 Proxy (QUIC): %s", p.httpServerAddr)
 		} else {
 			p.logger.Info().Msgf("HTTP Proxy: %s", p.httpServerAddr)
 		}
@@ -801,13 +921,34 @@ func (p *proxyapp) Run() {
 					p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 				}
 			}
-			p.logger.Info().Msg("Server is shutting down...")
+			p.logger.Info().Msg("HTTP clients are shutting down...")
+			p.httpLocalClient.Close()
+			if p.httpClient != nil {
+				p.httpClient.Close()
+			}
+			if p.http3LocalClient != nil {
+				p.http3LocalClient.Close()
+			}
+			if p.http3Client != nil {
+				p.http3Client.Close()
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 
 			defer cancel()
 			p.httpServer.SetKeepAlivesEnabled(false)
+			httpServerStr := "HTTP"
+			if p.certFile != "" && p.keyFile != "" {
+				httpServerStr = "HTTPS"
+			}
+			p.logger.Info().Msgf("%s Server is shutting down...", httpServerStr)
 			if err := p.httpServer.Shutdown(ctx); err != nil {
-				p.logger.Fatal().Err(err).Msg("Could not gracefully shutdown the server")
+				p.logger.Error().Err(err).Msgf("Could not gracefully shutdown %s server", httpServerStr)
+			}
+			if p.http3Server != nil {
+				p.logger.Info().Msg("HTTP3 Server is shutting down...")
+				if err := p.http3Server.Shutdown(ctx); err != nil {
+					p.logger.Error().Err(err).Msg("Could not gracefully shutdown HTTP3 server")
+				}
 			}
 			close(done)
 		}()
@@ -821,14 +962,15 @@ func (p *proxyapp) Run() {
 				go tproxyServerUDP.ListenAndServe()
 			}
 		}
-		if p.user != "" && p.pass != "" {
-			p.httpServer.Handler = p.proxyAuth(p.handler())
-		} else {
-			p.httpServer.Handler = p.handler()
-		}
 		if p.certFile != "" && p.keyFile != "" {
-			if err := p.httpServer.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
-				p.logger.Fatal().Err(err).Msg("Unable to start HTTPS server")
+			go func() {
+				if err := p.httpServer.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
+					p.logger.Fatal().Err(err).Msg("Unable to start HTTPS server")
+				}
+			}()
+			// NOTE: assume when tls is enabled http3Server is not nil
+			if err := p.http3Server.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
+				p.logger.Fatal().Err(err).Msg("Unable to start HTTP3 server")
 			}
 		} else {
 			if err := p.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -941,7 +1083,12 @@ func (p *proxyapp) Run() {
 
 func (p *proxyapp) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodConnect {
+		if p.http3Server != nil && r.ProtoMajor < 3 {
+			p.http3Server.SetQUICHeaders(w.Header())
+		}
+		if r.ProtoMajor == 3 {
+			p.handleForward(w, r) // NOTE: method CONNECT for http3 is not supported
+		} else if r.Method == http.MethodConnect {
 			p.handleTunnel(w, r)
 		} else {
 			p.handleForward(w, r)
@@ -950,6 +1097,19 @@ func (p *proxyapp) handler() http.HandlerFunc {
 }
 
 func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
+	proto := r.ProtoMajor
+	switch proto {
+	case 2:
+		r.URL.Host = r.Host
+		r.URL.Scheme = "http"
+	case 3:
+		r.URL.Host = r.Host
+		r.URL.Scheme = "https"
+	}
+	// handle urls like http://example.com:443
+	if strings.HasSuffix(r.Host, ":443") {
+		r.URL.Scheme = "https"
+	}
 	var reqBodySaved []byte
 	if p.sniff && p.body {
 		reqBodySaved, _ = io.ReadAll(io.LimitReader(r.Body, maxBodySize))
@@ -965,27 +1125,53 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 	copyHeader(req.Header, r.Header)
 	delConnectionHeaders(req.Header)
 	delHopHeaders(req.Header)
-	if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
-		appendHostToXForwardHeader(req.Header, clientIP)
+	if proto == 3 {
+		if remoteAddr := r.Context().Value(http3.RemoteAddrContextKey).(net.Addr); remoteAddr != nil {
+			appendHostToXForwardHeader(req.Header, remoteAddr.String())
+		}
+	} else {
+		// TODO: find out why req.RemoteAddr is empty
+		if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+			appendHostToXForwardHeader(req.Header, clientIP)
+		}
 	}
 	var resp *http.Response
 	var chunked bool
 	var respBodySaved []byte
+	var c httpClienter
 	if network.IsLocalAddress(r.Host) {
-		resp = p.doReq(w, req, nil)
+		if proto == 3 {
+			c = p.http3LocalClient
+		} else {
+			c = p.httpLocalClient
+		}
+	} else if !p.proxychain.Enabled {
+		if proto == 3 {
+			c = p.http3Client
+		} else {
+			c = p.httpClient
+		}
 	} else {
-		_, sockClient, err := p.getSocks()
+		if proto == 3 {
+			c, err = p.getHTTP3Client()
+		} else {
+			c, err = p.getHTTPClient()
+		}
 		if err != nil {
 			p.logger.Error().Err(err).Msg("Failed getting SOCKS5 client")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		resp = p.doReq(w, req, sockClient)
+		defer c.Close()
 	}
-	if resp == nil {
+	resp, err = p.doReq(req, c)
+	if err != nil {
+		p.logger.Error().Err(err).Msg("")
+		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	chunked = slices.Contains(resp.TransferEncoding, "chunked")
+	// NOTE: makes sense to process requests as chunked regardless of headers
+	chunked = proto == 3 || slices.Contains(resp.TransferEncoding, "chunked")
 	if p.sniff {
 		if p.body {
 			if chunked {
@@ -1001,6 +1187,7 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 				gzr, err := gzip.NewReader(bytes.NewReader(respBodySaved))
 				if err == nil {
 					respBodySaved, _ = io.ReadAll(gzr)
+					gzr.Close()
 				}
 			}
 			reqBodySaved = bytes.Trim(reqBodySaved, "\r\n\t ")
@@ -1029,12 +1216,13 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer resp.Body.Close()
-	done := make(chan bool)
 	if chunked {
 		rc := http.NewResponseController(w)
 		go func() {
 			for {
 				select {
+				case <-r.Context().Done():
+					return
 				case <-time.Tick(flushTimeout):
 					err := rc.Flush()
 					if err != nil {
@@ -1051,8 +1239,6 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 						p.logger.Error().Err(err).Msg("Failed setting write deadline")
 						return
 					}
-				case <-done:
-					return
 				}
 			}
 		}()
@@ -1070,11 +1256,6 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	n, err := io.Copy(w, resp.Body)
-	if err != nil {
-		p.logger.Error().Err(err).Msgf("Error during Copy() %s: %s", r.URL.String(), err)
-		close(done)
-		return
-	}
 	written := network.PrettifyBytes(n)
 	if chunked {
 		written = fmt.Sprintf("%s - chunked", written)
@@ -1084,6 +1265,11 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 		status = colorizeStatus(resp.StatusCode, status, false)
 	}
 	p.logger.Debug().Msgf("%s - %s - %s - %s - %s", r.Proto, r.Method, r.Host, status, written)
+
+	if err != nil && !errors.Is(err, &quic.IdleTimeoutError{}) {
+		p.logger.Error().Err(err).Msgf("Error during Copy() %s: %s", r.URL.String(), err)
+		return
+	}
 	if len(resp.Trailer) == announcedTrailers {
 		copyHeader(w.Header(), resp.Trailer)
 	}
@@ -1093,7 +1279,6 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(key, v)
 		}
 	}
-	close(done)
 }
 
 func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
@@ -1102,14 +1287,14 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	if network.IsLocalAddress(r.Host) {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		dstConn, err = getBaseDialer(timeout, p.mark).DialContext(ctx, p.tcp, r.Host)
+		dstConn, err = p.baseDialer.DialContext(ctx, p.tcp, r.Host)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 	} else {
-		sockDialer, _, err := p.getSocks()
+		sockDialer, err := p.getSockDialer()
 		if err != nil {
 			p.logger.Error().Err(err).Msg("Failed getting SOCKS5 client")
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -1252,6 +1437,7 @@ func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
 }
 
 func (p *proxyapp) updateSocksList() {
+	// TODO: transports should be reused, for chains it makes sense to create a map where different chains map to transport
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.availProxyList = p.availProxyList[:0]
@@ -1265,7 +1451,7 @@ func (p *proxyapp) updateSocksList() {
 			User:     pr.Username,
 			Password: pr.Password,
 		}
-		dialer, err = newSOCKS5Dialer(pr.Address, &auth, getBaseDialer(timeout, p.mark), p.tcp)
+		dialer, err = newSOCKS5Dialer(pr.Address, &auth, p.baseDialer, p.tcp)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
 			failed++
@@ -1334,9 +1520,9 @@ func shuffle(vals []ProxyEntry) {
 	}
 }
 
-func (p *proxyapp) getSocks() (*socks5.Dialer, *http.Client, error) {
+func (p *proxyapp) getSockDialer() (*socks5.Dialer, error) {
 	if !p.proxychain.Enabled {
-		return p.sockDialer, p.sockClient, nil
+		return p.sockDialer, nil
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -1344,7 +1530,7 @@ func (p *proxyapp) getSocks() (*socks5.Dialer, *http.Client, error) {
 	ctl := colorizeChainType(chainType, p.nocolor)
 	if len(p.availProxyList) == 0 {
 		p.logger.Error().Msgf("%s No SOCKS5 Proxy available", ctl)
-		return nil, nil, fmt.Errorf("no socks5 proxy available")
+		return nil, fmt.Errorf("no socks5 proxy available")
 	}
 	var chainLength int
 	if p.proxychain.Length > len(p.availProxyList) || p.proxychain.Length <= 0 {
@@ -1383,11 +1569,11 @@ func (p *proxyapp) getSocks() (*socks5.Dialer, *http.Client, error) {
 	}
 	if len(copyProxyList) == 0 {
 		p.logger.Error().Msgf("%s No SOCKS5 Proxy available", ctl)
-		return nil, nil, fmt.Errorf("no socks5 proxy available")
+		return nil, fmt.Errorf("no socks5 proxy available")
 	}
 	if p.proxychain.Type == "strict" && len(copyProxyList) != len(p.proxylist) {
 		p.logger.Error().Msgf("%s Not all SOCKS5 Proxy available", ctl)
-		return nil, nil, fmt.Errorf("not all socks5 proxy available")
+		return nil, fmt.Errorf("not all socks5 proxy available")
 	}
 	var dialer *socks5.Dialer
 	var err error
@@ -1399,51 +1585,44 @@ func (p *proxyapp) getSocks() (*socks5.Dialer, *http.Client, error) {
 		if i > 0 {
 			dialer, err = newSOCKS5Dialer(pr.Address, &auth, dialer, p.tcp)
 		} else {
-			dialer, err = newSOCKS5Dialer(pr.Address, &auth, getBaseDialer(timeout, p.mark), p.tcp)
+			dialer, err = newSOCKS5Dialer(pr.Address, &auth, p.baseDialer, p.tcp)
 		}
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
-			return nil, nil, err
+			return nil, err
 		}
 	}
-	socks := &http.Client{
-		Transport: &http.Transport{
-			DialContext: dialer.DialContext,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
 	p.logger.Debug().Msgf("%s Request chain: %s", ctl, p.printProxyChain(copyProxyList))
-	return dialer, socks, nil
+	return dialer, nil
 }
 
-func (p *proxyapp) doReq(w http.ResponseWriter, r *http.Request, sock *http.Client) *http.Response {
-	var (
-		resp   *http.Response
-		err    error
-		msg    string
-		client *http.Client
-	)
-	if sock != nil {
-		client = sock
-		msg = "Connection to SOCKS5 server failed"
-	} else {
-		client = p.httpClient
-		msg = "Connection failed"
-	}
-	resp, err = client.Do(r)
+func (p *proxyapp) getHTTPClient() (*httpClient, error) {
+	sockDialer, err := p.getSockDialer()
 	if err != nil {
-		p.logger.Error().Err(err).Msg(msg)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		return nil
+		return nil, err
+	}
+	httpClient := newHTTPClient(sockDialer)
+	return httpClient, nil
+}
+
+func (p *proxyapp) getHTTP3Client() (*http3Client, error) {
+	sockDialer, err := p.getSockDialer()
+	if err != nil {
+		return nil, err
+	}
+	http3Client := newHTTP3Client(getQUICDialer(sockDialer))
+	return http3Client, nil
+}
+
+func (p *proxyapp) doReq(r *http.Request, c httpClienter) (*http.Response, error) {
+	resp, err := c.Do(r)
+	if err != nil {
+		return nil, err
 	}
 	if resp == nil {
-		p.logger.Error().Msg(msg)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		return nil
+		return nil, fmt.Errorf("empty response")
 	}
-	return resp
+	return resp, nil
 }
 
 func (p *proxyapp) transfer(

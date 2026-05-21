@@ -450,7 +450,7 @@ func colorizeChainType(chainType string, nocolor bool) string {
 	return colors.WrapBrackets(colors.LightBlueBg(chainType).String())
 }
 
-func colorizeConnections(srcRemote, srcLocal, dstRemote, dstLocal net.Addr, id string, r *http.Request, nocolor bool) string {
+func colorizeConnections(srcRemote, srcLocal, dstRemote, dstLocal string, id string, r *http.Request, nocolor bool) string {
 	var sb strings.Builder
 	if nocolor {
 		sb.WriteString(id)

@@ -1173,7 +1173,6 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	// NOTE: makes sense to process requests as chunked regardless of headers
 	chunked = proto == 3 || slices.Contains(resp.TransferEncoding, "chunked")
 	if p.sniff {
 		if p.body {
@@ -1218,34 +1217,6 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 			p.snifflogger.Log().Msg(colorizeHTTP(req, resp, &reqBodySaved, &respBodySaved, id, false, p.body, p.nocolor))
 		}
 	}
-	defer resp.Body.Close()
-	if chunked {
-		rc := http.NewResponseController(w)
-		go func() {
-			for {
-				select {
-				case <-r.Context().Done():
-					return
-				case <-time.Tick(flushTimeout):
-					err := rc.Flush()
-					if err != nil {
-						p.logger.Error().Err(err).Msg("Failed flushing buffer")
-						return
-					}
-					err = rc.SetReadDeadline(time.Now().Add(readTimeout))
-					if err != nil {
-						p.logger.Error().Err(err).Msg("Failed setting read deadline")
-						return
-					}
-					err = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
-					if err != nil {
-						p.logger.Error().Err(err).Msg("Failed setting write deadline")
-						return
-					}
-				}
-			}
-		}()
-	}
 	announcedTrailers := len(resp.Trailer)
 	if announcedTrailers > 0 {
 		trailerKeys := make([]string, 0, announcedTrailers)
@@ -1258,21 +1229,88 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 	delHopHeaders(resp.Header)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	n, err := io.Copy(w, resp.Body)
-	written := network.PrettifyBytes(n)
+	var written int64
+	var wg sync.WaitGroup
+	rc := http.NewResponseController(w)
+	wg.Go(func() {
+		buf := make([]byte, 32*1024)
+		ticker := time.NewTicker(flushTimeout)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-p.closeConn:
+				return
+			case <-ticker.C:
+				err := rc.Flush()
+				if err != nil {
+					p.logger.Error().Err(err).Msg("Failed flushing buffer")
+					return
+				}
+				err = rc.SetReadDeadline(time.Now().Add(readTimeout))
+				if err != nil {
+					p.logger.Error().Err(err).Msg("Failed setting read deadline")
+					return
+				}
+				err = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+				if err != nil {
+					p.logger.Error().Err(err).Msg("Failed setting write deadline")
+					return
+				}
+			default:
+				nr, er := resp.Body.Read(buf)
+				if nr > 0 {
+					nw, ew := w.Write(buf[:nr])
+					if nw < 0 || nr < nw {
+						nw = 0
+						if ew == nil {
+							ew = errInvalidWrite
+						}
+					}
+					written += int64(nw)
+					if ew != nil {
+						if ne, ok := ew.(net.Error); ok && ne.Timeout() {
+							return
+						}
+						if errors.Is(ew, net.ErrClosed) {
+							return
+						}
+						return
+					}
+					if nr != nw {
+						return
+					}
+				}
+				if er != nil {
+					if errors.Is(er, os.ErrDeadlineExceeded) {
+						continue
+					}
+					if ne, ok := er.(net.Error); ok && ne.Timeout() {
+						continue
+					}
+					if errors.Is(er, net.ErrClosed) {
+						return
+					}
+					if errors.Is(er, io.EOF) {
+						return
+					}
+					return
+				}
+			}
+		}
+	})
+	wg.Wait()
+	resp.Body.Close()
+	writtenBytes := network.PrettifyBytes(written)
 	if chunked {
-		written = fmt.Sprintf("%s - chunked", written)
+		writtenBytes = fmt.Sprintf("%s - chunked", writtenBytes)
 	}
 	status := resp.Status
 	if !p.nocolor {
 		status = colorizeStatus(resp.StatusCode, status, false)
 	}
-	p.logger.Debug().Msgf("%s - %s - %s - %s - %s", r.Proto, r.Method, r.Host, status, written)
-
-	if err != nil && !errors.Is(err, &quic.IdleTimeoutError{}) {
-		p.logger.Error().Err(err).Msgf("Error during Copy() %s: %s", r.URL.String(), err)
-		return
-	}
+	p.logger.Debug().Msgf("%s - %s - %s - %s - %s", r.Proto, r.Method, r.Host, status, writtenBytes)
 	if len(resp.Trailer) == announcedTrailers {
 		copyHeader(w.Header(), resp.Trailer)
 	}
@@ -1318,6 +1356,10 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	defer dstConn.Close()
 	w.WriteHeader(http.StatusOK)
+	reqChan := make(chan layers.Layer)
+	respChan := make(chan layers.Layer)
+	var wg sync.WaitGroup
+	var srcConnRemote, srcConnLocal, dstConnRemote, dstConnLocal string
 	if r.ProtoMajor == 2 {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -1326,12 +1368,17 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		flusher.Flush()
-		dstConnStr := fmt.Sprintf("%s%s%s%s%s", dstConn.LocalAddr().String(), arrow, dstConn.RemoteAddr().String(), arrow, r.Host)
-		srcConnStr := fmt.Sprintf("%s%s%s", r.RemoteAddr, arrow, r.Host)
+		srcConnRemote = r.RemoteAddr
+		srcConnLocal = r.Host
+		dstConnRemote = dstConn.RemoteAddr().String()
+		dstConnLocal = dstConn.LocalAddr().String()
+		dstConnStr := fmt.Sprintf("%s%s%s%s%s", dstConnLocal, arrow, dstConnRemote, arrow, r.Host)
+		srcConnStr := fmt.Sprintf("%s%s%s", srcConnRemote, arrow, srcConnLocal)
 
 		p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
 		p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
-		p.transferHTTP2(w, r, dstConn, dstConnStr, srcConnStr)
+		wg.Add(2)
+		go p.transferHTTP2(&wg, w, r, dstConn, dstConnStr, srcConnStr, reqChan, respChan)
 	} else {
 		hj, ok := w.(http.Hijacker)
 		if !ok {
@@ -1346,48 +1393,49 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer srcConn.Close()
+		srcConnRemote = srcConn.RemoteAddr().String()
+		srcConnLocal = srcConn.LocalAddr().String()
+		dstConnRemote = dstConn.RemoteAddr().String()
+		dstConnLocal = dstConn.LocalAddr().String()
 
-		dstConnStr := fmt.Sprintf("%s%s%s%s%s", dstConn.LocalAddr().String(), arrow, dstConn.RemoteAddr().String(), arrow, r.Host)
-		srcConnStr := fmt.Sprintf("%s%s%s", srcConn.RemoteAddr().String(), arrow, srcConn.LocalAddr().String())
+		dstConnStr := fmt.Sprintf("%s%s%s%s%s", dstConnLocal, arrow, dstConnRemote, arrow, r.Host)
+		srcConnStr := fmt.Sprintf("%s%s%s", srcConnRemote, arrow, srcConnLocal)
 
 		p.logger.Debug().Msgf("%s - %s - %s", r.Proto, r.Method, r.Host)
 		p.logger.Debug().Msgf("src: %s - dst: %s", srcConnStr, dstConnStr)
-		reqChan := make(chan layers.Layer)
-		respChan := make(chan layers.Layer)
-		var wg sync.WaitGroup
 		wg.Add(2)
 		go p.transfer(&wg, dstConn, srcConn, dstConnStr, srcConnStr, reqChan)
 		go p.transfer(&wg, srcConn, dstConn, srcConnStr, dstConnStr, respChan)
-		if p.sniff {
-			wg.Add(1)
-			sniffdata := make([]string, 0, 6)
-			id := getID(p.nocolor)
-			if p.json {
-				sniffdata = append(
-					sniffdata,
-					fmt.Sprintf("{\"connection\":{\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q}}",
-						srcConn.RemoteAddr(), srcConn.LocalAddr(), dstConn.LocalAddr(), dstConn.RemoteAddr()),
-				)
-				j, err := json.Marshal(&layers.HTTPMessage{Request: r})
-				if err == nil {
-					sniffdata = append(sniffdata, string(j))
-				}
-			} else {
-				connections := colorizeConnections(
-					srcConn.RemoteAddr(),
-					srcConn.LocalAddr(),
-					dstConn.RemoteAddr(),
-					dstConn.LocalAddr(),
-					id,
-					r,
-					p.nocolor,
-				)
-				sniffdata = append(sniffdata, connections)
-			}
-			go p.sniffreporter(&wg, &sniffdata, reqChan, respChan, id)
-		}
-		wg.Wait()
 	}
+	if p.sniff {
+		wg.Add(1)
+		sniffdata := make([]string, 0, 6)
+		id := getID(p.nocolor)
+		if p.json {
+			sniffdata = append(
+				sniffdata,
+				fmt.Sprintf("{\"connection\":{\"src_remote\":%q,\"src_local\":%q,\"dst_local\":%q,\"dst_remote\":%q}}",
+					srcConnRemote, srcConnLocal, dstConnLocal, dstConnRemote),
+			)
+			j, err := json.Marshal(&layers.HTTPMessage{Request: r})
+			if err == nil {
+				sniffdata = append(sniffdata, string(j))
+			}
+		} else {
+			connections := colorizeConnections(
+				srcConnRemote,
+				srcConnLocal,
+				dstConnRemote,
+				dstConnLocal,
+				id,
+				r,
+				p.nocolor,
+			)
+			sniffdata = append(sniffdata, connections)
+		}
+		go p.sniffreporter(&wg, &sniffdata, reqChan, respChan, id)
+	}
+	wg.Wait()
 }
 
 func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
@@ -1858,22 +1906,22 @@ func dispatch(data []byte) (layers.Layer, error) {
 	return nil, fmt.Errorf("failed sniffing traffic")
 }
 
-func (p *proxyapp) transferHTTP2(w http.ResponseWriter, r *http.Request, dst net.Conn, destName, srcName string) {
-	var writtenSrcDst, writtenDstSrc int64
+func (p *proxyapp) transferHTTP2(
+	wg *sync.WaitGroup,
+	w http.ResponseWriter,
+	r *http.Request,
+	dst net.Conn,
+	destName, srcName string,
+	reqChan, respChan chan<- layers.Layer,
+) {
+	var writtenSrcDst, writtenDstSrc atomic.Int64
 	defer func() {
-		if writtenSrcDst > 0 {
-			p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenSrcDst), srcName, destName)
-		}
-		if writtenDstSrc > 0 {
-			p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenDstSrc), destName, srcName)
-		}
+		p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenSrcDst.Load()), srcName, destName)
+		p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenDstSrc.Load()), destName, srcName)
 	}()
 
 	ctx := r.Context()
 	flusher := w.(http.Flusher)
-
-	var wg sync.WaitGroup
-	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
@@ -1889,6 +1937,12 @@ func (p *proxyapp) transferHTTP2(w http.ResponseWriter, r *http.Request, dst net
 					}
 					return
 				}
+				if p.sniff {
+					l, err := dispatch(buf[0:nr])
+					if err == nil {
+						reqChan <- l
+					}
+				}
 				nw, ew := dst.Write(buf[:nr])
 				if nw < 0 || nr < nw {
 					nw = 0
@@ -1896,7 +1950,7 @@ func (p *proxyapp) transferHTTP2(w http.ResponseWriter, r *http.Request, dst net
 						ew = errInvalidWrite
 					}
 				}
-				writtenSrcDst += int64(nw)
+				writtenSrcDst.Add(int64(nw))
 				if ew != nil {
 					if ne, ok := ew.(net.Error); ok && ne.Timeout() {
 						return
@@ -1920,6 +1974,12 @@ func (p *proxyapp) transferHTTP2(w http.ResponseWriter, r *http.Request, dst net
 			default:
 			}
 			if er != nil {
+				if errors.Is(er, os.ErrDeadlineExceeded) {
+					continue
+				}
+				if ne, ok := er.(net.Error); ok && ne.Timeout() {
+					continue
+				}
 				if errors.Is(er, net.ErrClosed) {
 					return
 				}
@@ -1946,6 +2006,12 @@ func (p *proxyapp) transferHTTP2(w http.ResponseWriter, r *http.Request, dst net
 			}
 			nr, er := dst.Read(buf)
 			if nr > 0 {
+				if p.sniff {
+					l, err := dispatch(buf[0:nr])
+					if err == nil {
+						respChan <- l
+					}
+				}
 				nw, ew := w.Write(buf[:nr])
 				if nw < 0 || nr < nw {
 					nw = 0
@@ -1953,7 +2019,7 @@ func (p *proxyapp) transferHTTP2(w http.ResponseWriter, r *http.Request, dst net
 						ew = errInvalidWrite
 					}
 				}
-				writtenDstSrc += int64(nw)
+				writtenDstSrc.Add(int64(nw))
 				if ew != nil {
 					if ne, ok := ew.(net.Error); ok && ne.Timeout() {
 						return
@@ -1978,6 +2044,9 @@ func (p *proxyapp) transferHTTP2(w http.ResponseWriter, r *http.Request, dst net
 			default:
 			}
 			if er != nil {
+				if errors.Is(er, os.ErrDeadlineExceeded) {
+					continue
+				}
 				if ne, ok := er.(net.Error); ok && ne.Timeout() {
 					continue
 				}
@@ -1992,7 +2061,6 @@ func (p *proxyapp) transferHTTP2(w http.ResponseWriter, r *http.Request, dst net
 			}
 		}
 	}()
-	wg.Wait()
 }
 
 func (p *proxyapp) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- layers.Layer) (written int64, err error) {
@@ -2056,7 +2124,7 @@ readLoop:
 				if errors.Is(er, net.ErrClosed) {
 					break readLoop
 				}
-				if er == io.EOF {
+				if errors.Is(er, io.EOF) {
 					break readLoop
 				}
 				err = er

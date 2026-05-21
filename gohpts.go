@@ -112,6 +112,9 @@ type httpClient struct {
 }
 
 func (c *httpClient) Close() error {
+	if c == nil {
+		return nil
+	}
 	c.CloseIdleConnections()
 	return nil
 }
@@ -139,6 +142,9 @@ type http3Client struct {
 }
 
 func (c *http3Client) Close() error {
+	if c == nil {
+		return nil
+	}
 	c.CloseIdleConnections()
 	return c.tr.Close()
 }
@@ -853,42 +859,49 @@ func (p *proxyapp) Run() {
 		chainType := p.proxychain.Type
 		ctl := colorizeChainType(chainType, p.nocolor)
 		go func() {
+			p.updateSocksList()
+			ticker := time.NewTicker(availProxyUpdateInterval)
+			defer ticker.Stop()
 			for {
-				p.logger.Debug().Msgf("%s Updating available proxy", ctl)
-				p.updateSocksList()
-				time.Sleep(availProxyUpdateInterval)
+				select {
+				case <-p.closeConn:
+					return
+				case <-ticker.C:
+					p.logger.Debug().Msgf("%s Updating available proxy", ctl)
+					p.updateSocksList()
+				}
 			}
 		}()
 	}
 	if p.httpServer != nil {
 		go func() {
 			<-quit
-			if p.arpspoofer != nil {
-				err := p.arpspoofer.Stop()
-				if err != nil {
-					p.logger.Error().Err(err).Msg("Failed stopping arp spoofer")
-				}
-			}
-			if p.ndpspoofer != nil {
-				err := p.ndpspoofer.Stop()
-				if err != nil {
-					p.logger.Error().Err(err).Msg("Failed stopping ndp spoofer")
-				}
-			}
-			if p.pcapConf != nil {
-				p.logger.Info().Msg("Shutting down packet capture..")
-				pcapWg.Wait()
-			}
 			close(p.closeConn)
 			var wg sync.WaitGroup
+			if p.arpspoofer != nil {
+				wg.Go(func() {
+					err := p.arpspoofer.Stop()
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed stopping arp spoofer")
+					}
+				})
+			}
+			if p.ndpspoofer != nil {
+				wg.Go(func() {
+					err := p.ndpspoofer.Stop()
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed stopping ndp spoofer")
+					}
+				})
+			}
+			if p.pcapConf != nil {
+				wg.Go(func() {
+					p.logger.Info().Msg("Shutting down packet capture..")
+					pcapWg.Wait()
+				})
+			}
 			if tproxyEnabled {
 				p.logger.Info().Msgf("[tcp %s] Server is shutting down...", p.tproxyMode)
-				if p.auto {
-					err := tproxyServers[0].ClearRedirectRules()
-					if err != nil {
-						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
-					}
-				}
 				wg.Add(int(p.tproxyWorkers))
 				for i, tproxyServer := range tproxyServers {
 					go func() {
@@ -901,12 +914,6 @@ func (p *proxyapp) Run() {
 			}
 			if tproxyUDPEnabled {
 				p.logger.Info().Msgf("[udp %s] Server is shutting down...", p.tproxyMode)
-				if p.auto {
-					err := tproxyUDPServers[0].ClearRedirectRules()
-					if err != nil {
-						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
-					}
-				}
 				wg.Add(int(p.tproxyUDPWorkers))
 				for i, tproxyServerUDP := range tproxyUDPServers {
 					go func() {
@@ -917,42 +924,55 @@ func (p *proxyapp) Run() {
 					}()
 				}
 			}
-			wg.Wait()
 			if p.auto {
-				err := p.clearCommonRedirectRules(opts)
-				if err != nil {
-					p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
-				}
+				wg.Go(func() {
+					err := tproxyServers[0].ClearRedirectRules()
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+					}
+					err = tproxyUDPServers[0].ClearRedirectRules()
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+					}
+					err = p.clearCommonRedirectRules(opts)
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+					}
+				})
 			}
 			p.logger.Info().Msg("HTTP clients are shutting down...")
-			p.httpLocalClient.Close()
-			if p.httpClient != nil {
-				p.httpClient.Close()
-			}
-			if p.http3LocalClient != nil {
-				p.http3LocalClient.Close()
-			}
-			if p.http3Client != nil {
-				p.http3Client.Close()
+			for _, c := range []httpClienter{p.http3LocalClient, p.http3Client, p.http3LocalClient, p.http3Client} {
+				go wg.Go(func() {
+					c.Close()
+				})
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 
 			defer cancel()
-			p.httpServer.SetKeepAlivesEnabled(false)
-			httpServerStr := "HTTP"
-			if p.certFile != "" && p.keyFile != "" {
-				httpServerStr = "HTTPS"
-			}
-			p.logger.Info().Msgf("%s Server is shutting down...", httpServerStr)
-			if err := p.httpServer.Shutdown(ctx); err != nil {
-				p.logger.Error().Err(err).Msgf("Could not gracefully shutdown %s server", httpServerStr)
-			}
+			go wg.Go(func() {
+				p.httpServer.SetKeepAlivesEnabled(false)
+				httpServerStr := "HTTP"
+				if p.certFile != "" && p.keyFile != "" {
+					httpServerStr = "HTTPS"
+				}
+				p.logger.Info().Msgf("%s Server is shutting down...", httpServerStr)
+				if err := p.httpServer.Shutdown(ctx); err != nil {
+					p.logger.Error().Err(err).Msgf("Could not gracefully shutdown %s server", httpServerStr)
+				} else {
+					p.logger.Info().Msgf("%s Server gracefully shutdown", httpServerStr)
+				}
+			})
 			if p.http3Server != nil {
 				p.logger.Info().Msg("HTTP3 Server is shutting down...")
-				if err := p.http3Server.Shutdown(ctx); err != nil {
-					p.logger.Error().Err(err).Msg("Could not gracefully shutdown HTTP3 server")
-				}
+				go wg.Go(func() {
+					if err := p.http3Server.Shutdown(ctx); err != nil {
+						p.logger.Error().Err(err).Msg("Could not gracefully shutdown HTTP3 server")
+					} else {
+						p.logger.Info().Msg("HTTP3 Server gracefully shutdown")
+					}
+				})
 			}
+			wg.Wait()
 			close(done)
 		}()
 		if tproxyEnabled {
@@ -983,32 +1003,31 @@ func (p *proxyapp) Run() {
 	} else {
 		go func() {
 			<-quit
-			if p.arpspoofer != nil {
-				err := p.arpspoofer.Stop()
-				if err != nil {
-					p.logger.Error().Err(err).Msg("Failed stopping arp spoofer")
-				}
-			}
-			if p.ndpspoofer != nil {
-				err := p.ndpspoofer.Stop()
-				if err != nil {
-					p.logger.Error().Err(err).Msg("Failed stopping ndp spoofer")
-				}
-			}
-			if p.pcapConf != nil {
-				p.logger.Info().Msg("Shutting down packet capture..")
-				pcapWg.Wait()
-			}
 			close(p.closeConn)
 			var wg sync.WaitGroup
-			if tproxyEnabled {
-				if p.auto {
-					err := tproxyServers[0].ClearRedirectRules()
+			if p.arpspoofer != nil {
+				wg.Go(func() {
+					err := p.arpspoofer.Stop()
 					if err != nil {
-						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+						p.logger.Error().Err(err).Msg("Failed stopping arp spoofer")
 					}
-				}
-
+				})
+			}
+			if p.ndpspoofer != nil {
+				wg.Go(func() {
+					err := p.ndpspoofer.Stop()
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed stopping ndp spoofer")
+					}
+				})
+			}
+			if p.pcapConf != nil {
+				wg.Go(func() {
+					p.logger.Info().Msg("Shutting down packet capture..")
+					pcapWg.Wait()
+				})
+			}
+			if tproxyEnabled {
 				wg.Add(int(p.tproxyWorkers))
 				for i, tproxyServer := range tproxyServers {
 					go func() {
@@ -1020,12 +1039,6 @@ func (p *proxyapp) Run() {
 				}
 			}
 			if tproxyUDPEnabled {
-				if p.auto {
-					err := tproxyUDPServers[0].ClearRedirectRules()
-					if err != nil {
-						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
-					}
-				}
 				wg.Add(int(p.tproxyUDPWorkers))
 				for i, tproxyServerUDP := range tproxyUDPServers {
 					go func() {
@@ -1036,13 +1049,23 @@ func (p *proxyapp) Run() {
 					}()
 				}
 			}
-			wg.Wait()
 			if p.auto {
-				err := p.clearCommonRedirectRules(opts)
-				if err != nil {
-					p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
-				}
+				wg.Go(func() {
+					err := tproxyServers[0].ClearRedirectRules()
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+					}
+					err = tproxyUDPServers[0].ClearRedirectRules()
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+					}
+					err = p.clearCommonRedirectRules(opts)
+					if err != nil {
+						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+					}
+				})
 			}
+			wg.Wait()
 			close(done)
 		}()
 		if tproxyEnabled && tproxyUDPEnabled {

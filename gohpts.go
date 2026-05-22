@@ -53,6 +53,11 @@ const (
 	hopTimeout               time.Duration = 3 * time.Second
 	flushTimeout             time.Duration = 10 * time.Millisecond
 	availProxyUpdateInterval time.Duration = 30 * time.Second
+	maxIdleTimeout           time.Duration = 30 * time.Second
+	keepAlivePeriod          time.Duration = 10 * time.Second
+	maxIncomingStreams       int64         = 1000
+	maxIncomingUniStreams    int64         = 100
+	handshakeIdleTimeout     time.Duration = 10 * time.Second
 	rrIndexMax               uint32        = 1_000_000
 	maxBodySize              int64         = 2 << 15
 )
@@ -581,11 +586,11 @@ func New(conf *Config) (*proxyapp, error) {
 					NextProtos: []string{http3.NextProtoH3},
 				},
 				QUICConfig: &quic.Config{
-					MaxIdleTimeout:          30 * time.Second,
-					KeepAlivePeriod:         10 * time.Second,
-					MaxIncomingStreams:      1000,
-					MaxIncomingUniStreams:   100,
-					HandshakeIdleTimeout:    10 * time.Second,
+					MaxIdleTimeout:          maxIdleTimeout,
+					KeepAlivePeriod:         keepAlivePeriod,
+					MaxIncomingStreams:      maxIncomingStreams,
+					MaxIncomingUniStreams:   maxIncomingUniStreams,
+					HandshakeIdleTimeout:    handshakeIdleTimeout,
 					DisablePathMTUDiscovery: false,
 					Allow0RTT:               true,
 				},
@@ -724,9 +729,9 @@ func New(conf *Config) (*proxyapp, error) {
 			if err != nil {
 				return nil, err
 			}
-			defer f.Close()
 			w := mpcapng.NewWriter(f)
 			if err := w.WriteHeader(App, pcc.Device, pcc.Expr, pcc.Snaplen); err != nil {
+				w.Close()
 				return nil, err
 			}
 			p.pcapW = append(p.pcapW, w)
@@ -835,6 +840,7 @@ func (p *proxyapp) Run() {
 	tproxyServers := make([]*tproxyServer, p.tproxyWorkers)
 	opts := make(map[string]string, 20)
 	if p.auto {
+		p.logger.Info().Msg("Configuring iptables and kernel parameters...")
 		p.applyCommonRedirectRules(opts)
 	}
 	if tproxyEnabled {
@@ -894,12 +900,6 @@ func (p *proxyapp) Run() {
 					}
 				})
 			}
-			if p.pcapConf != nil {
-				wg.Go(func() {
-					p.logger.Info().Msg("Shutting down packet capture..")
-					pcapWg.Wait()
-				})
-			}
 			if tproxyEnabled {
 				p.logger.Info().Msgf("[tcp %s] Server is shutting down...", p.tproxyMode)
 				wg.Add(int(p.tproxyWorkers))
@@ -926,15 +926,20 @@ func (p *proxyapp) Run() {
 			}
 			if p.auto {
 				wg.Go(func() {
-					err := tproxyServers[0].ClearRedirectRules()
-					if err != nil {
-						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+					p.logger.Info().Msg("Restoring iptables and kernel parameters...")
+					if tproxyEnabled {
+						err := tproxyServers[0].ClearRedirectRules()
+						if err != nil {
+							p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+						}
 					}
-					err = tproxyUDPServers[0].ClearRedirectRules()
-					if err != nil {
-						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+					if tproxyUDPEnabled {
+						err := tproxyUDPServers[0].ClearRedirectRules()
+						if err != nil {
+							p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+						}
 					}
-					err = p.clearCommonRedirectRules(opts)
+					err := p.clearCommonRedirectRules(opts)
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}
@@ -970,6 +975,12 @@ func (p *proxyapp) Run() {
 					} else {
 						p.logger.Info().Msg("HTTP3 Server gracefully shutdown")
 					}
+				})
+			}
+			if p.pcapConf != nil {
+				wg.Go(func() {
+					p.logger.Info().Msg("Shutting down packet capture..")
+					pcapWg.Wait()
 				})
 			}
 			wg.Wait()
@@ -1021,12 +1032,6 @@ func (p *proxyapp) Run() {
 					}
 				})
 			}
-			if p.pcapConf != nil {
-				wg.Go(func() {
-					p.logger.Info().Msg("Shutting down packet capture..")
-					pcapWg.Wait()
-				})
-			}
 			if tproxyEnabled {
 				wg.Add(int(p.tproxyWorkers))
 				for i, tproxyServer := range tproxyServers {
@@ -1051,18 +1056,29 @@ func (p *proxyapp) Run() {
 			}
 			if p.auto {
 				wg.Go(func() {
-					err := tproxyServers[0].ClearRedirectRules()
+					p.logger.Info().Msg("Restoring iptables and kernel parameters...")
+					if tproxyEnabled {
+						err := tproxyServers[0].ClearRedirectRules()
+						if err != nil {
+							p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+						}
+					}
+					if tproxyUDPEnabled {
+						err := tproxyUDPServers[0].ClearRedirectRules()
+						if err != nil {
+							p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
+						}
+					}
+					err := p.clearCommonRedirectRules(opts)
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}
-					err = tproxyUDPServers[0].ClearRedirectRules()
-					if err != nil {
-						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
-					}
-					err = p.clearCommonRedirectRules(opts)
-					if err != nil {
-						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
-					}
+				})
+			}
+			if p.pcapConf != nil {
+				wg.Go(func() {
+					p.logger.Info().Msg("Shutting down packet capture..")
+					pcapWg.Wait()
 				})
 			}
 			wg.Wait()
@@ -1151,6 +1167,9 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 	copyHeader(req.Header, r.Header)
 	delConnectionHeaders(req.Header)
 	delHopHeaders(req.Header)
+	if _, ok := req.Header["User-Agent"]; !ok {
+		req.Header.Set("User-Agent", "")
+	}
 	if proto == 3 {
 		if remoteAddr := r.Context().Value(http3.RemoteAddrContextKey).(net.Addr); remoteAddr != nil {
 			appendHostToXForwardHeader(req.Header, remoteAddr.String())
@@ -1471,7 +1490,7 @@ func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
 	sb.WriteString(arrow)
 	if p.httpServerAddr != "" {
 		if p.certFile != "" && p.keyFile != "" {
-			fmt.Fprintf(&sb, "%s (https)", p.httpServerAddr)
+			fmt.Fprintf(&sb, "%s (https/http3)", p.httpServerAddr)
 		} else {
 			fmt.Fprintf(&sb, "%s (http)", p.httpServerAddr)
 		}

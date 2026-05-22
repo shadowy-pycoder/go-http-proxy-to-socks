@@ -400,6 +400,13 @@ func colorizeTimestamp(ts time.Time, nocolor bool) string {
 	return colors.Gray(colors.WrapBrackets(ts.Format(time.TimeOnly))).String()
 }
 
+func colorizeErr(nocolor bool) string {
+	if nocolor {
+		return "ERR"
+	}
+	return colors.Red("ERR").String()
+}
+
 func colorizeLogMessage(line string, nocolor bool) string {
 	if nocolor {
 		return line
@@ -443,7 +450,7 @@ func colorizeChainType(chainType string, nocolor bool) string {
 	return colors.WrapBrackets(colors.LightBlueBg(chainType).String())
 }
 
-func colorizeConnections(srcRemote, srcLocal, dstRemote, dstLocal net.Addr, id string, r *http.Request, nocolor bool) string {
+func colorizeConnections(srcRemote, srcLocal, dstRemote, dstLocal string, id string, r *http.Request, nocolor bool) string {
 	var sb strings.Builder
 	if nocolor {
 		sb.WriteString(id)

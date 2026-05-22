@@ -8,7 +8,7 @@
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/shadowy-pycoder/go-http-proxy-to-socks/total)
 ![GitHub Downloads (all assets, latest release)](https://img.shields.io/github/downloads/shadowy-pycoder/go-http-proxy-to-socks/latest/total)
 
-<p align="center"><img alt="MrGopher" src="resources/mr_gopher_small.png"/>
+![GoHPTS - Colors example](resources/sniffing_color.png)
 
 ## Table of contents
 
@@ -27,6 +27,7 @@
 - [Traffic sniffing](#traffic-sniffing)
   - [JSON format](#json-format)
   - [Colored format](#colored-format)
+- [HTTP2/HTTP3 support](#http2http3-support)
 - [IPv6 support](#ipv6-support)
 - [ARP spoofing](#arp-spoofing)
 - [NDP spoofing](#ndp-spoofing)
@@ -94,6 +95,9 @@ Specify http server in proxy configuration of Postman
 - **CONNECT Method Support**\
   Supports HTTP CONNECT tunneling, enabling HTTPS and other TCP-based protocols.
 
+- **HTTP2/HTTP3 Support**\
+  Supports modern HTTP/2 and HTTP/3 transport, enabling efficient multiplexed connections over TLS 1.3
+
 - **Trailer Headers Support**\
   Handles HTTP trailer headers
 
@@ -131,7 +135,7 @@ Specify http server in proxy configuration of Postman
 - Download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page:
 
   ```shell
-  GOHPTS_RELEASE=v1.13.5; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+  GOHPTS_RELEASE=v1.14.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
   ```
 
 - Install using `go install` command (requires Go [1.26](https://go.dev/doc/install) or later):
@@ -637,6 +641,8 @@ transparent_proxy:
 
 [[Back]](#table-of-contents)
 
+<p align="center"><img alt="MrGopher" src="resources/mr_gopher_small.png"/>
+
 `GoHPTS` proxy allows one to capture and monitor traffic that goes through the service. This procces is known as `traffic sniffing`, `packet sniffing` or just `sniffing`. In particular, proxy tries to identify whether it is a plain text (HTTP) or TLS traffic, and after identification is done, it parses request/response metadata and writes it to the file or console. In the case of `GoHTPS` proxy a parsed metadata looks like the following (TLS Handshake):
 
 ### JSON format
@@ -777,8 +783,6 @@ gohpts -sniff -snifflog ~/sniff.log -j
 
 [[Back]](#table-of-contents)
 
-![GoHPTS - Colors example](resources/sniffing_color.png)
-
 You can see the example of colored output in the picture above. In this mode, `GoHPTS` tries to highlight import information such as TLS Handshake, HTTP metadata, something that looks line login/passwords or different types of auth and secret tokens. The output is limited comparing to JSON but way easier to read for humans.
 
 To run `GoHPTS` in this mode you use the following flags:
@@ -798,6 +802,153 @@ To disable colors add `-nocolor`:
 ```shell
 gohpts -sniff -body -nocolor
 ```
+
+## HTTP2/HTTP3 support
+
+[[Back]](#table-of-contents)
+
+`GoHPTS` proxy handles HTTP/1.1, HTTP/2, and HTTP/3 requests using the same server address and TLS certificate. This allows clients to automatically choose the best available protocol without changing configuration. TLS certificate can be obtained in several ways: cloud providers (Google, AWS, Cloudflare), free certificate from Let's Encrypt, or you can create self-signed certificate using `openssl` (Linux/macOS) or `New-SelfSignedCertificate` (Windows).
+
+### Example setup using self-signed certificate:
+
+- Create `key.pem` and `cert.pem` files:
+
+  ```shell
+  openssl req -x509 -newkey rsa:2048 \
+  -keyout key.pem \
+  -out cert.pem \
+  -sha256 \
+  -days 365 \
+  -nodes \
+  -subj "/C=XX/ST=StateName/L=CityName/O=CompanyName/OU=CompanySectionName/CN=127.0.0.1" \
+  -addext "subjectAltName=IP:127.0.0.1"
+  ```
+
+- Prepare socks5 server with UDP ASSOCIATE support
+
+  ```shell
+  git clone https://github.com/wzshiming/socks5.git && cd socks5
+  go build -o socks5_server ./cmd/socks5/main.go
+  ./bin/socks5_server -a 0.0.0.0:1080
+  ```
+
+- Open another terminal and install `GoHPTS` proxy:
+
+  ```shell
+  go install github.com/shadowy-pycoder/go-http-proxy-to-socks/cmd/gohpts@latest
+  ```
+
+  You can use other methods described in [Installation](#installation) section.
+
+- Finally:
+  1. Create minimal config for your proxy
+
+  ```yaml
+  # gohpts_config.yaml
+  http_server:
+    enabled: true
+    address: 127.0.0.1:8080
+    cert_file: ./cert.pem
+    key_file: ./key.pem
+
+  proxy_list:
+    - address: 127.0.0.1:1080
+
+  logging:
+    debug: true
+
+  sniffing:
+    enabled: true
+    body: true
+  ```
+
+  Run the proxy:
+
+  ```shell
+  gohpts -f ./gohpts_config.yaml
+  ```
+
+  2. Or if you prefer command line arguments:
+
+  ```shell
+  gohpts -l :8080 -s 1080 -c ./cert.pem -k ./key.pem -d -sniff -body
+  ```
+
+  You should see something like that:
+
+  ```shell
+    [15:20:32] INF SOCKS5 Proxy: 127.0.0.1:1080
+    [15:20:32] INF HTTPS Proxy: 127.0.0.1:8080
+    [15:20:32] INF HTTP3 Proxy (QUIC): 127.0.0.1:8080
+  ```
+
+### Test connection
+
+- For HTTP/2 proxy server you can use `curl`:
+
+  ```shell
+    curl -Nvk --http2 --proxy-insecure --proxy-http2 --proxy https://localhost:8080 "https://stream.wikimedia.org/v2/stream/recentchange"
+  ```
+
+  Press `Ctrl+C` to stop running stream.
+
+- For HTTP/3 it is different since (at the time of writing) `curl` doesn't support HTTP3 proxy, so I will use my custom client I created for testing purposes.
+
+  Download and install [Simple HTTP3 to SOCKS5 proxy example](https://github.com/shadowy-pycoder/http3-socks-proxy):
+
+  ```shell
+  git clone https://github.com/shadowy-pycoder/http3-socks-proxy.git && cd http3-socks-proxy
+  make
+  ```
+
+  Run the following command:
+
+  ```shell
+  ./bin/client -a 127.0.0.1:8080 www.google.com
+  ```
+
+  You should see some gibberish resembling HTML page.
+
+  Go to terminal tab with `GoHPTS` proxy and check logs, you should see all your requests there.
+
+### Test connection in a browser
+
+- Create proper self-signed ceritificate for browser:
+
+  ```shell
+  git clone https://github.com/shadowy-pycoder/go-http-proxy-to-socks.git
+  cd go-http-proxy-to-socks
+  cp ./resources/makecert.sh makecert.sh && chmod +x makecert.sh
+  ./makecert.sh
+  ```
+
+  More information can be found here: [Creating a browser trusted, self signed, SSL certificate](https://medium.com/@tbusser/creating-a-browser-trusted-self-signed-ssl-certificate-2709ce43fd15)
+
+- Add newly created `rootCA.crt` to system trust store:
+  1. Debian/Ubuntu:
+
+  ```shell
+  sudo cp rootCA.crt /usr/local/share/ca-certificates/rootCA.crt
+  sudo update-ca-certificates
+  ```
+
+  2. Arch Linux/CachyOS/EndeavourOS:
+
+  ```shell
+  sudo trust anchor rootCA.crt
+  ```
+
+- Run the proxy using `server.crt` and `server.key`:
+
+  ```shell
+  gohpts -l :8080 -s 1080 -c ./server.crt -k ./server.key -d -sniff -body
+  ```
+
+- Run the browser and go to any website:
+
+  ```shell
+  chromium --proxy-server="https://127.0.0.1:8080"
+  ```
 
 ## IPv6 support
 

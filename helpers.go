@@ -2,6 +2,7 @@ package gohpts
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	quic "github.com/quic-go/quic-go"
 	"github.com/shadowy-pycoder/mshark/network"
 	"github.com/wzshiming/socks5"
 )
@@ -76,13 +78,18 @@ func expandPath(p string) string {
 	return p
 }
 
-func getAddressFromInterface(iface *net.Interface) (string, error) {
+func getAddressFromInterface(iface *net.Interface, ipv6 bool) (string, error) {
 	if iface == nil {
-		return "", nil
+		return "127.0.0.1", nil
 	}
-	prefix, err := network.GetIPv4PrefixFromInterface(iface)
-	if err != nil {
-		return "", err
+	var prefix netip.Prefix
+	var err error
+	prefix, err = network.GetIPv4PrefixFromInterface(iface)
+	if err != nil && ipv6 {
+		prefix, err = network.GetIPv6LinkLocalUnicastPrefixFromInterface(iface)
+		if err != nil {
+			return "", err
+		}
 	}
 	return prefix.Addr().String(), nil
 }
@@ -157,6 +164,21 @@ func newSOCKS5Dialer(address string, auth *auth, forward contextDialer, network 
 		d.ProxyDial = forward.DialContext
 	}
 	return d, nil
+}
+
+func getQUICDialer(dialer contextDialer) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+	return func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+		udpConn, err := dialer.DialContext(ctx, "udp", addr)
+		if err != nil {
+			return nil, err
+		}
+		udpAddr, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			udpConn.Close()
+			return nil, err
+		}
+		return quic.DialEarly(ctx, udpConn.(net.PacketConn), udpAddr, tlsCfg, cfg)
+	}
 }
 
 func runSysctlOptCmd(opt, value, setex string, opts map[string]string, debug bool, dump *strings.Builder) error {

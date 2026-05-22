@@ -336,7 +336,8 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 										conn.LocalAddr(),
 										conn.dstAddr,
 										conn.dstAddr.String(),
-										id, tsu.p.nocolor)
+										id, tsu.p.nocolor,
+									)
 									sniffheader = append(sniffheader, connections)
 								}
 								go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
@@ -450,7 +451,7 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 				} else {
 					conn, found := tsu.clients.Get(srcAddr, dstAddr)
 					if !found {
-						sockDialer, _, err := tsu.p.getSocks()
+						sockDialer, err := tsu.p.getSockDialer()
 						if err != nil {
 							tsu.p.logger.Error().
 								Err(err).
@@ -510,7 +511,8 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 									tsu.conn.LocalAddr(),
 									conn.LocalAddr(),
 									conn.dstAddr.String(),
-									id, tsu.p.nocolor)
+									id, tsu.p.nocolor,
+								)
 								sniffheader = append(sniffheader, connections)
 							}
 							go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
@@ -740,7 +742,8 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 									conn.LocalAddr(),
 									conn.dstAddr,
 									gwConn.LocalAddr().String(),
-									id, tsu.p.nocolor)
+									id, tsu.p.nocolor,
+								)
 								sniffheader = append(sniffheader, connections)
 							}
 							go tsu.p.sniffreporter(&tsu.wg, &sniffheader, conn.reqChan, conn.respChan, id)
@@ -1210,6 +1213,7 @@ ip6tables -t mangle -A GOHPTS_UDP -p udp -d ::/128 -j RETURN
 ip6tables -t mangle -A GOHPTS_UDP -p udp -d ::1/128 -j RETURN
 ip6tables -t mangle -A GOHPTS_UDP -p udp -d ff00::/8 -j RETURN
 ip6tables -t mangle -A GOHPTS_UDP -p udp -d fe80::/10 -j RETURN
+ip6tables -t mangle -A GOHPTS_UDP -p udp -d fc00::/7 -j RETURN
 `
 			tsu.p.runRuleCmd(cmdInit01)
 			if tsu.p.raEnabled && tsu.p.hostDNS6 != nil {

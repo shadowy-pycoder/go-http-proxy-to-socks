@@ -546,7 +546,7 @@ func New(conf *Config) (*proxyapp, error) {
 	if httpEnabled {
 		// configure http server
 		hs := &http.Server{
-			Addr:           addrHTTP,
+			Addr:           p.httpServerAddr,
 			Handler:        httpHandler,
 			ReadTimeout:    readTimeout,
 			WriteTimeout:   writeTimeout,
@@ -578,7 +578,7 @@ func New(conf *Config) (*proxyapp, error) {
 			p.httpServer.Protocols.SetHTTP2(true)
 			p.httpServer.Protocols.SetUnencryptedHTTP2(true)
 			hs3 := &http3.Server{
-				Addr:           addrHTTP,
+				Addr:           p.httpServerAddr,
 				Handler:        p.replayCheck(httpHandler),
 				MaxHeaderBytes: 1 << 20,
 				TLSConfig: &tls.Config{

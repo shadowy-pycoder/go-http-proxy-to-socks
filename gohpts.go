@@ -947,14 +947,14 @@ func (p *proxyapp) Run() {
 			}
 			p.logger.Info().Msg("HTTP clients are shutting down...")
 			for _, c := range []httpClienter{p.http3LocalClient, p.http3Client, p.http3LocalClient, p.http3Client} {
-				go wg.Go(func() {
+				wg.Go(func() {
 					c.Close()
 				})
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 
 			defer cancel()
-			go wg.Go(func() {
+			wg.Go(func() {
 				p.httpServer.SetKeepAlivesEnabled(false)
 				httpServerStr := "HTTP"
 				if p.certFile != "" && p.keyFile != "" {
@@ -969,7 +969,7 @@ func (p *proxyapp) Run() {
 			})
 			if p.http3Server != nil {
 				p.logger.Info().Msg("HTTP3 Server is shutting down...")
-				go wg.Go(func() {
+				wg.Go(func() {
 					if err := p.http3Server.Shutdown(ctx); err != nil {
 						p.logger.Error().Err(err).Msg("Could not gracefully shutdown HTTP3 server")
 					} else {

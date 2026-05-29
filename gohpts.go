@@ -1397,7 +1397,6 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		arrow = "->"
 	}
 	defer dstConn.Close()
-	w.WriteHeader(http.StatusOK)
 	reqChan := make(chan layers.Layer)
 	respChan := make(chan layers.Layer)
 	var wg sync.WaitGroup
@@ -1435,6 +1434,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer srcConn.Close()
+		srcConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
 		srcConnRemote = srcConn.RemoteAddr().String()
 		srcConnLocal = srcConn.LocalAddr().String()
 		dstConnRemote = dstConn.RemoteAddr().String()

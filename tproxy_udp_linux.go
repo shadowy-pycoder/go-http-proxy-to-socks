@@ -1216,11 +1216,10 @@ ip6tables -t mangle -A GOHPTS_UDP -p udp -d fe80::/10 -j RETURN
 ip6tables -t mangle -A GOHPTS_UDP -p udp -d fc00::/7 -j RETURN
 `
 			tsu.p.runRuleCmd(cmdInit01)
-			if tsu.p.raEnabled && tsu.p.hostDNS6 != nil {
+			if prefix6, err := network.GetIPv6GlobalUnicastPrefixFromInterface(tsu.p.iface); err == nil {
 				cmdInit02 := fmt.Sprintf(`
-ip6tables -t mangle -A GOHPTS_UDP -p udp --dport 53 -j RETURN
 ip6tables -t mangle -A GOHPTS_UDP -p udp -d %s -j RETURN
-`, tsu.p.hostDNS6.IP)
+`, prefix6.Masked())
 				tsu.p.runRuleCmd(cmdInit02)
 			}
 		}

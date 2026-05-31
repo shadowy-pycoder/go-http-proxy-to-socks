@@ -882,6 +882,7 @@ func (p *proxyapp) Run() {
 	if p.httpServer != nil {
 		go func() {
 			<-quit
+			signal.Ignore(os.Interrupt)
 			close(p.closeConn)
 			var wg sync.WaitGroup
 			if p.arpspoofer != nil {
@@ -1014,6 +1015,7 @@ func (p *proxyapp) Run() {
 	} else {
 		go func() {
 			<-quit
+			signal.Ignore(os.Interrupt)
 			close(p.closeConn)
 			var wg sync.WaitGroup
 			if p.arpspoofer != nil {

@@ -1218,8 +1218,8 @@ ip6tables -t mangle -A GOHPTS_UDP -p udp -d fc00::/7 -j RETURN
 			tsu.p.runRuleCmd(cmdInit01)
 			if prefix6, err := network.GetIPv6GlobalUnicastPrefixFromInterface(tsu.p.iface); err == nil {
 				cmdInit02 := fmt.Sprintf(`
-ip6tables -t mangle -A GOHPTS_UDP -p udp -d %s -j RETURN
-`, prefix6.Masked())
+ip6tables -t mangle -A GOHPTS_UDP -p udp -s %s -d %s -j RETURN
+`, prefix6.Masked(), prefix6.Masked())
 				tsu.p.runRuleCmd(cmdInit02)
 			}
 		}

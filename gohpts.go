@@ -546,7 +546,7 @@ func New(conf *Config) (*proxyapp, error) {
 	if httpEnabled {
 		// configure http server
 		hs := &http.Server{
-			Addr:           addrHTTP,
+			Addr:           p.httpServerAddr,
 			Handler:        httpHandler,
 			ReadTimeout:    readTimeout,
 			WriteTimeout:   writeTimeout,
@@ -578,7 +578,7 @@ func New(conf *Config) (*proxyapp, error) {
 			p.httpServer.Protocols.SetHTTP2(true)
 			p.httpServer.Protocols.SetUnencryptedHTTP2(true)
 			hs3 := &http3.Server{
-				Addr:           addrHTTP,
+				Addr:           p.httpServerAddr,
 				Handler:        p.replayCheck(httpHandler),
 				MaxHeaderBytes: 1 << 20,
 				TLSConfig: &tls.Config{
@@ -882,6 +882,7 @@ func (p *proxyapp) Run() {
 	if p.httpServer != nil {
 		go func() {
 			<-quit
+			signal.Ignore(os.Interrupt)
 			close(p.closeConn)
 			var wg sync.WaitGroup
 			if p.arpspoofer != nil {
@@ -947,14 +948,14 @@ func (p *proxyapp) Run() {
 			}
 			p.logger.Info().Msg("HTTP clients are shutting down...")
 			for _, c := range []httpClienter{p.http3LocalClient, p.http3Client, p.http3LocalClient, p.http3Client} {
-				go wg.Go(func() {
+				wg.Go(func() {
 					c.Close()
 				})
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 
 			defer cancel()
-			go wg.Go(func() {
+			wg.Go(func() {
 				p.httpServer.SetKeepAlivesEnabled(false)
 				httpServerStr := "HTTP"
 				if p.certFile != "" && p.keyFile != "" {
@@ -969,7 +970,7 @@ func (p *proxyapp) Run() {
 			})
 			if p.http3Server != nil {
 				p.logger.Info().Msg("HTTP3 Server is shutting down...")
-				go wg.Go(func() {
+				wg.Go(func() {
 					if err := p.http3Server.Shutdown(ctx); err != nil {
 						p.logger.Error().Err(err).Msg("Could not gracefully shutdown HTTP3 server")
 					} else {
@@ -1014,6 +1015,7 @@ func (p *proxyapp) Run() {
 	} else {
 		go func() {
 			<-quit
+			signal.Ignore(os.Interrupt)
 			close(p.closeConn)
 			var wg sync.WaitGroup
 			if p.arpspoofer != nil {
@@ -1397,7 +1399,6 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		arrow = "->"
 	}
 	defer dstConn.Close()
-	w.WriteHeader(http.StatusOK)
 	reqChan := make(chan layers.Layer)
 	respChan := make(chan layers.Layer)
 	var wg sync.WaitGroup
@@ -1435,6 +1436,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer srcConn.Close()
+		srcConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
 		srcConnRemote = srcConn.RemoteAddr().String()
 		srcConnLocal = srcConn.LocalAddr().String()
 		dstConnRemote = dstConn.RemoteAddr().String()

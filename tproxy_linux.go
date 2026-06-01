@@ -457,10 +457,13 @@ ip6tables -t mangle -A GOHPTS -p tcp -d ::/128 -j RETURN
 ip6tables -t mangle -A GOHPTS -p tcp -d ::1/128 -j RETURN
 ip6tables -t mangle -A GOHPTS -p tcp -d ff00::/8 -j RETURN
 ip6tables -t mangle -A GOHPTS -p tcp -d fe80::/10 -j RETURN
+ip6tables -t mangle -A GOHPTS -p tcp -d fc00::/7 -j RETURN
 `
 			ts.p.runRuleCmd(cmdInit01)
-			if ts.p.raEnabled && ts.p.hostDNS6 != nil {
-				cmdInit02 := fmt.Sprintf(`ip6tables -t mangle -A GOHPTS -p tcp -d %s -j RETURN`, ts.p.hostDNS6.IP)
+			if prefix6, err := network.GetIPv6GlobalUnicastPrefixFromInterface(ts.p.iface); err == nil {
+				cmdInit02 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS -p tcp -s %s -d %s -j RETURN
+`, prefix6.Masked(), prefix6.Masked())
 				ts.p.runRuleCmd(cmdInit02)
 			}
 		}

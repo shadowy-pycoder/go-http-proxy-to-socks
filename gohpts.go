@@ -183,7 +183,7 @@ type proxyapp struct {
 
 	proxychain   ProxyChain
 	proxylist    []ProxyEntry
-	rrIndex      uint32
+	rrIndex      atomic.Uint32
 	rrIndexReset uint32
 
 	mu             sync.RWMutex
@@ -466,7 +466,10 @@ func New(conf *Config) (*proxyapp, error) {
 		if err != nil {
 			return nil, err
 		}
-		p.pprofAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrPprof.Port()).String()
+		p.pprofAddr = parsedAddrPprof.String()
+		if p.iface != nil {
+			p.pprofAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrPprof.Port()).String()
+		}
 	}
 
 	// configure http address
@@ -477,7 +480,10 @@ func New(conf *Config) (*proxyapp, error) {
 		if err != nil {
 			return nil, err
 		}
-		p.httpServerAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrHTTP.Port()).String()
+		p.httpServerAddr = parsedAddrHTTP.String()
+		if p.iface != nil {
+			p.httpServerAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrHTTP.Port()).String()
+		}
 		if conf.CertFile != "" {
 			p.certFile = expandPath(conf.CertFile)
 			if _, err := os.Stat(p.certFile); err != nil {
@@ -1644,13 +1650,13 @@ func (p *proxyapp) getSockDialer() (*socks5.Dialer, error) {
 	case "round_robin":
 		var start uint32
 		for {
-			start = atomic.LoadUint32(&p.rrIndex)
+			start = p.rrIndex.Load()
 			next := start + 1
 			if start >= p.rrIndexReset {
 				p.logger.Debug().Msg("Resetting round robin index")
 				next = 0
 			}
-			if atomic.CompareAndSwapUint32(&p.rrIndex, start, next) {
+			if p.rrIndex.CompareAndSwap(start, next) {
 				break
 			}
 		}

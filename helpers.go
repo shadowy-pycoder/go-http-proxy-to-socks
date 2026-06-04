@@ -18,6 +18,7 @@ import (
 
 	quic "github.com/quic-go/quic-go"
 	"github.com/shadowy-pycoder/mshark/network"
+	"github.com/wzshiming/socks4"
 	"github.com/wzshiming/socks5"
 )
 
@@ -138,6 +139,7 @@ type contextDialer interface {
 }
 
 var (
+	_ contextDialer = &socks4.Dialer{}
 	_ contextDialer = &socks5.Dialer{}
 	_ contextDialer = &net.Dialer{}
 )
@@ -159,6 +161,29 @@ func newSOCKS5Dialer(address string, auth *auth, forward contextDialer, network 
 	if auth != nil {
 		d.Username = auth.User
 		d.Password = auth.Password
+	}
+	if forward != nil {
+		d.ProxyDial = forward.DialContext
+	}
+	return d, nil
+}
+
+func newSOCKS4Dialer(address string, auth *auth, forward contextDialer, network string) (*socks4.Dialer, error) {
+	d := &socks4.Dialer{
+		ProxyNetwork: network,
+		IsResolve:    false,
+	}
+	host, port, err := splitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	ip, err := netip.ParseAddr(host)
+	if err == nil {
+		host = ip.String()
+	}
+	d.ProxyAddress = net.JoinHostPort(host, strconv.Itoa(port))
+	if auth != nil {
+		d.Username = auth.User
 	}
 	if forward != nil {
 		d.ProxyDial = forward.DialContext

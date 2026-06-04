@@ -19,7 +19,7 @@ const usagePrefix string = `   _____       _    _ _____ _______ _____
  | |__| | (_) | |  | | |      | |  ____) |
   \_____|\___/|_|  |_|_|      |_| |_____/
 
-GoHPTS (HTTP(S) Proxy to SOCKS5 proxy) by shadowy-pycoder
+GoHPTS (HTTP(S) Proxy to SOCKS4/SOCKS5 proxy) by shadowy-pycoder
 GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 Codeberg: https://codeberg.org/shadowy-pycoder/go-http-proxy-to-socks
 
@@ -41,6 +41,7 @@ OPTIONS:
   -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
   -i        Bind proxy to specific network interface (either by interface name or index)
   -6        Enable IPv6 support for TCP and UDP
+  -socks4   Use SOCKS4/SOCKS4a as the upstream proxy protocol (default: SOCKS5)
 
   Logs:
   -d        Show logs in DEBUG mode
@@ -88,6 +89,7 @@ func root(args []string) error {
 	flags.StringVar(&conf.KeyFile, "k", "", "")
 	flags.StringVar(&conf.ServerConfPath, "f", "", "")
 	flags.BoolVar(&conf.IPv6Enabled, "6", false, "")
+	flags.BoolVar(&conf.SOCKS4Enabled, "socks4", false, "")
 	flags.StringVar(&conf.Interface, "i", "", "")
 	flags.BoolFunc("I", "", func(flagValue string) error {
 		if err := network.DisplayInterfaces(false); err != nil {
@@ -160,6 +162,12 @@ func root(args []string) error {
 				return fmt.Errorf(`transparent UDP proxy requires "tproxy" mode`)
 			}
 		}
+		if seen["socks4"] {
+			if seen["Tu"] {
+				return fmt.Errorf("-socks4 does not support udp protocol: -Tu flag")
+			}
+		}
+
 		if seen["M"] {
 			if !seen["T"] && !seen["Tu"] {
 				return fmt.Errorf("transparent proxy mode requires -T or -Tu flag")
@@ -216,7 +224,7 @@ func root(args []string) error {
 			return fmt.Errorf("-u and -U flags do not work in daemon mode")
 		}
 	}
-	if seen["u"] {
+	if seen["u"] && !seen["socks4"] {
 		fmt.Print("SOCKS5 Password: ")
 		bytepw, err := term.ReadPassword(int(os.Stdin.Fd()))
 		if err != nil {

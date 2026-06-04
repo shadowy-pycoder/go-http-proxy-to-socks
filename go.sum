@@ -53,6 +53,8 @@ github.com/shadowy-pycoder/ndpspoof v0.0.9 h1:SDBLvXWl1Fl194FY3mCQReNM78qAFvA2ix
 github.com/shadowy-pycoder/ndpspoof v0.0.9/go.mod h1:GI0Qr/BhJnOsuipwbQLij3kuMlSe60pPON00jdxKYx0=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
+github.com/wzshiming/socks4 v0.4.0 h1:QBqTq8rGPi5QL26CBKyfIhSzFYAuaXpQsqza+m26EN4=
+github.com/wzshiming/socks4 v0.4.0/go.mod h1:YEPfhjf/4JezwdTmgXZU+UX+A2KvD05quzhsUBVMNA0=
 github.com/wzshiming/socks5 v0.5.2 h1:LtoowVNwAmkIQSkP1r1Wg435xUmC+tfRxorNW30KtnM=
 github.com/wzshiming/socks5 v0.5.2/go.mod h1:BvCAqlzocQN5xwLjBZDBbvWlrx8sCYSSbHEOf2wZgT0=
 go.uber.org/mock v0.5.2 h1:LbtPTcP8A5k9WPXj54PPPbjcI4Y6lhyOZXn+VS7wNko=

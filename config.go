@@ -26,6 +26,7 @@ type Config struct {
 	Interface      string
 	ServerConfPath string
 	IPv6Enabled    bool
+	SOCKS4Enabled  bool
 
 	// transparent proxy
 	TProxyMode       string
@@ -86,9 +87,10 @@ type DNSFilterLists struct {
 }
 
 type yamlConfig struct {
-	Interface   string `yaml:"interface"`
-	IPv6Enabled bool   `yaml:"ipv6_enabled"`
-	HTTPServer  struct {
+	Interface     string `yaml:"interface"`
+	IPv6Enabled   bool   `yaml:"ipv6_enabled"`
+	SOCKS4Enabled bool   `yaml:"socks4_enabled"`
+	HTTPServer    struct {
 		Enabled  bool   `yaml:"enabled"`
 		Address  string `yaml:"address"`
 		Username string `yaml:"username"`
@@ -168,6 +170,7 @@ func createConfigFromPath(path string) (*Config, error) {
 
 	conf.Interface = sconf.Interface
 	conf.IPv6Enabled = sconf.IPv6Enabled
+	conf.SOCKS4Enabled = sconf.SOCKS4Enabled
 
 	if sconf.TransparentProxy.TCP.Enabled || sconf.TransparentProxy.UDP.Enabled {
 		if sconf.TransparentProxy.TCP.Enabled {
@@ -267,6 +270,10 @@ func parseConfig(conf *Config) error {
 
 		if !conf.IPv6Enabled {
 			conf.IPv6Enabled = yamlConf.IPv6Enabled
+		}
+
+		if !conf.SOCKS4Enabled {
+			conf.SOCKS4Enabled = yamlConf.SOCKS4Enabled
 		}
 
 		if !conf.Debug {

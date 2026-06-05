@@ -189,7 +189,7 @@ type proxyapp struct {
 	rrIndex      atomic.Uint32
 	rrIndexReset uint32
 
-	mu             sync.RWMutex
+	mu             sync.RWMutex // guards availProxyList
 	availProxyList []ProxyEntry
 
 	// logging
@@ -1517,7 +1517,11 @@ func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
 	sb.WriteString(arrow)
 	if p.httpServerAddr != "" {
 		if p.certFile != "" && p.keyFile != "" {
-			fmt.Fprintf(&sb, "%s (https/http3)", p.httpServerAddr)
+			if p.socks4enabled {
+				fmt.Fprintf(&sb, "%s (https)", p.httpServerAddr)
+			} else {
+				fmt.Fprintf(&sb, "%s (https/http3)", p.httpServerAddr)
+			}
 		} else {
 			fmt.Fprintf(&sb, "%s (http)", p.httpServerAddr)
 		}
@@ -1550,6 +1554,7 @@ func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
 	}
 	for _, pe := range pc {
 		sb.WriteString(pe.String())
+		fmt.Fprintf(&sb, " (%s)", p.socksProto)
 		sb.WriteString(arrow)
 	}
 	sb.WriteString("target")

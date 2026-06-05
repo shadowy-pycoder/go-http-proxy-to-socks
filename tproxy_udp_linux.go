@@ -54,7 +54,7 @@ func (uc *udpConn) close() error {
 	return uc.Close()
 }
 
-func newUDPConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer *socks5.Dialer, network string) (*udpConn, error) {
+func newUDPConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer contextDialer, network string) (*udpConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	conn, err := sockDialer.DialContext(ctx, network, dstAddr.String())
@@ -455,7 +455,7 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 						if err != nil {
 							tsu.p.logger.Error().
 								Err(err).
-								Msgf("[udp %s] Failed getting SOCKS5 client for %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
+								Msgf("[udp %s] Failed getting %s client for %s%s%s", tsu.p.tproxyMode, tsu.p.socksProto, srcAddr, arrow, dstAddr)
 							continue
 						}
 						conn, err = newUDPConn(srcAddr, dstAddr, sockDialer, tsu.p.udp)

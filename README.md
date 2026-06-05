@@ -1,4 +1,4 @@
-# GoHPTS - HTTP(S) and TCP/UDP transparent proxy to SOCKS5 proxy (chain) written in Go
+# GoHPTS - HTTP(S) and TCP/UDP transparent proxy to SOCKS4/SOCKS5 proxy (chain) written in Go
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-yellow.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Go Reference](https://pkg.go.dev/badge/github.com/shadowy-pycoder/go-http-proxy-to-socks.svg)](https://pkg.go.dev/github.com/shadowy-pycoder/go-http-proxy-to-socks)
@@ -27,7 +27,7 @@
 - [Traffic sniffing](#traffic-sniffing)
   - [JSON format](#json-format)
   - [Colored format](#colored-format)
-- [HTTP2/HTTP3 support](#http2http3-support)
+- [HTTP2 and HTTP3 support](#http2-and-http3-support)
 - [IPv6 support](#ipv6-support)
 - [ARP spoofing](#arp-spoofing)
 - [NDP spoofing](#ndp-spoofing)
@@ -66,7 +66,7 @@ Specify http server in proxy configuration of Postman
 [[Back]](#table-of-contents)
 
 - **Proxy Chain functionality**\
-  Supports `strict`, `dynamic`, `random`, `round_robin` chains of SOCKS5 proxy
+  Supports `strict`, `dynamic`, `random`, `round_robin` chains of SOCKS4/SOCKS5 proxy
 
 - **Transparent proxy**\
   Supports `redirect` (SO_ORIGINAL_DST) and `tproxy` (IP_TRANSPARENT) modes
@@ -135,7 +135,7 @@ Specify http server in proxy configuration of Postman
 - Download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page:
 
   ```shell
-  GOHPTS_RELEASE=v1.14.1; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+  GOHPTS_RELEASE=v1.14.2; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
   ```
 
 - Install using `go install` command (requires Go [1.26](https://go.dev/doc/install) or later):
@@ -174,7 +174,7 @@ gohpts -h
  | |__| | (_) | |  | | |      | |  ____) |
   \_____|\___/|_|  |_|_|      |_| |_____/
 
-GoHPTS (HTTP(S) Proxy to SOCKS5 proxy) by shadowy-pycoder
+GoHPTS (HTTP(S) Proxy to SOCKS4/SOCKS5 proxy) by shadowy-pycoder
 GitHub: https://github.com/shadowy-pycoder/go-http-proxy-to-socks
 Codeberg: https://codeberg.org/shadowy-pycoder/go-http-proxy-to-socks
 
@@ -196,6 +196,7 @@ OPTIONS:
   -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
   -i        Bind proxy to specific network interface (either by interface name or index)
   -6        Enable IPv6 support for TCP and UDP
+  -socks4   Use SOCKS4/SOCKS4a as the upstream proxy protocol (default: SOCKS5)
 
   Logs:
   -d        Show logs in DEBUG mode
@@ -803,7 +804,7 @@ To disable colors add `-nocolor`:
 gohpts -sniff -body -nocolor
 ```
 
-## HTTP2/HTTP3 support
+## HTTP2 and HTTP3 support
 
 [[Back]](#table-of-contents)
 

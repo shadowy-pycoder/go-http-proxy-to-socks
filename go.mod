@@ -1,17 +1,18 @@
 module github.com/shadowy-pycoder/go-http-proxy-to-socks
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/goccy/go-yaml v1.18.0
 	github.com/google/uuid v1.6.0
 	github.com/quic-go/quic-go v0.59.1
 	github.com/rs/zerolog v1.34.0
-	github.com/shadowy-pycoder/arpspoof v0.0.4
+	github.com/shadowy-pycoder/arpspoof v0.0.5
 	github.com/shadowy-pycoder/colors v0.0.2
-	github.com/shadowy-pycoder/mshark v0.0.28
-	github.com/shadowy-pycoder/ndpspoof v0.0.9
+	github.com/shadowy-pycoder/mshark v0.0.29
+	github.com/shadowy-pycoder/ndpspoof v0.0.10
 	github.com/stretchr/testify v1.11.1
+	github.com/wzshiming/socks4 v0.4.0
 	github.com/wzshiming/socks5 v0.5.2
 	golang.org/x/sys v0.35.0
 	golang.org/x/term v0.34.0

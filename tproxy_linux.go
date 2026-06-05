@@ -195,7 +195,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	} else {
 		sockDialer, err := ts.p.getSockDialer()
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed getting SOCKS5 client", ts.p.tproxyMode)
+			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed getting %s client", ts.p.tproxyMode, ts.p.socksProto)
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)

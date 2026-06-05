@@ -39,7 +39,6 @@ import (
 	"github.com/shadowy-pycoder/mshark/mpcapng"
 	"github.com/shadowy-pycoder/mshark/network"
 	"github.com/shadowy-pycoder/ndpspoof"
-	"github.com/wzshiming/socks5"
 )
 
 const (
@@ -169,8 +168,12 @@ type proxyapp struct {
 	http3Client *http3Client
 	// http3 client for local connections
 	http3LocalClient *http3Client
-	// socks5 dialer with UDP ASSOCIATE support
-	sockDialer *socks5.Dialer
+	// enable socks4/socks4a
+	socks4enabled bool
+	// socks protocol version for logging
+	socksProto string
+	// socks5 dialer with UDP ASSOCIATE support or socks4/socks4a TCP only
+	sockDialer contextDialer
 	// net.Dialer with timeout (used for local connections and as a forward dialer in socks5 proxy)
 	baseDialer *net.Dialer
 	// credetials used in HTTP BasicAuth
@@ -183,10 +186,10 @@ type proxyapp struct {
 
 	proxychain   ProxyChain
 	proxylist    []ProxyEntry
-	rrIndex      uint32
+	rrIndex      atomic.Uint32
 	rrIndexReset uint32
 
-	mu             sync.RWMutex
+	mu             sync.RWMutex // guards availProxyList
 	availProxyList []ProxyEntry
 
 	// logging
@@ -362,6 +365,14 @@ func New(conf *Config) (*proxyapp, error) {
 		p.ipv6enabled = false
 	}
 
+	// set socks4 flag
+	p.socks4enabled = conf.SOCKS4Enabled
+	if p.socks4enabled {
+		p.socksProto = "socks4"
+	} else {
+		p.socksProto = "socks5"
+	}
+
 	// transparent proxy setup
 	if conf.TProxyMode != "" && (conf.TProxy != "" || conf.TProxyUDP != "") {
 		p.tproxyMode = conf.TProxyMode
@@ -380,6 +391,9 @@ func New(conf *Config) (*proxyapp, error) {
 		if conf.TProxyUDP != "" {
 			if p.tproxyMode != "tproxy" {
 				return nil, fmt.Errorf("[%s] transparent UDP server only supports tproxy mode", conf.TProxyMode)
+			}
+			if p.socks4enabled {
+				return nil, fmt.Errorf("[%s] transparent UDP server requires socks5 enabled", conf.TProxyMode)
 			}
 			var tproxyAddrUDP netip.AddrPort
 			tproxyAddrUDP, err = network.ParseAddrPort(conf.TProxyUDP, "0.0.0.0")
@@ -466,7 +480,10 @@ func New(conf *Config) (*proxyapp, error) {
 		if err != nil {
 			return nil, err
 		}
-		p.pprofAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrPprof.Port()).String()
+		p.pprofAddr = parsedAddrPprof.String()
+		if p.iface != nil {
+			p.pprofAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrPprof.Port()).String()
+		}
 	}
 
 	// configure http address
@@ -477,7 +494,10 @@ func New(conf *Config) (*proxyapp, error) {
 		if err != nil {
 			return nil, err
 		}
-		p.httpServerAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrHTTP.Port()).String()
+		p.httpServerAddr = parsedAddrHTTP.String()
+		if p.iface != nil {
+			p.httpServerAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrHTTP.Port()).String()
+		}
 		if conf.CertFile != "" {
 			p.certFile = expandPath(conf.CertFile)
 			if _, err := os.Stat(p.certFile); err != nil {
@@ -499,7 +519,7 @@ func New(conf *Config) (*proxyapp, error) {
 		}
 	}
 
-	// configure socks5 addresses
+	// configure socks addresses
 	var addrSOCKS string
 	p.proxychain = conf.SocksProxyChain
 	if p.proxychain.Enabled {
@@ -536,9 +556,9 @@ func New(conf *Config) (*proxyapp, error) {
 			User:     socksProxy.Username,
 			Password: socksProxy.Password,
 		}
-		dialer, err := newSOCKS5Dialer(addrSOCKS, &auth, p.baseDialer, p.tcp)
+		dialer, err := p.newSOCKSDialer(addrSOCKS, &auth, p.baseDialer, p.tcp)
 		if err != nil {
-			return nil, fmt.Errorf("unable to create SOCKS5 dialer: %v", err)
+			return nil, fmt.Errorf("unable to create %s dialer: %v", p.socksProto, err)
 		}
 		p.sockDialer = dialer
 	}
@@ -577,28 +597,30 @@ func New(conf *Config) (*proxyapp, error) {
 		if p.certFile != "" && p.keyFile != "" {
 			p.httpServer.Protocols.SetHTTP2(true)
 			p.httpServer.Protocols.SetUnencryptedHTTP2(true)
-			hs3 := &http3.Server{
-				Addr:           p.httpServerAddr,
-				Handler:        p.replayCheck(httpHandler),
-				MaxHeaderBytes: 1 << 20,
-				TLSConfig: &tls.Config{
-					MinVersion: tls.VersionTLS13,
-					NextProtos: []string{http3.NextProtoH3},
-				},
-				QUICConfig: &quic.Config{
-					MaxIdleTimeout:          maxIdleTimeout,
-					KeepAlivePeriod:         keepAlivePeriod,
-					MaxIncomingStreams:      maxIncomingStreams,
-					MaxIncomingUniStreams:   maxIncomingUniStreams,
-					HandshakeIdleTimeout:    handshakeIdleTimeout,
-					DisablePathMTUDiscovery: false,
-					Allow0RTT:               true,
-				},
-			}
-			p.http3Server = hs3
-			p.http3LocalClient = newHTTP3Client(getQUICDialer(p.baseDialer))
-			if p.sockDialer != nil {
-				p.http3Client = newHTTP3Client(getQUICDialer(p.sockDialer))
+			if !p.socks4enabled {
+				hs3 := &http3.Server{
+					Addr:           p.httpServerAddr,
+					Handler:        p.replayCheck(httpHandler),
+					MaxHeaderBytes: 1 << 20,
+					TLSConfig: &tls.Config{
+						MinVersion: tls.VersionTLS13,
+						NextProtos: []string{http3.NextProtoH3},
+					},
+					QUICConfig: &quic.Config{
+						MaxIdleTimeout:          maxIdleTimeout,
+						KeepAlivePeriod:         keepAlivePeriod,
+						MaxIncomingStreams:      maxIncomingStreams,
+						MaxIncomingUniStreams:   maxIncomingUniStreams,
+						HandshakeIdleTimeout:    handshakeIdleTimeout,
+						DisablePathMTUDiscovery: false,
+						Allow0RTT:               true,
+					},
+				}
+				p.http3Server = hs3
+				p.http3LocalClient = newHTTP3Client(getQUICDialer(p.baseDialer))
+				if p.sockDialer != nil {
+					p.http3Client = newHTTP3Client(getQUICDialer(p.sockDialer))
+				}
 			}
 		}
 	}
@@ -755,15 +777,17 @@ func New(conf *Config) (*proxyapp, error) {
 
 	// logging which servers are enabled
 	if p.proxychain.Enabled {
-		p.logger.Info().Msgf("SOCKS5 Proxy [%s] chain: %s", p.proxychain.Type, addrSOCKS)
+		p.logger.Info().Msgf("%s Proxy [%s] chain: %s", strings.ToUpper(p.socksProto), p.proxychain.Type, addrSOCKS)
 	} else {
-		p.logger.Info().Msgf("SOCKS5 Proxy: %s", addrSOCKS)
+		p.logger.Info().Msgf("%s Proxy: %s", strings.ToUpper(p.socksProto), addrSOCKS)
 	}
 
 	if httpEnabled {
 		if p.certFile != "" && p.keyFile != "" {
 			p.logger.Info().Msgf("HTTPS Proxy: %s", p.httpServerAddr)
-			p.logger.Info().Msgf("HTTP3 Proxy (QUIC): %s", p.httpServerAddr)
+			if !p.socks4enabled {
+				p.logger.Info().Msgf("HTTP3 Proxy (QUIC): %s", p.httpServerAddr)
+			}
 		} else {
 			p.logger.Info().Msgf("HTTP Proxy: %s", p.httpServerAddr)
 		}
@@ -1003,9 +1027,10 @@ func (p *proxyapp) Run() {
 					p.logger.Fatal().Err(err).Msg("Unable to start HTTPS server")
 				}
 			}()
-			// NOTE: assume when tls is enabled http3Server is not nil
-			if err := p.http3Server.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
-				p.logger.Fatal().Err(err).Msg("Unable to start HTTP3 server")
+			if p.http3Server != nil {
+				if err := p.http3Server.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
+					p.logger.Fatal().Err(err).Msg("Unable to start HTTP3 server")
+				}
 			}
 		} else {
 			if err := p.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -1205,7 +1230,7 @@ func (p *proxyapp) handleForward(w http.ResponseWriter, r *http.Request) {
 			c, err = p.getHTTPClient()
 		}
 		if err != nil {
-			p.logger.Error().Err(err).Msg("Failed getting SOCKS5 client")
+			p.logger.Error().Err(err).Msgf("Failed getting %s client", p.socksProto)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -1381,7 +1406,7 @@ func (p *proxyapp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	} else {
 		sockDialer, err := p.getSockDialer()
 		if err != nil {
-			p.logger.Error().Err(err).Msg("Failed getting SOCKS5 client")
+			p.logger.Error().Err(err).Msgf("Failed getting %s client", p.socksProto)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -1492,7 +1517,11 @@ func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
 	sb.WriteString(arrow)
 	if p.httpServerAddr != "" {
 		if p.certFile != "" && p.keyFile != "" {
-			fmt.Fprintf(&sb, "%s (https/http3)", p.httpServerAddr)
+			if p.socks4enabled {
+				fmt.Fprintf(&sb, "%s (https)", p.httpServerAddr)
+			} else {
+				fmt.Fprintf(&sb, "%s (https/http3)", p.httpServerAddr)
+			}
 		} else {
 			fmt.Fprintf(&sb, "%s (http)", p.httpServerAddr)
 		}
@@ -1525,6 +1554,7 @@ func (p *proxyapp) printProxyChain(pc []ProxyEntry) string {
 	}
 	for _, pe := range pc {
 		sb.WriteString(pe.String())
+		fmt.Fprintf(&sb, " (%s)", p.socksProto)
 		sb.WriteString(arrow)
 	}
 	sb.WriteString("target")
@@ -1536,7 +1566,7 @@ func (p *proxyapp) updateSocksList() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.availProxyList = p.availProxyList[:0]
-	var dialer *socks5.Dialer
+	var dialer contextDialer
 	var err error
 	failed := 0
 	chainType := p.proxychain.Type
@@ -1546,9 +1576,9 @@ func (p *proxyapp) updateSocksList() {
 			User:     pr.Username,
 			Password: pr.Password,
 		}
-		dialer, err = newSOCKS5Dialer(pr.Address, &auth, p.baseDialer, p.tcp)
+		dialer, err = p.newSOCKSDialer(pr.Address, &auth, p.baseDialer, p.tcp)
 		if err != nil {
-			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
+			p.logger.Error().Err(err).Msgf("%s Unable to create %s dialer %s", ctl, p.socksProto, pr.Address)
 			failed++
 			continue
 		}
@@ -1571,7 +1601,7 @@ func (p *proxyapp) updateSocksList() {
 		}
 	}
 	if failed == len(p.proxylist) {
-		p.logger.Error().Err(err).Msgf("%s No SOCKS5 Proxy available", ctl)
+		p.logger.Error().Err(err).Msgf("%s No %s Proxy available", ctl, p.socksProto)
 		return
 	}
 	currentDialer := dialer
@@ -1580,9 +1610,9 @@ func (p *proxyapp) updateSocksList() {
 			User:     pr.Username,
 			Password: pr.Password,
 		}
-		dialer, err = newSOCKS5Dialer(pr.Address, &auth, currentDialer, p.tcp)
+		dialer, err = p.newSOCKSDialer(pr.Address, &auth, currentDialer, p.tcp)
 		if err != nil {
-			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
+			p.logger.Error().Err(err).Msgf("%s Unable to create %s dialer %s", ctl, p.socksProto, pr.Address)
 			continue
 		}
 		// https://github.com/golang/go/issues/37549#issuecomment-1178745487
@@ -1600,7 +1630,7 @@ func (p *proxyapp) updateSocksList() {
 		currentDialer = dialer
 		p.availProxyList = append(p.availProxyList, ProxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
 	}
-	p.logger.Debug().Msgf("%s Available SOCKS5 Proxy [%d/%d]: %s", ctl,
+	p.logger.Debug().Msgf("%s Available %s Proxy [%d/%d]: %s", ctl, p.socksProto,
 		len(p.availProxyList), len(p.proxylist), p.printProxyChain(p.availProxyList))
 }
 
@@ -1615,7 +1645,7 @@ func shuffle(vals []ProxyEntry) {
 	}
 }
 
-func (p *proxyapp) getSockDialer() (*socks5.Dialer, error) {
+func (p *proxyapp) getSockDialer() (contextDialer, error) {
 	if !p.proxychain.Enabled {
 		return p.sockDialer, nil
 	}
@@ -1624,8 +1654,8 @@ func (p *proxyapp) getSockDialer() (*socks5.Dialer, error) {
 	chainType := p.proxychain.Type
 	ctl := colorizeChainType(chainType, p.nocolor)
 	if len(p.availProxyList) == 0 {
-		p.logger.Error().Msgf("%s No SOCKS5 Proxy available", ctl)
-		return nil, fmt.Errorf("no socks5 proxy available")
+		p.logger.Error().Msgf("%s No %s Proxy available", ctl, p.socksProto)
+		return nil, fmt.Errorf("no %s proxy available", p.socksProto)
 	}
 	var chainLength int
 	if p.proxychain.Length > len(p.availProxyList) || p.proxychain.Length <= 0 {
@@ -1644,13 +1674,13 @@ func (p *proxyapp) getSockDialer() (*socks5.Dialer, error) {
 	case "round_robin":
 		var start uint32
 		for {
-			start = atomic.LoadUint32(&p.rrIndex)
+			start = p.rrIndex.Load()
 			next := start + 1
 			if start >= p.rrIndexReset {
 				p.logger.Debug().Msg("Resetting round robin index")
 				next = 0
 			}
-			if atomic.CompareAndSwapUint32(&p.rrIndex, start, next) {
+			if p.rrIndex.CompareAndSwap(start, next) {
 				break
 			}
 		}
@@ -1663,14 +1693,14 @@ func (p *proxyapp) getSockDialer() (*socks5.Dialer, error) {
 		p.logger.Fatal().Msg("Unreachable")
 	}
 	if len(copyProxyList) == 0 {
-		p.logger.Error().Msgf("%s No SOCKS5 Proxy available", ctl)
-		return nil, fmt.Errorf("no socks5 proxy available")
+		p.logger.Error().Msgf("%s No %s Proxy available", ctl, p.socksProto)
+		return nil, fmt.Errorf("no %s proxy available", p.socksProto)
 	}
 	if p.proxychain.Type == "strict" && len(copyProxyList) != len(p.proxylist) {
-		p.logger.Error().Msgf("%s Not all SOCKS5 Proxy available", ctl)
-		return nil, fmt.Errorf("not all socks5 proxy available")
+		p.logger.Error().Msgf("%s Not all %s Proxy available", ctl, p.socksProto)
+		return nil, fmt.Errorf("not all %s proxy available", p.socksProto)
 	}
-	var dialer *socks5.Dialer
+	var dialer contextDialer
 	var err error
 	for i, pr := range copyProxyList {
 		auth := auth{
@@ -1678,12 +1708,12 @@ func (p *proxyapp) getSockDialer() (*socks5.Dialer, error) {
 			Password: pr.Password,
 		}
 		if i > 0 {
-			dialer, err = newSOCKS5Dialer(pr.Address, &auth, dialer, p.tcp)
+			dialer, err = p.newSOCKSDialer(pr.Address, &auth, dialer, p.tcp)
 		} else {
-			dialer, err = newSOCKS5Dialer(pr.Address, &auth, p.baseDialer, p.tcp)
+			dialer, err = p.newSOCKSDialer(pr.Address, &auth, p.baseDialer, p.tcp)
 		}
 		if err != nil {
-			p.logger.Error().Err(err).Msgf("%s Unable to create SOCKS5 dialer %s", ctl, pr.Address)
+			p.logger.Error().Err(err).Msgf("%s Unable to create %s dialer %s", ctl, p.socksProto, pr.Address)
 			return nil, err
 		}
 	}
@@ -2234,6 +2264,13 @@ func (p *proxyapp) runRuleCmd(rule string) {
 		p.logger.Fatal().Err(err).Msgf("[%s] Failed running rule command", p.tproxyMode)
 	}
 	p.dump.WriteString(rule)
+}
+
+func (p *proxyapp) newSOCKSDialer(address string, auth *auth, forward contextDialer, network string) (contextDialer, error) {
+	if p.socks4enabled {
+		return newSOCKS4Dialer(address, auth, forward, network)
+	}
+	return newSOCKS5Dialer(address, auth, forward, network)
 }
 
 func (p *proxyapp) applyCommonRedirectRules(opts map[string]string) {

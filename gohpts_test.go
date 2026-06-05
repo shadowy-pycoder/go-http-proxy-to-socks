@@ -347,6 +347,33 @@ func TestNewProxyErr(t *testing.T) {
 			},
 			errMsg: "ndpspoof requires IPv6 enabled",
 		},
+		{
+			name: "socks4 enabled",
+			config: &Config{
+				AddrHTTP:      "127.0.0.1:8080",
+				ServerUser:    "user",
+				ServerPass:    "secret",
+				SocksProxy:    []ProxyEntry{{Address: addrSOCKS, Username: "user", Password: "password"}},
+				Interface:     "wlan0",
+				IPv6Enabled:   true,
+				SOCKS4Enabled: true,
+				TProxyMode:    "tproxy",
+				TProxy:        "0.0.0.0:8888",
+				TProxyWorkers: 1,
+				TProxyUDP:     "0.0.0.0:8889",
+				NoHTTP:        true,
+				Auto:          false,
+				Dump:          false,
+				Mark:          69,
+				Debug:         true,
+				AddrPprof:     "127.0.1:6060",
+				Sniff:         true,
+				Body:          true,
+				ARPSpoof:      "targets 192.168.10.0/24;fullduplex true;debug true;interval 10s",
+				NDPSpoof:      "ra true;debug true;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;interval 10s;mtu 1500;packet HRD F2 DSDS",
+			},
+			errMsg: `[tproxy] transparent UDP server requires socks5 enabled`,
+		},
 	}
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {

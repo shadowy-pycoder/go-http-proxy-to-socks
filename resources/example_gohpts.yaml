@@ -1,6 +1,7 @@
 # bind proxy to specific network interface (either by interface name or index)
 interface: "eth0" # if specified, overrides http server IP address
 ipv6_enabled: false # this must be enabled for ndpspoof
+socks4_enabled: false # use SOCKS4/SOCKS4a protocol (tcp only protocol, no udp tproxy or http3 possible)
 
 http_server:
   enabled: true

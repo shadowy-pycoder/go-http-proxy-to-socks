@@ -7,9 +7,9 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/quic-go/quic-go v0.59.1
 	github.com/rs/zerolog v1.34.0
-	github.com/shadowy-pycoder/arpspoof v0.0.5
+	github.com/shadowy-pycoder/arpspoof v0.0.6
 	github.com/shadowy-pycoder/colors v0.0.2
-	github.com/shadowy-pycoder/mshark v0.0.29
+	github.com/shadowy-pycoder/mshark v0.0.30
 	github.com/shadowy-pycoder/ndpspoof v0.0.10
 	github.com/stretchr/testify v1.11.1
 	github.com/wzshiming/socks4 v0.4.0

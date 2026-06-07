@@ -359,10 +359,12 @@ func New(conf *Config) (*proxyapp, error) {
 		p.tcp = "tcp"
 		p.udp = "udp"
 		p.ipv6enabled = true
+		p.logger.Debug().Msg("IPv6: enabled")
 	} else {
 		p.tcp = "tcp4"
 		p.udp = "udp4"
 		p.ipv6enabled = false
+		p.logger.Debug().Msg("IPv6: disabled")
 	}
 
 	// set socks4 flag
@@ -372,6 +374,7 @@ func New(conf *Config) (*proxyapp, error) {
 	} else {
 		p.socksProto = "socks5"
 	}
+	p.logger.Debug().Msgf("SOCKS version: %s", p.socksProto)
 
 	// transparent proxy setup
 	if conf.TProxyMode != "" && (conf.TProxy != "" || conf.TProxyUDP != "") {
@@ -381,6 +384,7 @@ func New(conf *Config) (*proxyapp, error) {
 		}
 		// check addresses for transparent proxy
 		if conf.TProxy != "" {
+			p.logger.Debug().Msgf("Configuring %s transparent proxy server address...", p.tcp)
 			var tproxyAddr netip.AddrPort
 			tproxyAddr, err = network.ParseAddrPort(conf.TProxy, "0.0.0.0")
 			if err != nil {
@@ -389,6 +393,7 @@ func New(conf *Config) (*proxyapp, error) {
 			p.tproxyAddr = tproxyAddr.String()
 		}
 		if conf.TProxyUDP != "" {
+			p.logger.Debug().Msgf("Configuring %s transparent proxy server address...", p.udp)
 			if p.tproxyMode != "tproxy" {
 				return nil, fmt.Errorf("[%s] transparent UDP server only supports tproxy mode", conf.TProxyMode)
 			}
@@ -455,6 +460,7 @@ func New(conf *Config) (*proxyapp, error) {
 
 	// getting interface
 	if conf.Interface != "" {
+		p.logger.Debug().Msgf("Configuring %s interface...", conf.Interface)
 		p.iface, err = net.InterfaceByName(conf.Interface)
 		if err != nil {
 			if ifIdx, err := strconv.Atoi(conf.Interface); err == nil {
@@ -469,6 +475,7 @@ func New(conf *Config) (*proxyapp, error) {
 	}
 
 	// getting address from interface
+	p.logger.Debug().Msg("Configuring interface address...")
 	ifaceAddr, err := getAddressFromInterface(p.iface, p.ipv6enabled)
 	if err != nil {
 		return nil, err
@@ -476,6 +483,7 @@ func New(conf *Config) (*proxyapp, error) {
 
 	// set pprof address
 	if conf.AddrPprof != "" {
+		p.logger.Debug().Msg("Configuring PPROF server address...")
 		parsedAddrPprof, err := network.ParseAddrPort(conf.AddrPprof, ifaceAddr)
 		if err != nil {
 			return nil, err
@@ -490,6 +498,7 @@ func New(conf *Config) (*proxyapp, error) {
 	httpEnabled := !conf.NoHTTP
 	var httpHandler http.Handler
 	if httpEnabled {
+		p.logger.Debug().Msg("Configuring HTTP server address...")
 		parsedAddrHTTP, err := network.ParseAddrPort(conf.AddrHTTP, ifaceAddr)
 		if err != nil {
 			return nil, err
@@ -523,6 +532,7 @@ func New(conf *Config) (*proxyapp, error) {
 	var addrSOCKS string
 	p.proxychain = conf.SocksProxyChain
 	if p.proxychain.Enabled {
+		p.logger.Debug().Msgf("Configuring %s proxy chain...", p.socksProto)
 		p.proxylist = conf.SocksProxy
 		p.availProxyList = make([]ProxyEntry, 0, len(p.proxylist))
 		seen := make(map[string]struct{})
@@ -546,6 +556,7 @@ func New(conf *Config) (*proxyapp, error) {
 		}
 		p.rrIndexReset = rrIndexMax
 	} else {
+		p.logger.Debug().Msgf("Configuring %s proxy client...", p.socksProto)
 		socksProxy := conf.SocksProxy[0]
 		hostPortSOCKS, err := network.ParseAddrPort(socksProxy.Address, ifaceAddr)
 		if err != nil {
@@ -565,6 +576,7 @@ func New(conf *Config) (*proxyapp, error) {
 
 	if httpEnabled {
 		// configure http server
+		p.logger.Debug().Msg("Configuring HTTP server...")
 		hs := &http.Server{
 			Addr:           p.httpServerAddr,
 			Handler:        httpHandler,
@@ -595,9 +607,11 @@ func New(conf *Config) (*proxyapp, error) {
 
 		// configure HTTP/2 and HTTP/3 support
 		if p.certFile != "" && p.keyFile != "" {
+			p.logger.Debug().Msg("Configuring HTTP2 server...")
 			p.httpServer.Protocols.SetHTTP2(true)
 			p.httpServer.Protocols.SetUnencryptedHTTP2(true)
 			if !p.socks4enabled {
+				p.logger.Debug().Msg("Configuring HTTP3 server...")
 				hs3 := &http3.Server{
 					Addr:           p.httpServerAddr,
 					Handler:        p.replayCheck(httpHandler),
@@ -628,6 +642,7 @@ func New(conf *Config) (*proxyapp, error) {
 	if slices.Contains(SupportedTProxyOS, runtime.GOOS) {
 		// TODO: add support for non linux systems in network module
 		if p.iface == nil {
+			p.logger.Debug().Msg("Configuring default interface...")
 			// getting default interface
 			p.iface, err = network.GetDefaultInterface()
 			if err != nil {
@@ -644,6 +659,7 @@ func New(conf *Config) (*proxyapp, error) {
 
 	// configure arp spoofing
 	if conf.ARPSpoof != "" {
+		p.logger.Debug().Msg("Configuring arp spoofer...")
 		if p.iface == nil {
 			return nil, fmt.Errorf("failed getting network interface")
 		}
@@ -664,6 +680,7 @@ func New(conf *Config) (*proxyapp, error) {
 
 	// configure ndp spoofing
 	if conf.NDPSpoof != "" {
+		p.logger.Debug().Msg("Configuring ndp spoofer...")
 		if p.iface == nil {
 			return nil, fmt.Errorf("failed getting network interface")
 		}
@@ -683,6 +700,7 @@ func New(conf *Config) (*proxyapp, error) {
 		nsc.Auto = false
 		nsc.NoColor = p.nocolor
 		if nsc.RA {
+			p.logger.Debug().Msg("Configuring DNS (host)...")
 			hostIP, err := network.GetHostIPv6GlobalUnicastFromRoute()
 			if err != nil {
 				return nil, err
@@ -698,6 +716,7 @@ func New(conf *Config) (*proxyapp, error) {
 	}
 	// configure packet capture
 	if conf.Pcap != "" {
+		p.logger.Debug().Msg("Configuring packet capture...")
 		if p.iface == nil {
 			return nil, fmt.Errorf("failed getting network interface")
 		}
@@ -763,15 +782,19 @@ func New(conf *Config) (*proxyapp, error) {
 	}
 	// configuring DNS
 	if p.arpspoofer != nil {
+		p.logger.Debug().Msg("Configuring DNS (IPv4)...")
 		gw := p.arpspoofer.GatewayIP()
 		p.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
 	}
 	if p.ndpspoofer != nil {
+		p.logger.Debug().Msg("Configuring DNS (IPv6)...")
 		p.gwDNS6 = network.GetIPv6Resolver(p.iface)
 	}
 
 	// configuring DNS filters
 	if conf.DNSFilter.Enabled {
+		// TODO: consider moving all slow starting tasks to Run()
+		p.logger.Debug().Msg("Configuring DNS filters...")
 		p.filter = newDNSFilter(&conf.DNSFilter, p.logger)
 	}
 

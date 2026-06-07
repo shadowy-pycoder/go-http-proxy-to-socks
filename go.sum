@@ -43,12 +43,12 @@ github.com/rogpeppe/go-internal v1.10.0/go.mod h1:UQnix2H7Ngw/k4C5ijL5+65zddjncj
 github.com/rs/xid v1.6.0/go.mod h1:7XoLgs4eV+QndskICGsho+ADou8ySMSjJKDIan90Nz0=
 github.com/rs/zerolog v1.34.0 h1:k43nTLIwcTVQAncfCw4KZ2VY6ukYoZaBPNOE8txlOeY=
 github.com/rs/zerolog v1.34.0/go.mod h1:bJsvje4Z08ROH4Nhs5iH600c3IkWhwp44iRc54W6wYQ=
-github.com/shadowy-pycoder/arpspoof v0.0.6 h1:N49v3sR6tDjtk0BLV5mdD8CY8D++GeeMsAv8C0Ngmo4=
-github.com/shadowy-pycoder/arpspoof v0.0.6/go.mod h1:pcWdFsdH6MvsvXy+80MVNkXpPDaNFrE/V6/dHMXSxdA=
+github.com/shadowy-pycoder/arpspoof v0.0.7 h1:O0UPufqBW2wi/nc1UCDOp4gQPCbMYT49pDy6uyn7Krk=
+github.com/shadowy-pycoder/arpspoof v0.0.7/go.mod h1:X0g1EeUoe24LPvabROpMbF5p6HP0Ogk3HiZi6qpHCoE=
 github.com/shadowy-pycoder/colors v0.0.2 h1:l4zvGOTPS92oxPIo6g+6t8tbzhh/v+6yT5A/3TQp8rc=
 github.com/shadowy-pycoder/colors v0.0.2/go.mod h1:lkrJS1PY2oVigNLTT6pkbF7B/v0YcU2LD5PZnss1Q4U=
-github.com/shadowy-pycoder/mshark v0.0.30 h1:jO08U7q7TSNk2VIXZ0PLU0kFv/ObOlHJecZnUv3KU1g=
-github.com/shadowy-pycoder/mshark v0.0.30/go.mod h1:bGag1R/cYnk0uJGS9YSKoTj0ztTD60GKMATbU3O6dUc=
+github.com/shadowy-pycoder/mshark v0.0.31 h1:ET2nofq4oqFR2awe8Ad878HWocemwaSCuvndcaA+v18=
+github.com/shadowy-pycoder/mshark v0.0.31/go.mod h1:bGag1R/cYnk0uJGS9YSKoTj0ztTD60GKMATbU3O6dUc=
 github.com/shadowy-pycoder/ndpspoof v0.0.10 h1:Xfbg4bBcqF2uwOyDSAnByaGmxyobLpascf8ZsHY53yE=
 github.com/shadowy-pycoder/ndpspoof v0.0.10/go.mod h1:ICr7Wog8AU6TE4uZpvrGsteQDX33wJOplXnBXdY+31A=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=

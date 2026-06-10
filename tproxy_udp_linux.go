@@ -143,7 +143,7 @@ type tproxyServerUDP struct {
 	conn         *net.UDPConn
 	quit         chan struct{}
 	wg           sync.WaitGroup
-	p            *ProxyApp
+	p            *Proxy
 	clients      *udpConnections
 	gwConn       *net.UDPConn
 	gwConn6      *net.UDPConn
@@ -151,7 +151,7 @@ type tproxyServerUDP struct {
 	closingFlag  atomic.Bool
 }
 
-func newTproxyServerUDP(p *ProxyApp) *tproxyServerUDP {
+func newTproxyServerUDP(p *Proxy) *tproxyServerUDP {
 	tsu := &tproxyServerUDP{
 		quit: make(chan struct{}),
 		p:    p,

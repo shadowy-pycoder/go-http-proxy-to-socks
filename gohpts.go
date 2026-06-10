@@ -153,7 +153,7 @@ func (c *http3Client) Close() error {
 	return c.tr.Close()
 }
 
-type ProxyApp struct {
+type Proxy struct {
 	httpEnabled bool
 	// httpServerAddr for HTTP/1.2, HTTP/2 (tcp) and HTTP/3 (udp) servers
 	httpServerAddr string
@@ -260,13 +260,13 @@ type ProxyApp struct {
 	closeConn chan bool
 }
 
-func New(conf *Config) (*ProxyApp, error) {
+func New(conf *Config) (*Proxy, error) {
 	if err := parseConfig(conf); err != nil {
 		return nil, fmt.Errorf("failed parsing configuration file: %v", err)
 	}
 
 	var logger, snifflogger zerolog.Logger
-	var p ProxyApp
+	var p Proxy
 	logfile := os.Stdout
 	var snifflog *os.File
 	var err error
@@ -402,7 +402,6 @@ func New(conf *Config) (*ProxyApp, error) {
 		}
 		// check addresses for transparent proxy
 		if conf.TProxy != "" {
-			// p.logger.Debug().Msgf("Configuring %s transparent proxy server address...", p.tcp)
 			var tproxyAddr netip.AddrPort
 			tproxyAddr, err = network.ParseAddrPort(conf.TProxy, "0.0.0.0")
 			if err != nil {
@@ -411,7 +410,6 @@ func New(conf *Config) (*ProxyApp, error) {
 			p.tproxyAddr = tproxyAddr.String()
 		}
 		if conf.TProxyUDP != "" {
-			// p.logger.Debug().Msgf("Configuring %s transparent proxy server address...", p.udp)
 			if p.tproxyMode != "tproxy" {
 				return nil, fmt.Errorf("[%s] transparent UDP server only supports tproxy mode", conf.TProxyMode)
 			}
@@ -504,7 +502,7 @@ func New(conf *Config) (*ProxyApp, error) {
 	return &p, nil
 }
 
-func (p *ProxyApp) Run() error {
+func (p *Proxy) Run() error {
 	var err error
 	// runtime.LockOSThread()
 	// defer runtime.UnlockOSThread()
@@ -1221,7 +1219,7 @@ func (p *ProxyApp) Run() error {
 	return nil
 }
 
-func (p *ProxyApp) handler() http.HandlerFunc {
+func (p *Proxy) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if p.http3Server != nil && r.ProtoMajor < 3 {
 			p.http3Server.SetQUICHeaders(w.Header())
@@ -1236,7 +1234,7 @@ func (p *ProxyApp) handler() http.HandlerFunc {
 	}
 }
 
-func (p *ProxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
+func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	proto := r.ProtoMajor
 	switch proto {
 	case 2:
@@ -1462,7 +1460,7 @@ func (p *ProxyApp) handleForward(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (p *ProxyApp) handleTunnel(w http.ResponseWriter, r *http.Request) {
+func (p *Proxy) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	var dstConn net.Conn
 	var err error
 	if network.IsLocalAddress(r.Host) {
@@ -1578,7 +1576,7 @@ func (p *ProxyApp) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 }
 
-func (p *ProxyApp) printProxyChain(pc []ProxyEntry) string {
+func (p *Proxy) printProxyChain(pc []ProxyEntry) string {
 	var sb strings.Builder
 	arrow := " →  "
 	if p.nocolor {
@@ -1632,7 +1630,7 @@ func (p *ProxyApp) printProxyChain(pc []ProxyEntry) string {
 	return sb.String()
 }
 
-func (p *ProxyApp) updateSocksList() {
+func (p *Proxy) updateSocksList() {
 	// TODO: transports should be reused, for chains it makes sense to create a map where different chains map to transport
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1716,7 +1714,7 @@ func shuffle(vals []ProxyEntry) {
 	}
 }
 
-func (p *ProxyApp) getSockDialer() (contextDialer, error) {
+func (p *Proxy) getSockDialer() (contextDialer, error) {
 	if !p.proxychain.Enabled {
 		return p.sockDialer, nil
 	}
@@ -1792,7 +1790,7 @@ func (p *ProxyApp) getSockDialer() (contextDialer, error) {
 	return dialer, nil
 }
 
-func (p *ProxyApp) getHTTPClient() (*httpClient, error) {
+func (p *Proxy) getHTTPClient() (*httpClient, error) {
 	sockDialer, err := p.getSockDialer()
 	if err != nil {
 		return nil, err
@@ -1801,7 +1799,7 @@ func (p *ProxyApp) getHTTPClient() (*httpClient, error) {
 	return httpClient, nil
 }
 
-func (p *ProxyApp) getHTTP3Client() (*http3Client, error) {
+func (p *Proxy) getHTTP3Client() (*http3Client, error) {
 	sockDialer, err := p.getSockDialer()
 	if err != nil {
 		return nil, err
@@ -1810,7 +1808,7 @@ func (p *ProxyApp) getHTTP3Client() (*http3Client, error) {
 	return http3Client, nil
 }
 
-func (p *ProxyApp) doReq(r *http.Request, c httpClienter) (*http.Response, error) {
+func (p *Proxy) doReq(r *http.Request, c httpClienter) (*http.Response, error) {
 	resp, err := c.Do(r)
 	if err != nil {
 		return nil, err
@@ -1821,7 +1819,7 @@ func (p *ProxyApp) doReq(r *http.Request, c httpClienter) (*http.Response, error
 	return resp, nil
 }
 
-func (p *ProxyApp) transfer(
+func (p *Proxy) transfer(
 	wg *sync.WaitGroup,
 	dst net.Conn,
 	src net.Conn,
@@ -1842,7 +1840,7 @@ func (p *ProxyApp) transfer(
 	src.Close()
 }
 
-func (p *ProxyApp) gatherSniffData(req, resp layers.Layer, sniffdata *[]string, id string) error {
+func (p *Proxy) gatherSniffData(req, resp layers.Layer, sniffdata *[]string, id string) error {
 	switch reqt := req.(type) {
 	case *layers.HTTPMessage:
 		var reqBodySaved, respBodySaved []byte
@@ -1940,7 +1938,7 @@ func (p *ProxyApp) gatherSniffData(req, resp layers.Layer, sniffdata *[]string, 
 	return nil
 }
 
-func (p *ProxyApp) sniffreporter(wg *sync.WaitGroup, sniffdata *[]string, reqChan, respChan <-chan layers.Layer, id string) {
+func (p *Proxy) sniffreporter(wg *sync.WaitGroup, sniffdata *[]string, reqChan, respChan <-chan layers.Layer, id string) {
 	defer wg.Done()
 	sniffdatalen := len(*sniffdata)
 	var reqTLSQueue, respTLSQueue, reqHTTPQueue, respHTTPQueue, reqDNSQueue, respDNSQueue []layers.Layer
@@ -2051,7 +2049,7 @@ func dispatch(data []byte) (layers.Layer, error) {
 	return nil, fmt.Errorf("failed sniffing traffic")
 }
 
-func (p *ProxyApp) transferHTTP2(
+func (p *Proxy) transferHTTP2(
 	wg *sync.WaitGroup,
 	w http.ResponseWriter,
 	r *http.Request,
@@ -2208,7 +2206,7 @@ func (p *ProxyApp) transferHTTP2(
 	}()
 }
 
-func (p *ProxyApp) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- layers.Layer) (written int64, err error) {
+func (p *Proxy) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- layers.Layer) (written int64, err error) {
 	buf := make([]byte, 32*1024)
 readLoop:
 	for {
@@ -2280,7 +2278,7 @@ readLoop:
 	return written, err
 }
 
-func (p *ProxyApp) replayCheck(next http.Handler) http.Handler {
+func (p *Proxy) replayCheck(next http.Handler) http.Handler {
 	// https://quic-go.net/docs/http3/server/#0-rtt
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !r.TLS.HandshakeComplete {
@@ -2293,7 +2291,7 @@ func (p *ProxyApp) replayCheck(next http.Handler) http.Handler {
 	})
 }
 
-func (p *ProxyApp) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
+func (p *Proxy) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Proxy-Authorization")
 		r.Header.Del("Proxy-Authorization")
@@ -2317,7 +2315,7 @@ func (p *ProxyApp) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
-func (p *ProxyApp) runRuleCmd(rule string) {
+func (p *Proxy) runRuleCmd(rule string) {
 	var setex string
 	if p.debug {
 		setex = "set -ex"
@@ -2337,14 +2335,14 @@ func (p *ProxyApp) runRuleCmd(rule string) {
 	p.dump.WriteString(rule)
 }
 
-func (p *ProxyApp) newSOCKSDialer(address string, auth *auth, forward contextDialer, network string) (contextDialer, error) {
+func (p *Proxy) newSOCKSDialer(address string, auth *auth, forward contextDialer, network string) (contextDialer, error) {
 	if p.socks4enabled {
 		return newSOCKS4Dialer(address, auth, forward, network)
 	}
 	return newSOCKS5Dialer(address, auth, forward, network)
 }
 
-func (p *ProxyApp) applyCommonRedirectRules(opts map[string]string) {
+func (p *Proxy) applyCommonRedirectRules(opts map[string]string) {
 	// TODO: add support for nftables
 	var setex string
 	if p.debug {
@@ -2459,7 +2457,7 @@ ip6tables -t filter -A OUTPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
 	}
 }
 
-func (p *ProxyApp) clearCommonRedirectRules(opts map[string]string) error {
+func (p *Proxy) clearCommonRedirectRules(opts map[string]string) error {
 	cmdClear0 := `
 iptables -t filter -F GOHPTS 2>/dev/null || true
 iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true

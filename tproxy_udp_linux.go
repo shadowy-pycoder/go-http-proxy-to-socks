@@ -143,7 +143,7 @@ type tproxyServerUDP struct {
 	conn         *net.UDPConn
 	quit         chan struct{}
 	wg           sync.WaitGroup
-	p            *proxyapp
+	p            *ProxyApp
 	clients      *udpConnections
 	gwConn       *net.UDPConn
 	gwConn6      *net.UDPConn
@@ -151,7 +151,7 @@ type tproxyServerUDP struct {
 	closingFlag  atomic.Bool
 }
 
-func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
+func newTproxyServerUDP(p *ProxyApp) *tproxyServerUDP {
 	tsu := &tproxyServerUDP{
 		quit: make(chan struct{}),
 		p:    p,
@@ -1192,6 +1192,7 @@ ip6tables -t mangle -X GOHPTS_UDP 2>/dev/null || true
 		}
 		prefix, err := network.GetIPv4PrefixFromInterface(tsu.p.iface)
 		if err != nil {
+			// TODO: get rid of FATAL error here
 			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed getting host from %s", tsu.p.tproxyMode, tsu.p.iface.Name)
 		}
 		cmdInit0 := fmt.Sprintf(`

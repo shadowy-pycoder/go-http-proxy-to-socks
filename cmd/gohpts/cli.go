@@ -281,6 +281,5 @@ func root(args []string) error {
 	if err != nil {
 		return err
 	}
-	p.Run()
-	return nil
+	return p.Run()
 }

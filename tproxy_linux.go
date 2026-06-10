@@ -25,12 +25,12 @@ type tproxyServer struct {
 	listener     net.Listener
 	quit         chan struct{}
 	wg           sync.WaitGroup
-	p            *proxyapp
+	p            *ProxyApp
 	startingFlag atomic.Bool
 	closingFlag  atomic.Bool
 }
 
-func newTproxyServer(p *proxyapp) *tproxyServer {
+func newTproxyServer(p *ProxyApp) *tproxyServer {
 	ts := &tproxyServer{
 		quit: make(chan struct{}),
 		p:    p,

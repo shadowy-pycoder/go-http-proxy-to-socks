@@ -422,9 +422,6 @@ func New(conf *Config) (*Proxy, error) {
 				return nil, err
 			}
 			p.tproxyAddrUDP = tproxyAddrUDP.String()
-			if network.AddrEqual(p.tproxyAddr, p.tproxyAddrUDP) {
-				return nil, fmt.Errorf("%s: address already in use", p.tproxyAddrUDP)
-			}
 		}
 
 		// calculate number of server instances

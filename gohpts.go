@@ -208,7 +208,8 @@ type Proxy struct {
 	debug bool
 
 	// address of a server with profiling data
-	pprofAddr string
+	pprofAddr   string
+	pprofServer *http.Server
 
 	// network interface proxy bound to, also used in spoofing tools
 	//
@@ -556,6 +557,14 @@ func (p *Proxy) Run() error {
 		if p.iface != nil {
 			p.pprofAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrPprof.Port()).String()
 		}
+		p.logger.Debug().Msg("Configuring PPROF server...")
+		sm := http.NewServeMux()
+		sm.HandleFunc("/debug/pprof/", pprof.Index)
+		sm.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		sm.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		sm.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		sm.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		p.pprofServer = &http.Server{Handler: sm}
 	}
 
 	// configure socks addresses
@@ -621,7 +630,6 @@ func (p *Proxy) Run() error {
 		// configure http server
 		p.logger.Debug().Msgf("Configuring %s server...", httpProto)
 		hs := &http.Server{
-			Addr:           p.httpServerAddr,
 			Handler:        httpHandler,
 			ReadTimeout:    readTimeout,
 			WriteTimeout:   writeTimeout,
@@ -655,30 +663,16 @@ func (p *Proxy) Run() error {
 			p.httpServer.Protocols.SetUnencryptedHTTP2(true)
 			if !p.socks4enabled {
 				p.logger.Debug().Msg("Configuring HTTP3 server...")
-				hs3 := &http3.Server{
-					Addr:           p.httpServerAddr,
+				p.http3Server = &http3.Server{
 					Handler:        p.replayCheck(httpHandler),
 					MaxHeaderBytes: 1 << 20,
-					TLSConfig: &tls.Config{
-						MinVersion: tls.VersionTLS13,
-						NextProtos: []string{http3.NextProtoH3},
-					},
-					QUICConfig: &quic.Config{
-						MaxIdleTimeout:          maxIdleTimeout,
-						KeepAlivePeriod:         keepAlivePeriod,
-						MaxIncomingStreams:      maxIncomingStreams,
-						MaxIncomingUniStreams:   maxIncomingUniStreams,
-						HandshakeIdleTimeout:    handshakeIdleTimeout,
-						DisablePathMTUDiscovery: false,
-						Allow0RTT:               true,
-					},
 				}
-				p.http3Server = hs3
 				p.http3LocalClient = newHTTP3Client(getQUICDialer(p.baseDialer))
 				if p.sockDialer != nil {
 					p.http3Client = newHTTP3Client(getQUICDialer(p.sockDialer))
 				}
 			}
+
 		}
 	}
 
@@ -836,25 +830,72 @@ func (p *Proxy) Run() error {
 		}
 	}
 
+	// configure listeners
+	var lnPprof, lnHTTP net.Listener
+	var lnHTTP3 *quic.EarlyListener
+	if p.pprofServer != nil {
+		lnPprof, err = net.Listen(p.tcp, p.pprofAddr)
+		if err != nil {
+			return err
+		}
+	}
+	if p.httpServer != nil {
+		lnHTTP, err = net.Listen(p.tcp, p.httpServerAddr)
+		if err != nil {
+			return err
+		}
+	}
+	if p.http3Server != nil {
+		cert, err := tls.LoadX509KeyPair(p.certFile, p.keyFile)
+		if err != nil {
+			return err
+		}
+		tlsConf := http3.ConfigureTLSConfig(&tls.Config{
+			MinVersion:   tls.VersionTLS13,
+			NextProtos:   []string{http3.NextProtoH3},
+			Certificates: []tls.Certificate{cert},
+		})
+		quicConf := &quic.Config{
+			MaxIdleTimeout:          maxIdleTimeout,
+			KeepAlivePeriod:         keepAlivePeriod,
+			MaxIncomingStreams:      maxIncomingStreams,
+			MaxIncomingUniStreams:   maxIncomingUniStreams,
+			HandshakeIdleTimeout:    handshakeIdleTimeout,
+			DisablePathMTUDiscovery: false,
+			Allow0RTT:               true,
+		}
+		lnHTTP3, err = quic.ListenAddrEarly(p.httpServerAddr, tlsConf, quicConf)
+		if err != nil {
+			return err
+		}
+	}
+	tproxyEnabled := p.tproxyAddr != ""
+	tproxyServers := make([]*tproxyServer, p.tproxyWorkers)
+	if tproxyEnabled {
+		for i := range tproxyServers {
+			tproxyServers[i], err = newTproxyServer(p)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	tproxyUDPEnabled := p.tproxyAddrUDP != ""
+	tproxyUDPServers := make([]*tproxyServerUDP, p.tproxyUDPWorkers)
+	if tproxyUDPEnabled {
+		for i := range tproxyUDPServers {
+			tproxyUDPServers[i], err = newTproxyServerUDP(p)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	// TODO ///////////////////////////////////
+
+	// proxy starting
 	done := make(chan bool)
 	quit := make(chan os.Signal, 1)
 	p.closeConn = make(chan bool)
 	signal.Notify(quit, os.Interrupt)
-	if p.pprofAddr != "" {
-		sm := http.NewServeMux()
-		sm.HandleFunc("/debug/pprof/", pprof.Index)
-		sm.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		sm.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		sm.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		sm.HandleFunc("/debug/pprof/trace", pprof.Trace)
-		go http.ListenAndServe(p.pprofAddr, sm)
-	}
-	if p.arpspoofer != nil {
-		go p.arpspoofer.Start()
-	}
-	if p.ndpspoofer != nil {
-		go p.ndpspoofer.Start()
-	}
 
 	if p.ipv6enabled {
 		p.logger.Info().Msg("IPv6 enabled")
@@ -863,40 +904,37 @@ func (p *Proxy) Run() error {
 	}
 	p.logger.Info().Msgf("SOCKS version: %s", p.socksProto)
 
-	var pcapWg sync.WaitGroup
-	if pcc != nil {
-		pcapWg.Go(func() {
-			p.logger.Info().Msg("Starting packet capture...")
-			if err := mshark.OpenLive(pcc, pcapW...); err != nil {
-				p.logger.Error().Err(err).Msg("Failed capturing packets")
+	if p.proxychain.Enabled {
+		chainType := p.proxychain.Type
+		ctl := colorizeChainType(chainType, p.nocolor)
+		go func() {
+			p.updateSocksList()
+			ticker := time.NewTicker(availProxyUpdateInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-p.closeConn:
+					return
+				case <-ticker.C:
+					p.logger.Debug().Msgf("%s Updating available proxy", ctl)
+					p.updateSocksList()
+				}
 			}
-		})
+		}()
 	}
-	tproxyEnabled := p.tproxyAddr != ""
-	tproxyServers := make([]*tproxyServer, p.tproxyWorkers)
+
 	opts := make(map[string]string, 20)
 	if p.auto {
 		p.logger.Info().Msg("Configuring iptables and kernel parameters...")
 		p.applyCommonRedirectRules(opts)
-	}
-	if tproxyEnabled {
-		for i := range tproxyServers {
-			tproxyServers[i] = newTproxyServer(p)
-		}
-		if p.auto {
+		if tproxyEnabled {
 			tproxyServers[0].ApplyRedirectRules(opts) // NOTE: probably stupid, need to move TCP settings in a separate function
 		}
-	}
-	tproxyUDPEnabled := p.tproxyAddrUDP != ""
-	tproxyUDPServers := make([]*tproxyServerUDP, p.tproxyUDPWorkers)
-	if tproxyUDPEnabled {
-		for i := range tproxyUDPServers {
-			tproxyUDPServers[i] = newTproxyServerUDP(p)
-		}
-		if p.auto {
+		if tproxyUDPEnabled {
 			tproxyUDPServers[0].ApplyRedirectRules(opts)
 		}
 	}
+
 	// logging which servers are enabled
 	if p.proxychain.Enabled {
 		p.logger.Info().Msgf("%s Proxy [%s] chain: %s", strings.ToUpper(p.socksProto), p.proxychain.Type, addrSOCKS)
@@ -950,24 +988,34 @@ func (p *Proxy) Run() error {
 	if p.pprofAddr != "" {
 		p.logger.Info().Msgf("PPROF: %s", p.pprofAddr)
 	}
-	if p.proxychain.Enabled {
-		chainType := p.proxychain.Type
-		ctl := colorizeChainType(chainType, p.nocolor)
+
+	var pcapWg sync.WaitGroup
+	if pcc != nil {
+		pcapWg.Go(func() {
+			p.logger.Info().Msg("Starting packet capture...")
+			if err := mshark.OpenLive(pcc, pcapW...); err != nil {
+				p.logger.Error().Err(err).Msg("Failed capturing packets")
+			}
+		})
+	}
+
+	if p.arpspoofer != nil {
+		go p.arpspoofer.Start()
+	}
+
+	if p.ndpspoofer != nil {
+		go p.ndpspoofer.Start()
+	}
+
+	if p.pprofServer != nil {
 		go func() {
-			p.updateSocksList()
-			ticker := time.NewTicker(availProxyUpdateInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-p.closeConn:
-					return
-				case <-ticker.C:
-					p.logger.Debug().Msgf("%s Updating available proxy", ctl)
-					p.updateSocksList()
-				}
+			if err := p.pprofServer.Serve(lnPprof); err != nil && err != http.ErrServerClosed {
+				p.logger.Error().Err(err).Msg("Unable to start PPROF server")
+				quit <- os.Interrupt
 			}
 		}()
 	}
+
 	if p.httpServer != nil {
 		go func() {
 			<-quit
@@ -1067,6 +1115,17 @@ func (p *Proxy) Run() error {
 					}
 				})
 			}
+			if p.pprofServer != nil {
+				p.logger.Info().Msg("PPROF Server is shutting down...")
+				wg.Go(func() {
+					p.pprofServer.SetKeepAlivesEnabled(false)
+					if err := p.pprofServer.Shutdown(ctx); err != nil {
+						p.logger.Error().Err(err).Msg("Could not gracefully shutdown PPROF server")
+					} else {
+						p.logger.Info().Msg("PPROF Server gracefully shutdown")
+					}
+				})
+			}
 			if p.pcapConf != "" {
 				wg.Go(func() {
 					p.logger.Info().Msg("Shutting down packet capture..")
@@ -1078,28 +1137,31 @@ func (p *Proxy) Run() error {
 		}()
 		if tproxyEnabled {
 			for _, tproxyServer := range tproxyServers {
-				go tproxyServer.ListenAndServe()
+				go tproxyServer.Serve()
 			}
 		}
 		if tproxyUDPEnabled {
 			for _, tproxyServerUDP := range tproxyUDPServers {
-				go tproxyServerUDP.ListenAndServe()
+				go tproxyServerUDP.Serve()
 			}
 		}
 		if p.certFile != "" && p.keyFile != "" {
 			go func() {
-				if err := p.httpServer.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
-					p.logger.Fatal().Err(err).Msg("Unable to start HTTPS server")
+				if err := p.httpServer.ServeTLS(lnHTTP, p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
+					p.logger.Error().Err(err).Msg("Unable to start HTTPS server")
+					quit <- os.Interrupt
 				}
 			}()
 			if p.http3Server != nil {
-				if err := p.http3Server.ListenAndServeTLS(p.certFile, p.keyFile); err != nil && err != http.ErrServerClosed {
-					p.logger.Fatal().Err(err).Msg("Unable to start HTTP3 server")
+				if err := p.http3Server.ServeListener(lnHTTP3); err != nil && err != http.ErrServerClosed {
+					p.logger.Error().Err(err).Msg("Unable to start HTTP3 server")
+					quit <- os.Interrupt
 				}
 			}
 		} else {
-			if err := p.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				p.logger.Fatal().Err(err).Msg("Unable to start HTTP server")
+			if err := p.httpServer.Serve(lnHTTP); err != nil && err != http.ErrServerClosed {
+				p.logger.Error().Err(err).Msg("Unable to start HTTP server")
+				quit <- os.Interrupt
 			}
 		}
 	} else {
@@ -1146,6 +1208,19 @@ func (p *Proxy) Run() error {
 					}()
 				}
 			}
+			if p.pprofServer != nil {
+				p.logger.Info().Msg("PPROF Server is shutting down...")
+				ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+				defer cancel()
+				wg.Go(func() {
+					p.pprofServer.SetKeepAlivesEnabled(false)
+					if err := p.pprofServer.Shutdown(ctx); err != nil {
+						p.logger.Error().Err(err).Msg("Could not gracefully shutdown PPROF server")
+					} else {
+						p.logger.Info().Msg("PPROF Server gracefully shutdown")
+					}
+				})
+			}
 			if p.auto {
 				wg.Go(func() {
 					p.logger.Info().Msg("Restoring iptables and kernel parameters...")
@@ -1178,29 +1253,29 @@ func (p *Proxy) Run() error {
 		}()
 		if tproxyEnabled && tproxyUDPEnabled {
 			for _, tproxyServerUDP := range tproxyUDPServers {
-				go tproxyServerUDP.ListenAndServe()
+				go tproxyServerUDP.Serve()
 			}
 			for i, tproxyServer := range tproxyServers {
 				if i < len(tproxyServers)-1 {
-					go tproxyServer.ListenAndServe()
+					go tproxyServer.Serve()
 				} else {
-					tproxyServer.ListenAndServe()
+					tproxyServer.Serve()
 				}
 			}
 		} else if tproxyEnabled {
 			for i, tproxyServer := range tproxyServers {
 				if i < len(tproxyServers)-1 {
-					go tproxyServer.ListenAndServe()
+					go tproxyServer.Serve()
 				} else {
-					tproxyServer.ListenAndServe()
+					tproxyServer.Serve()
 				}
 			}
 		} else {
 			for i, tproxyServerUDP := range tproxyUDPServers {
 				if i < len(tproxyUDPServers)-1 {
-					go tproxyServerUDP.ListenAndServe()
+					go tproxyServerUDP.Serve()
 				} else {
-					tproxyServerUDP.ListenAndServe()
+					tproxyServerUDP.Serve()
 				}
 			}
 		}
@@ -2327,7 +2402,7 @@ func (p *Proxy) runRuleCmd(rule string) {
 		cmd.Stdout = nil
 	}
 	if err := cmd.Run(); err != nil {
-		p.logger.Fatal().Err(err).Msgf("[%s] Failed running rule command", p.tproxyMode)
+		p.logger.Error().Err(err).Msgf("[%s] Failed running rule command", p.tproxyMode)
 	}
 	p.dump.WriteString(rule)
 }

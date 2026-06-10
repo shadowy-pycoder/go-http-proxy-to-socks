@@ -151,7 +151,7 @@ type tproxyServerUDP struct {
 	closingFlag  atomic.Bool
 }
 
-func newTproxyServerUDP(p *Proxy) *tproxyServerUDP {
+func newTproxyServerUDP(p *Proxy) (*tproxyServerUDP, error) {
 	tsu := &tproxyServerUDP{
 		quit: make(chan struct{}),
 		p:    p,
@@ -179,11 +179,7 @@ func newTproxyServerUDP(p *Proxy) *tproxyServerUDP {
 	}
 	pconn, err := lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.tproxyAddrUDP)
 	if err != nil {
-		var msg string
-		if errors.Is(err, unix.EPERM) {
-			msg = "try `sudo setcap 'cap_net_admin+ep` for the binary or run with sudo:"
-		}
-		tsu.p.logger.Fatal().Err(err).Msg(msg)
+		return nil, err
 	}
 	tsu.conn = pconn.(*net.UDPConn)
 	tsu.clients = &udpConnections{quit: tsu.quit, clients: make(map[string]*udpConn)}
@@ -207,7 +203,7 @@ func newTproxyServerUDP(p *Proxy) *tproxyServerUDP {
 		}
 		pconn, err = lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.gwDNS.String())
 		if err != nil {
-			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed listening on gateway DNS", tsu.p.tproxyMode)
+			return nil, err
 		}
 		tsu.gwConn = pconn.(*net.UDPConn)
 	}
@@ -231,16 +227,16 @@ func newTproxyServerUDP(p *Proxy) *tproxyServerUDP {
 		}
 		pconn, err = lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.hostDNS6.String())
 		if err != nil {
-			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed listening on gateway DNS", tsu.p.tproxyMode)
+			return nil, err
 		}
 		tsu.gwConn6 = pconn.(*net.UDPConn)
 	}
-	return tsu
+	return tsu, nil
 }
 
 // TODO: try to minimize code duplication here
 
-func (tsu *tproxyServerUDP) ListenAndServe() {
+func (tsu *tproxyServerUDP) Serve() {
 	tsu.startingFlag.Store(true)
 	tsu.wg.Add(1)
 	go tsu.clients.Cleanup()
@@ -1190,21 +1186,27 @@ ip6tables -t mangle -X GOHPTS_UDP 2>/dev/null || true
 `
 			tsu.p.runRuleCmd(cmdClear1)
 		}
-		prefix, err := network.GetIPv4PrefixFromInterface(tsu.p.iface)
-		if err != nil {
-			// TODO: get rid of FATAL error here
-			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed getting host from %s", tsu.p.tproxyMode, tsu.p.iface.Name)
-		}
-		cmdInit0 := fmt.Sprintf(`
+
+		cmdInit0 := `
 iptables -t mangle -N GOHPTS_UDP 2>/dev/null || true
 iptables -t mangle -F GOHPTS_UDP
 
 iptables -t mangle -A GOHPTS_UDP -p udp -d 127.0.0.0/8 -j RETURN
 iptables -t mangle -A GOHPTS_UDP -p udp -d 224.0.0.0/4 -j RETURN
 iptables -t mangle -A GOHPTS_UDP -p udp -d 255.255.255.255/32 -j RETURN
+`
+		tsu.p.runRuleCmd(cmdInit0)
+		var prefix *netip.Prefix
+		pr, err := network.GetIPv4PrefixFromInterface(tsu.p.iface)
+		if err != nil {
+			tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed getting host from %s", tsu.p.tproxyMode, tsu.p.iface.Name)
+		} else {
+			prefix = &pr
+			cmdInit00 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS_UDP -p udp -d %s -j RETURN
 `, prefix.Masked())
-		tsu.p.runRuleCmd(cmdInit0)
+			tsu.p.runRuleCmd(cmdInit00)
+		}
 		if tsu.p.ipv6enabled {
 			cmdInit01 := `
 ip6tables -t mangle -N GOHPTS_UDP 2>/dev/null || true
@@ -1267,14 +1269,21 @@ fi
 `
 		}
 		tsu.p.runRuleCmd(cmdDocker)
-		cmdInit := fmt.Sprintf(`
+		cmdInit00 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
+`, tsu.p.mark)
+		tsu.p.runRuleCmd(cmdInit00)
+		if prefix != nil {
+			cmdInit01 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 1
-
+`, prefix.Masked(), tproxyPortUDP)
+			tsu.p.runRuleCmd(cmdInit01)
+		}
+		cmdInit02 := `
 iptables -t mangle -A PREROUTING -p udp -m socket -j DIVERT
 iptables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
-`, tsu.p.mark, prefix.Masked(), tproxyPortUDP)
-		tsu.p.runRuleCmd(cmdInit)
+`
+		tsu.p.runRuleCmd(cmdInit02)
 		if tsu.p.ipv6enabled {
 			cmdInit6 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN

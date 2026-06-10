@@ -4,7 +4,6 @@ package gohpts
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -30,7 +29,7 @@ type tproxyServer struct {
 	closingFlag  atomic.Bool
 }
 
-func newTproxyServer(p *Proxy) *tproxyServer {
+func newTproxyServer(p *Proxy) (*tproxyServer, error) {
 	ts := &tproxyServer{
 		quit: make(chan struct{}),
 		p:    p,
@@ -61,17 +60,13 @@ func newTproxyServer(p *Proxy) *tproxyServer {
 
 	ln, err := lc.Listen(context.Background(), ts.p.tcp, ts.p.tproxyAddr)
 	if err != nil {
-		var msg string
-		if errors.Is(err, unix.EPERM) {
-			msg = "try `sudo setcap 'cap_net_admin+ep` for the binary or run with sudo:"
-		}
-		ts.p.logger.Fatal().Err(err).Msg(msg)
+		return nil, err
 	}
 	ts.listener = ln
-	return ts
+	return ts, nil
 }
 
-func (ts *tproxyServer) ListenAndServe() {
+func (ts *tproxyServer) Serve() {
 	ts.startingFlag.Store(true)
 	ts.wg.Add(1)
 	go ts.serve()

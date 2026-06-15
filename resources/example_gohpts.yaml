@@ -95,11 +95,11 @@ transparent_proxy:
 arpspoof:
   enabled: false
   # see https://github.com/shadowy-pycoder/arpspoof for settings explanation
-  settings: "targets 192.168.10.0/24;fullduplex true;debug true;interval 10s"
+  settings: "targets 192.168.10.0/24;gateway 192.168.10.1;fullduplex true;debug true;interval 10s"
 ndpspoof:
   enabled: false
   # see https://github.com/shadowy-pycoder/ndpspoof for settings explanation
-  settings: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;fullduplex true;debug true;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;interval 10s;mtu 1500;packet HRD F2 DSDS"
+  settings: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4,fe80::b6d2:4cff:fe9a:5f10;gateway fe80::1;fullduplex true;debug true;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;interval 10s;mtu 1500;packet HRD F2 DSDS"
 
 # dns filters require udp transparent proxy and arpspoof/ndpspoof
 # filters accept hosts like entries (use either links, file paths or just plain comma separated lists
@@ -115,3 +115,9 @@ pcap:
   enabled: false
   # see https://github.com/shadowy-pycoder/mshark for settings explanation
   settings: "promisc true;expr ip proto tcp;snaplen 65535;timeout 10s;packet_count 100;packet_buffer 8192;exts txt,pcap,pcapng"
+
+# name or path of linux network namespace
+netns:
+  enabled: false
+  in: ns1 # listening sockets, auto configuration
+  out: /run/netns/ns2 # outbound connections

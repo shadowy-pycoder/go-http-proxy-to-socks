@@ -1196,15 +1196,10 @@ iptables -t mangle -A GOHPTS_UDP -p udp -d 224.0.0.0/4 -j RETURN
 iptables -t mangle -A GOHPTS_UDP -p udp -d 255.255.255.255/32 -j RETURN
 `
 		tsu.p.runRuleCmd(cmdInit0)
-		var prefix *netip.Prefix
-		pr, err := network.GetIPv4PrefixFromInterface(tsu.p.iface)
-		if err != nil {
-			tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed getting host from %s", tsu.p.tproxyMode, tsu.p.iface.Name)
-		} else {
-			prefix = &pr
+		if tsu.p.prefix != nil {
 			cmdInit00 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS_UDP -p udp -d %s -j RETURN
-`, prefix.Masked())
+`, tsu.p.prefix.Masked())
 			tsu.p.runRuleCmd(cmdInit00)
 		}
 		if tsu.p.ipv6enabled {
@@ -1219,10 +1214,10 @@ ip6tables -t mangle -A GOHPTS_UDP -p udp -d fe80::/10 -j RETURN
 ip6tables -t mangle -A GOHPTS_UDP -p udp -d fc00::/7 -j RETURN
 `
 			tsu.p.runRuleCmd(cmdInit01)
-			if prefix6, err := network.GetIPv6GlobalUnicastPrefixFromInterface(tsu.p.iface); err == nil {
+			if tsu.p.prefix6 != nil {
 				cmdInit02 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS_UDP -p udp -s %s -d %s -j RETURN
-`, prefix6.Masked(), prefix6.Masked())
+`, tsu.p.prefix6.Masked(), tsu.p.prefix6.Masked())
 				tsu.p.runRuleCmd(cmdInit02)
 			}
 		}
@@ -1273,10 +1268,10 @@ fi
 iptables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
 `, tsu.p.mark)
 		tsu.p.runRuleCmd(cmdInit00)
-		if prefix != nil {
+		if tsu.p.prefix != nil {
 			cmdInit01 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 1
-`, prefix.Masked(), tproxyPortUDP)
+`, tsu.p.prefix.Masked(), tproxyPortUDP)
 			tsu.p.runRuleCmd(cmdInit01)
 		}
 		cmdInit02 := `

@@ -455,10 +455,11 @@ ip6tables -t mangle -A GOHPTS -p tcp -d fe80::/10 -j RETURN
 ip6tables -t mangle -A GOHPTS -p tcp -d fc00::/7 -j RETURN
 `
 			ts.p.runRuleCmd(cmdInit01)
-			if prefix6, err := network.GetIPv6GlobalUnicastPrefixFromInterface(ts.p.iface); err == nil {
+
+			if ts.p.prefix6 != nil {
 				cmdInit02 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS -p tcp -s %s -d %s -j RETURN
-`, prefix6.Masked(), prefix6.Masked())
+`, ts.p.prefix6.Masked(), ts.p.prefix6.Masked())
 				ts.p.runRuleCmd(cmdInit02)
 			}
 		}

@@ -61,6 +61,10 @@ type Config struct {
 
 	// packet capture
 	Pcap string
+
+	// network namespaces
+	InNetNS  string
+	OutNetNS string
 }
 
 type ProxyEntry struct {
@@ -143,6 +147,11 @@ type yamlConfig struct {
 		Enabled  bool   `yaml:"enabled"`
 		Settings string `yaml:"settings"`
 	} `yaml:"pcap"`
+	Netns struct {
+		Enabled bool   `yaml:"enabled"`
+		In      string `yaml:"in"`
+		Out     string `yaml:"out"`
+	} `yaml:"netns"`
 }
 
 func createConfigFromPath(path string) (*Config, error) {
@@ -213,6 +222,10 @@ func createConfigFromPath(path string) (*Config, error) {
 	}
 	if sconf.Pcap.Enabled {
 		conf.Pcap = sconf.Pcap.Settings
+	}
+	if sconf.Netns.Enabled {
+		conf.InNetNS = sconf.Netns.In
+		conf.OutNetNS = sconf.Netns.Out
 	}
 	return &conf, nil
 }
@@ -356,6 +369,14 @@ func parseConfig(conf *Config) error {
 			conf.Pcap = yamlConf.Pcap
 		}
 
+		if conf.InNetNS == "" {
+			conf.InNetNS = yamlConf.InNetNS
+		}
+
+		if conf.OutNetNS == "" {
+			conf.OutNetNS = yamlConf.OutNetNS
+		}
+
 		if conf.IgnoredPorts == "" {
 			conf.IgnoredPorts = yamlConf.IgnoredPorts
 		}
@@ -405,6 +426,12 @@ func parseConfig(conf *Config) error {
 		}
 		if conf.Pcap != "" {
 			return fmt.Errorf("option `Pcap` is available only on linux/android systems")
+		}
+		if conf.InNetNS != "" {
+			return fmt.Errorf("option `InNetNS` is available only on linux/android systems")
+		}
+		if conf.OutNetNS != "" {
+			return fmt.Errorf("option `OutNetNS` is available only on linux/android systems")
 		}
 		if conf.IgnoredPorts != "" {
 			return fmt.Errorf("option `IgnoredPorts` is available only on linux/android systems")

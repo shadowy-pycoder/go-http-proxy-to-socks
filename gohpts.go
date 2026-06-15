@@ -39,6 +39,7 @@ import (
 	"github.com/shadowy-pycoder/mshark/mpcapng"
 	"github.com/shadowy-pycoder/mshark/network"
 	"github.com/shadowy-pycoder/ndpspoof"
+	"github.com/vishvananda/netns"
 )
 
 const (
@@ -217,6 +218,8 @@ type Proxy struct {
 	iface *net.Interface
 	// user specified interface name
 	ifacename string
+	prefix    *netip.Prefix
+	prefix6   *netip.Prefix
 
 	// network types ("tcp", "udp" when IPv6 is enabled, "tcp4" and "udp4" otherwise)
 	tcp, udp    string
@@ -258,6 +261,14 @@ type Proxy struct {
 	// packet capture
 	pcapConf string
 
+	// network namespaces
+	nsEnabled       bool
+	inNS            *netns.NsHandle
+	inNSPathOrName  string
+	outNS           *netns.NsHandle
+	outNSPathOrName string
+
+	// connection graceful shutdown channel
 	closeConn chan bool
 }
 
@@ -272,9 +283,50 @@ func New(conf *Config) (*Proxy, error) {
 	var snifflog *os.File
 	var err error
 
+	// setting namespace
+	if conf.InNetNS != "" || conf.OutNetNS != "" {
+		if conf.InNetNS != "" {
+			var inNS netns.NsHandle
+			if strings.HasPrefix(conf.InNetNS, "/") {
+				inNS, err = netns.GetFromPath(conf.InNetNS)
+			} else {
+				inNS, err = netns.GetFromName(conf.InNetNS)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed getting namespace %s: %v", conf.InNetNS, err)
+			}
+			p.inNS = &inNS
+			p.inNSPathOrName = conf.InNetNS
+		} else { // defaults to host namespace
+			currentNs, err := netns.Get()
+			if err != nil {
+				return nil, fmt.Errorf("failed getting current namespace: %v", err)
+			}
+			p.inNS = &currentNs
+		}
+		if conf.OutNetNS != "" {
+			var outNS netns.NsHandle
+			if strings.HasPrefix(conf.OutNetNS, "/") {
+				outNS, err = netns.GetFromPath(conf.OutNetNS)
+			} else {
+				outNS, err = netns.GetFromName(conf.OutNetNS)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed getting namespace %s: %v", conf.OutNetNS, err)
+			}
+			p.outNS = &outNS
+			p.outNSPathOrName = conf.OutNetNS
+		} else {
+			currentNs, err := netns.Get()
+			if err != nil {
+				return nil, fmt.Errorf("failed getting current namespace: %v", err)
+			}
+			p.outNS = &currentNs
+		}
+		p.nsEnabled = true
+	}
+
 	// misc stuff
-	// TODO: check namespace here maybe
-	// fail fast
 	p.auto = conf.Auto
 	if p.auto {
 		if os.Geteuid() != 0 {
@@ -501,28 +553,20 @@ func New(conf *Config) (*Proxy, error) {
 }
 
 func (p *Proxy) Run() error {
+	var currentNs netns.NsHandle
 	var err error
-	// runtime.LockOSThread()
-	// defer runtime.UnlockOSThread()
-	// ns, _ := netns.Get()
-	// currentNs, err := netns.Get()
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// defer currentNs.Close()
-	// defer netns.Set(currentNs)
-	//
-	// targetNs, err := netns.GetFromName("ns1")
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// defer targetNs.Close()
-	// err = netns.Set(targetNs)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// ns, _ = netns.Get()
-
+	if p.nsEnabled {
+		runtime.LockOSThread()
+		if currentNs, err = netns.Get(); err != nil {
+			return fmt.Errorf("failed getting current namespace: %v", err)
+		}
+		if err = netns.Set(*p.inNS); err != nil {
+			if errors.Is(err, os.ErrPermission) {
+				return fmt.Errorf("permission denied (try setting CAP_SYS_ADMIN and CAP_NET_RAW capabilities): %v", err)
+			}
+			return fmt.Errorf("failed setting namespace: %v", err)
+		}
+	}
 	// getting interface
 	if p.ifacename != "" {
 		p.logger.Debug().Msgf("Configuring %s interface...", p.ifacename)
@@ -687,8 +731,30 @@ func (p *Proxy) Run() error {
 				if err != nil {
 					p.iface, err = network.GetDefaultInterfaceFromRouteIPv6()
 					if err != nil {
-						return fmt.Errorf("failed getting default network interface")
+						p.logger.Warn().Msg("failed getting default network interface, trying detect from route")
+						p.iface, err = network.GetFirstAvailableInterfaceFromRoute()
+						if err != nil {
+							return fmt.Errorf("failed getting default network interface")
+						}
 					}
+				}
+			}
+		}
+		if p.auto {
+			// getting prefixes
+			p.logger.Debug().Msg("Configuring network prefixes...")
+			prefix, err := network.GetIPv4PrefixFromInterface(p.iface)
+			if err != nil {
+				p.logger.Warn().Err(err).Msgf("Failed getting prefix for %s", p.iface.Name)
+			} else {
+				p.prefix = &prefix
+			}
+			if p.ipv6enabled {
+				prefix6, err := network.GetIPv6GlobalUnicastPrefixFromInterface(p.iface)
+				if err != nil {
+					p.logger.Warn().Err(err).Msgf("Failed getting IPv6 prefix for %s", p.iface.Name)
+				} else {
+					p.prefix6 = &prefix6
 				}
 			}
 		}
@@ -708,7 +774,10 @@ func (p *Proxy) Run() error {
 			return fmt.Errorf("failed creating arp spoofer: %v", err)
 		}
 		asc.Interface = p.iface.Name
-		asc.Gateway = nil
+		asc.NetNS = ""
+		if p.nsEnabled {
+			asc.NetNS = p.inNSPathOrName
+		}
 		p.arpspoofer, err = arpspoof.NewARPSpoofer(asc)
 		if err != nil {
 			return fmt.Errorf("failed creating arp spoofer: %v", err)
@@ -735,15 +804,27 @@ func (p *Proxy) Run() error {
 			return fmt.Errorf("failed creating ndp spoofer: %v", err)
 		}
 		nsc.Interface = p.iface.Name
-		nsc.Gateway = nil
 		nsc.RDNSS = ""
 		nsc.Auto = false
 		nsc.NoColor = p.nocolor
+		nsc.NetNS = ""
+		if p.nsEnabled {
+			nsc.NetNS = p.inNSPathOrName
+		}
 		if nsc.RA {
+			var hostIP netip.Addr
 			p.logger.Debug().Msg("Configuring DNS (host)...")
-			hostIP, err := network.GetHostIPv6GlobalUnicastFromRoute()
+			hostIP, err = network.GetHostIPv6GlobalUnicastFromRoute()
 			if err != nil {
-				return err
+				if p.prefix6 != nil {
+					hostIP = p.prefix6.Addr()
+				} else {
+					pr, err := network.GetIPv6GlobalUnicastPrefixFromInterface(p.iface)
+					if err != nil {
+						return err
+					}
+					hostIP = pr.Addr()
+				}
 			}
 			nsc.RDNSS = hostIP.String() // use host ip as DNS server
 			p.raEnabled = true
@@ -833,6 +914,7 @@ func (p *Proxy) Run() error {
 	// configure listeners
 	var lnPprof, lnHTTP net.Listener
 	var lnHTTP3 *quic.EarlyListener
+	var pcapConn net.PacketConn
 	if p.pprofServer != nil {
 		lnPprof, err = net.Listen(p.tcp, p.pprofAddr)
 		if err != nil {
@@ -889,7 +971,36 @@ func (p *Proxy) Run() error {
 			}
 		}
 	}
+	opts := make(map[string]string, 20)
+	if p.auto {
+		p.logger.Info().Msg("Configuring iptables and kernel parameters...")
+		p.applyCommonRedirectRules(opts)
+		if tproxyEnabled {
+			tproxyServers[0].ApplyRedirectRules(opts) // NOTE: probably stupid, need to move TCP settings in a separate function
+		}
+		if tproxyUDPEnabled {
+			tproxyUDPServers[0].ApplyRedirectRules(opts)
+		}
+	}
+
+	if pcc != nil {
+		lc := &network.ListenConfig{Device: pcc.Device, Promiscuous: &pcc.Promisc, FilterExpr: pcc.Expr}
+		pcapConn, err = network.ListenPacket(lc)
+		if err != nil {
+			return err
+		}
+	}
+
+	// all listening sockets created, restore namespace
+	if p.nsEnabled {
+		if currentNs > 0 {
+			netns.Set(currentNs)
+			currentNs.Close()
+		}
+		runtime.UnlockOSThread()
+	}
 	// TODO ///////////////////////////////////
+	// outNS support for http, tcp, udp, socks
 
 	// proxy starting
 	done := make(chan bool)
@@ -908,6 +1019,16 @@ func (p *Proxy) Run() error {
 		chainType := p.proxychain.Type
 		ctl := colorizeChainType(chainType, p.nocolor)
 		go func() {
+			if p.nsEnabled {
+				runtime.LockOSThread()
+				defer runtime.UnlockOSThread()
+				currentNs, err := netns.Get()
+				if err != nil {
+					defer currentNs.Close()
+					defer netns.Set(currentNs)
+				}
+				netns.Set(*p.outNS)
+			}
 			p.updateSocksList()
 			ticker := time.NewTicker(availProxyUpdateInterval)
 			defer ticker.Stop()
@@ -921,18 +1042,6 @@ func (p *Proxy) Run() error {
 				}
 			}
 		}()
-	}
-
-	opts := make(map[string]string, 20)
-	if p.auto {
-		p.logger.Info().Msg("Configuring iptables and kernel parameters...")
-		p.applyCommonRedirectRules(opts)
-		if tproxyEnabled {
-			tproxyServers[0].ApplyRedirectRules(opts) // NOTE: probably stupid, need to move TCP settings in a separate function
-		}
-		if tproxyUDPEnabled {
-			tproxyUDPServers[0].ApplyRedirectRules(opts)
-		}
 	}
 
 	// logging which servers are enabled
@@ -993,7 +1102,7 @@ func (p *Proxy) Run() error {
 	if pcc != nil {
 		pcapWg.Go(func() {
 			p.logger.Info().Msg("Starting packet capture...")
-			if err := mshark.OpenLive(pcc, pcapW...); err != nil {
+			if err := mshark.OpenLiveFromPacketConn(pcapConn, pcc, pcapW...); err != nil {
 				p.logger.Error().Err(err).Msg("Failed capturing packets")
 			}
 		})
@@ -1064,6 +1173,16 @@ func (p *Proxy) Run() error {
 			}
 			if p.auto {
 				wg.Go(func() {
+					if p.nsEnabled {
+						runtime.LockOSThread()
+						defer runtime.UnlockOSThread()
+						currentNs, err := netns.Get()
+						if err != nil {
+							defer currentNs.Close()
+							defer netns.Set(currentNs)
+						}
+						netns.Set(*p.inNS)
+					}
 					p.logger.Info().Msg("Restoring iptables and kernel parameters...")
 					if tproxyEnabled {
 						err := tproxyServers[0].ClearRedirectRules()
@@ -1077,7 +1196,7 @@ func (p *Proxy) Run() error {
 							p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 						}
 					}
-					err := p.clearCommonRedirectRules(opts)
+					err = p.clearCommonRedirectRules(opts)
 					if err != nil {
 						p.logger.Error().Err(err).Msg("Failed clearing iptables rules")
 					}
@@ -1223,6 +1342,16 @@ func (p *Proxy) Run() error {
 			}
 			if p.auto {
 				wg.Go(func() {
+					if p.nsEnabled {
+						runtime.LockOSThread()
+						defer runtime.UnlockOSThread()
+						currentNs, err := netns.Get()
+						if err != nil {
+							defer currentNs.Close()
+							defer netns.Set(currentNs)
+						}
+						netns.Set(*p.inNS)
+					}
 					p.logger.Info().Msg("Restoring iptables and kernel parameters...")
 					if tproxyEnabled {
 						err := tproxyServers[0].ClearRedirectRules()
@@ -1281,6 +1410,10 @@ func (p *Proxy) Run() error {
 		}
 	}
 	<-done
+	if p.nsEnabled {
+		p.inNS.Close()
+		p.outNS.Close()
+	}
 	if p.dumpRules {
 		err := os.WriteFile("rules.sh", []byte(p.dump.String()), 0o755)
 		if err != nil {

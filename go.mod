@@ -7,11 +7,12 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/quic-go/quic-go v0.59.1
 	github.com/rs/zerolog v1.34.0
-	github.com/shadowy-pycoder/arpspoof v0.0.7
+	github.com/shadowy-pycoder/arpspoof v0.0.8-0.20260615023532-1a8d5bbfc995
 	github.com/shadowy-pycoder/colors v0.0.2
-	github.com/shadowy-pycoder/mshark v0.0.31
-	github.com/shadowy-pycoder/ndpspoof v0.0.10
+	github.com/shadowy-pycoder/mshark v0.0.32-0.20260615020914-f85eac8d7e45
+	github.com/shadowy-pycoder/ndpspoof v0.0.11-0.20260615022946-307263d15a2c
 	github.com/stretchr/testify v1.11.1
+	github.com/vishvananda/netns v0.0.5
 	github.com/wzshiming/socks4 v0.4.0
 	github.com/wzshiming/socks5 v0.5.2
 	golang.org/x/sys v0.35.0

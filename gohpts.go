@@ -154,6 +154,11 @@ func (c *http3Client) Close() error {
 	return c.tr.Close()
 }
 
+type chainedDialer struct {
+	dialer contextDialer
+	err    error
+}
+
 type Proxy struct {
 	httpEnabled bool
 	// httpServerAddr for HTTP/1.2, HTTP/2 (tcp) and HTTP/3 (udp) servers
@@ -176,8 +181,8 @@ type Proxy struct {
 	socksProto string
 	// socks5 dialer with UDP ASSOCIATE support or socks4/socks4a TCP only
 	sockDialer contextDialer
-	// net.Dialer with timeout (used for local connections and as a forward dialer in socks5 proxy)
-	baseDialer *net.Dialer
+	// contextDialer with timeout (used for local connections and as a forward dialer in socks5 proxy)
+	baseDialer contextDialer
 	// credetials used in HTTP BasicAuth
 	user, pass string
 
@@ -185,14 +190,14 @@ type Proxy struct {
 	certFile, keyFile string
 
 	// proxychain
-
 	proxychain   ProxyChain
 	proxylist    []ProxyEntry
 	rrIndex      atomic.Uint32
 	rrIndexReset uint32
 
-	mu             sync.RWMutex // guards availProxyList
+	mu             sync.RWMutex // guards availProxyList and chDialer
 	availProxyList []ProxyEntry
+	chDialer       *chainedDialer
 
 	// logging
 
@@ -506,7 +511,11 @@ func New(conf *Config) (*Proxy, error) {
 		}
 	}
 	// configure base dialer
-	p.baseDialer = getBaseDialer(timeout, p.mark)
+	if p.nsEnabled {
+		p.baseDialer = getNSDialer(*p.outNS, timeout, p.mark)
+	} else {
+		p.baseDialer = getBaseDialer(timeout, p.mark)
+	}
 
 	// interface
 	p.ifacename = conf.Interface
@@ -841,7 +850,11 @@ func (p *Proxy) Run() error {
 	// configuring DNS filters
 	if p.dnsFilterConf.Enabled {
 		p.logger.Debug().Msg("Configuring DNS filters...")
-		p.filter = newDNSFilter(p.dnsFilterConf, p.logger)
+		var ns netns.NsHandle
+		if p.nsEnabled {
+			ns = *p.outNS
+		}
+		p.filter = newDNSFilter(p.dnsFilterConf, ns, p.logger)
 	}
 
 	// configure packet capture
@@ -999,8 +1012,6 @@ func (p *Proxy) Run() error {
 		}
 		runtime.UnlockOSThread()
 	}
-	// TODO ///////////////////////////////////
-	// outNS support for http, tcp, udp, socks
 
 	// proxy starting
 	done := make(chan bool)
@@ -1016,6 +1027,7 @@ func (p *Proxy) Run() error {
 	p.logger.Info().Msgf("SOCKS version: %s", p.socksProto)
 
 	if p.proxychain.Enabled {
+		p.chDialer = &chainedDialer{}
 		chainType := p.proxychain.Type
 		ctl := colorizeChainType(chainType, p.nocolor)
 		go func() {
@@ -1023,7 +1035,7 @@ func (p *Proxy) Run() error {
 				runtime.LockOSThread()
 				defer runtime.UnlockOSThread()
 				currentNs, err := netns.Get()
-				if err != nil {
+				if err == nil {
 					defer currentNs.Close()
 					defer netns.Set(currentNs)
 				}
@@ -1177,7 +1189,7 @@ func (p *Proxy) Run() error {
 						runtime.LockOSThread()
 						defer runtime.UnlockOSThread()
 						currentNs, err := netns.Get()
-						if err != nil {
+						if err == nil {
 							defer currentNs.Close()
 							defer netns.Set(currentNs)
 						}
@@ -1346,7 +1358,7 @@ func (p *Proxy) Run() error {
 						runtime.LockOSThread()
 						defer runtime.UnlockOSThread()
 						currentNs, err := netns.Get()
-						if err != nil {
+						if err == nil {
 							defer currentNs.Close()
 							defer netns.Set(currentNs)
 						}
@@ -1876,6 +1888,7 @@ func (p *Proxy) updateSocksList() {
 	}
 	if failed == len(p.proxylist) {
 		p.logger.Error().Err(err).Msgf("%s No %s Proxy available", ctl, p.socksProto)
+		p.chDialer.err = fmt.Errorf("no %s proxy available", p.socksProto)
 		return
 	}
 	currentDialer := dialer
@@ -1904,33 +1917,13 @@ func (p *Proxy) updateSocksList() {
 		currentDialer = dialer
 		p.availProxyList = append(p.availProxyList, ProxyEntry{Address: pr.Address, Username: pr.Username, Password: pr.Password})
 	}
-	p.logger.Debug().Msgf("%s Available %s Proxy [%d/%d]: %s", ctl, p.socksProto,
-		len(p.availProxyList), len(p.proxylist), p.printProxyChain(p.availProxyList))
-}
-
-// https://www.calhoun.io/how-to-shuffle-arrays-and-slices-in-go/
-func shuffle(vals []ProxyEntry) {
-	r := rand.New(rand.NewSource(time.Now().Unix()))
-	for len(vals) > 0 {
-		n := len(vals)
-		randIndex := r.Intn(n)
-		vals[n-1], vals[randIndex] = vals[randIndex], vals[n-1]
-		vals = vals[:n-1]
-	}
-}
-
-func (p *Proxy) getSockDialer() (contextDialer, error) {
-	if !p.proxychain.Enabled {
-		return p.sockDialer, nil
-	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	chainType := p.proxychain.Type
-	ctl := colorizeChainType(chainType, p.nocolor)
 	if len(p.availProxyList) == 0 {
 		p.logger.Error().Msgf("%s No %s Proxy available", ctl, p.socksProto)
-		return nil, fmt.Errorf("no %s proxy available", p.socksProto)
+		p.chDialer.err = fmt.Errorf("no %s proxy available", p.socksProto)
+		return
 	}
+	p.logger.Debug().Msgf("%s Available %s Proxy [%d/%d]: %s", ctl, p.socksProto,
+		len(p.availProxyList), len(p.proxylist), p.printProxyChain(p.availProxyList))
 	var chainLength int
 	if p.proxychain.Length > len(p.availProxyList) || p.proxychain.Length <= 0 {
 		chainLength = len(p.availProxyList)
@@ -1968,31 +1961,50 @@ func (p *Proxy) getSockDialer() (contextDialer, error) {
 	}
 	if len(copyProxyList) == 0 {
 		p.logger.Error().Msgf("%s No %s Proxy available", ctl, p.socksProto)
-		return nil, fmt.Errorf("no %s proxy available", p.socksProto)
+		p.chDialer.err = fmt.Errorf("no %s proxy available", p.socksProto)
+		return
 	}
 	if p.proxychain.Type == "strict" && len(copyProxyList) != len(p.proxylist) {
 		p.logger.Error().Msgf("%s Not all %s Proxy available", ctl, p.socksProto)
-		return nil, fmt.Errorf("not all %s proxy available", p.socksProto)
+		p.chDialer.err = fmt.Errorf("not all %s proxy available", p.socksProto)
+		return
 	}
-	var dialer contextDialer
-	var err error
-	for i, pr := range copyProxyList {
+	dialer = p.baseDialer
+	for _, pr := range copyProxyList {
 		auth := auth{
 			User:     pr.Username,
 			Password: pr.Password,
 		}
-		if i > 0 {
-			dialer, err = p.newSOCKSDialer(pr.Address, &auth, dialer, p.tcp)
-		} else {
-			dialer, err = p.newSOCKSDialer(pr.Address, &auth, p.baseDialer, p.tcp)
-		}
+		dialer, err = p.newSOCKSDialer(pr.Address, &auth, dialer, p.tcp)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("%s Unable to create %s dialer %s", ctl, p.socksProto, pr.Address)
-			return nil, err
+			p.chDialer.err = err
+			return
 		}
 	}
+	p.chDialer.dialer = dialer
+	p.chDialer.err = nil
 	p.logger.Debug().Msgf("%s Request chain: %s", ctl, p.printProxyChain(copyProxyList))
-	return dialer, nil
+}
+
+// https://www.calhoun.io/how-to-shuffle-arrays-and-slices-in-go/
+func shuffle(vals []ProxyEntry) {
+	r := rand.New(rand.NewSource(time.Now().Unix()))
+	for len(vals) > 0 {
+		n := len(vals)
+		randIndex := r.Intn(n)
+		vals[n-1], vals[randIndex] = vals[randIndex], vals[n-1]
+		vals = vals[:n-1]
+	}
+}
+
+func (p *Proxy) getSockDialer() (contextDialer, error) {
+	if !p.proxychain.Enabled {
+		return p.sockDialer, nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.chDialer.dialer, p.chDialer.err
 }
 
 func (p *Proxy) getHTTPClient() (*httpClient, error) {

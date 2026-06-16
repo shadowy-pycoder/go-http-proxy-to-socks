@@ -242,13 +242,13 @@ func (tsu *tproxyServerUDP) Serve() {
 	go tsu.clients.Cleanup()
 	if tsu.p.arpspoofer != nil {
 		go func() {
-			tsu.listenAndServeDNS(tsu.gwConn, tsu.p.gwDNS)
+			tsu.serveDNS(tsu.gwConn, tsu.p.gwDNS)
 			tsu.wg.Done()
 		}()
 	}
 	if tsu.p.ndpspoofer != nil && tsu.p.raEnabled {
 		go func() {
-			tsu.listenAndServeDNS(tsu.gwConn6, tsu.p.gwDNS6)
+			tsu.serveDNS(tsu.gwConn6, tsu.p.gwDNS6)
 			tsu.wg.Done()
 		}()
 	}
@@ -281,7 +281,7 @@ func (tsu *tproxyServerUDP) Serve() {
 					continue
 				}
 				if dstAddr.Port == 53 {
-					conn, err := newDNSDirectConn(srcAddr, dstAddr, tsu.p.mark, tsu.p.udp)
+					conn, err := newDNSDirectConn(srcAddr, dstAddr, tsu.p.baseDialer, tsu.p.udp)
 					if err != nil {
 						tsu.p.logger.Error().
 							Err(err).
@@ -643,8 +643,7 @@ func (dc *dnsConn) close() error {
 	return dc.Close()
 }
 
-func newDNSConn(srcAddr, dstAddr *net.UDPAddr, mark uint, network string) (*dnsConn, error) {
-	dialer := getBaseDialer(timeout, mark)
+func newDNSConn(srcAddr, dstAddr *net.UDPAddr, dialer contextDialer, network string) (*dnsConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	conn, err := dialer.DialContext(ctx, network, dstAddr.String())
@@ -664,7 +663,7 @@ func newDNSConn(srcAddr, dstAddr *net.UDPAddr, mark uint, network string) (*dnsC
 	}, nil
 }
 
-func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UDPAddr) {
+func (tsu *tproxyServerUDP) serveDNS(gwConn *net.UDPConn, gwDNS *net.UDPAddr) {
 	if tsu.closingFlag.Load() {
 		return
 	}
@@ -689,7 +688,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 			}
 			n, srcAddr, er := gwConn.ReadFromUDP(buf)
 			if n > 0 {
-				conn, err := newDNSConn(srcAddr, gwDNS, tsu.p.mark, tsu.p.udp)
+				conn, err := newDNSConn(srcAddr, gwDNS, tsu.p.baseDialer, tsu.p.udp)
 				if err != nil {
 					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed creating UDP connection %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, gwDNS)
 					continue
@@ -1025,8 +1024,7 @@ func replyToClient6(clientAddr, originalDst *net.UDPAddr, data []byte) error {
 	return nil
 }
 
-func newDNSDirectConn(srcAddr, dstAddr *net.UDPAddr, mark uint, network string) (*dnsDirectConn, error) {
-	dialer := getBaseDialer(timeout, mark)
+func newDNSDirectConn(srcAddr, dstAddr *net.UDPAddr, dialer contextDialer, network string) (*dnsDirectConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	conn, err := dialer.DialContext(ctx, network, dstAddr.String())

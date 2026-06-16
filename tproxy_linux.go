@@ -182,7 +182,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	if network.IsLocalAddress(dst) {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		dstConn, err = getBaseDialer(timeout, ts.p.mark).DialContext(ctx, ts.p.tcp, dst)
+		dstConn, err = ts.p.baseDialer.DialContext(ctx, ts.p.tcp, dst)
 		if err != nil {
 			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed connecting to %s", ts.p.tproxyMode, dst)
 			return

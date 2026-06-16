@@ -58,12 +58,12 @@ func getNSDialer(ns netns.NsHandle, timeout time.Duration, mark uint) *nsDialer 
 			runtime.LockOSThread()
 			defer runtime.UnlockOSThread()
 
-			origNs, err := netns.Get()
+			currentNS, err := netns.Get()
 			if err != nil {
 				return nil, err
 			}
-			defer origNs.Close()
-			defer netns.Set(origNs)
+			defer currentNS.Close()
+			defer netns.Set(currentNS)
 			if err := netns.Set(ns); err != nil {
 				return nil, err
 			}
@@ -77,12 +77,12 @@ func (d *nsDialer) DialContext(ctx context.Context, network, address string) (ne
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	origNs, err := netns.Get()
+	currentNS, err := netns.Get()
 	if err != nil {
 		return nil, err
 	}
-	defer origNs.Close()
-	defer netns.Set(origNs)
+	defer currentNS.Close()
+	defer netns.Set(currentNS)
 
 	if err := netns.Set(d.ns); err != nil {
 		return nil, err

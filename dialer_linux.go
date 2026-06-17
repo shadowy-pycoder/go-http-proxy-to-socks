@@ -37,7 +37,7 @@ type nsDialer struct {
 	ns     netns.NsHandle
 }
 
-func getNSDialer(ns netns.NsHandle, timeout time.Duration, mark uint) *nsDialer {
+func getNSDialer(ns netns.NsHandle, timeout time.Duration, mark uint, nameserver *net.UDPAddr) *nsDialer {
 	var dialer *net.Dialer
 	if mark > 0 {
 		dialer = &net.Dialer{
@@ -67,7 +67,7 @@ func getNSDialer(ns netns.NsHandle, timeout time.Duration, mark uint) *nsDialer 
 			if err := netns.Set(ns); err != nil {
 				return nil, err
 			}
-			return dnsDialer.DialContext(ctx, "udp", address)
+			return dnsDialer.DialContext(ctx, network, nameserver.String())
 		},
 	}
 	return &nsDialer{dialer: dialer, ns: ns}

@@ -79,8 +79,8 @@ func expandPath(p string) string {
 	return p
 }
 
-func getAddressFromInterface(iface *net.Interface, ipv6 bool) (string, error) {
-	if iface == nil {
+func getAddressFromInterface(iface *net.Interface, ipv6, bindToLocalhost bool) (string, error) {
+	if bindToLocalhost {
 		return "127.0.0.1", nil
 	}
 	var prefix netip.Prefix

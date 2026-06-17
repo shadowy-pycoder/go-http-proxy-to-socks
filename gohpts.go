@@ -272,6 +272,7 @@ type Proxy struct {
 	inNSPathOrName  string
 	outNS           *netns.NsHandle
 	outNSPathOrName string
+	outNSDNS        *net.UDPAddr
 
 	// connection graceful shutdown channel
 	closeConn chan bool
@@ -510,12 +511,6 @@ func New(conf *Config) (*Proxy, error) {
 			p.ignoredPorts = conf.IgnoredPorts
 		}
 	}
-	// configure base dialer
-	if p.nsEnabled {
-		p.baseDialer = getNSDialer(*p.outNS, timeout, p.mark)
-	} else {
-		p.baseDialer = getBaseDialer(timeout, p.mark)
-	}
 
 	// interface
 	p.ifacename = conf.Interface
@@ -577,6 +572,7 @@ func (p *Proxy) Run() error {
 		}
 	}
 	// getting interface
+	bindToLocalhost := true
 	if p.ifacename != "" {
 		p.logger.Debug().Msgf("Configuring %s interface...", p.ifacename)
 		p.iface, err = net.InterfaceByName(p.ifacename)
@@ -590,13 +586,69 @@ func (p *Proxy) Run() error {
 				p.logger.Warn().Msgf("Failed binding to %s, using default interface", p.ifacename)
 			}
 		}
+		if p.iface != nil {
+			bindToLocalhost = false
+		}
+	}
+	if slices.Contains(SupportedTProxyOS, runtime.GOOS) {
+		// TODO: add support for non linux systems in network module
+		if bindToLocalhost {
+			p.logger.Debug().Msg("Configuring default interface...")
+			// getting default interface
+			p.iface, err = network.GetDefaultInterface()
+			if err != nil {
+				p.iface, err = network.GetDefaultInterfaceFromRoute()
+				if err != nil {
+					p.iface, err = network.GetDefaultInterfaceFromRouteIPv6()
+					if err != nil {
+						p.logger.Warn().Msg("failed getting default network interface, trying detect from route")
+						p.iface, err = network.GetFirstAvailableInterfaceFromRoute()
+						if err != nil {
+							return fmt.Errorf("failed getting default network interface")
+						}
+					}
+				}
+			}
+		}
+		if p.auto {
+			// getting prefixes
+			p.logger.Debug().Msg("Configuring network prefixes...")
+			prefix, err := network.GetIPv4PrefixFromInterface(p.iface)
+			if err != nil {
+				p.logger.Warn().Err(err).Msgf("Failed getting prefix for %s", p.iface.Name)
+			} else {
+				p.prefix = &prefix
+			}
+			if p.ipv6enabled {
+				prefix6, err := network.GetIPv6GlobalUnicastPrefixFromInterface(p.iface)
+				if err != nil {
+					p.logger.Warn().Err(err).Msgf("Failed getting IPv6 prefix for %s", p.iface.Name)
+				} else {
+					p.prefix6 = &prefix6
+				}
+			}
+		}
 	}
 
 	// getting address from interface
 	p.logger.Debug().Msg("Configuring interface address...")
-	ifaceAddr, err := getAddressFromInterface(p.iface, p.ipv6enabled)
+	ifaceAddr, err := getAddressFromInterface(p.iface, p.ipv6enabled, bindToLocalhost)
 	if err != nil {
 		return err
+	}
+
+	// configure base dialer
+	p.logger.Debug().Msg("Configuring base dialer...")
+	if p.nsEnabled {
+		p.logger.Debug().Msg("Configuring DNS (netns)...")
+		if p.ipv6enabled {
+			p.outNSDNS = network.GetIPv6ResolverFromNetworkNamespace(p.iface, p.outNSPathOrName)
+		} else {
+			p.outNSDNS = network.GetIPv4ResolverFromNetworkNamespace(p.outNSPathOrName)
+		}
+		p.baseDialer = getNSDialer(*p.outNS, timeout, p.mark, p.outNSDNS)
+	} else {
+		p.baseDialer = getBaseDialer(timeout, p.mark)
 	}
 
 	// pprof address configuration
@@ -607,7 +659,7 @@ func (p *Proxy) Run() error {
 			return err
 		}
 		p.pprofAddr = parsedAddrPprof.String()
-		if p.iface != nil {
+		if !bindToLocalhost {
 			p.pprofAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrPprof.Port()).String()
 		}
 		p.logger.Debug().Msg("Configuring PPROF server...")
@@ -672,7 +724,7 @@ func (p *Proxy) Run() error {
 			return err
 		}
 		p.httpServerAddr = parsedAddrHTTP.String()
-		if p.iface != nil {
+		if !bindToLocalhost {
 			p.httpServerAddr = netip.AddrPortFrom(netip.MustParseAddr(ifaceAddr), parsedAddrHTTP.Port()).String()
 		}
 		if p.user != "" && p.pass != "" {
@@ -726,46 +778,6 @@ func (p *Proxy) Run() error {
 				}
 			}
 
-		}
-	}
-
-	if slices.Contains(SupportedTProxyOS, runtime.GOOS) {
-		// TODO: add support for non linux systems in network module
-		if p.iface == nil {
-			p.logger.Debug().Msg("Configuring default interface...")
-			// getting default interface
-			p.iface, err = network.GetDefaultInterface()
-			if err != nil {
-				p.iface, err = network.GetDefaultInterfaceFromRoute()
-				if err != nil {
-					p.iface, err = network.GetDefaultInterfaceFromRouteIPv6()
-					if err != nil {
-						p.logger.Warn().Msg("failed getting default network interface, trying detect from route")
-						p.iface, err = network.GetFirstAvailableInterfaceFromRoute()
-						if err != nil {
-							return fmt.Errorf("failed getting default network interface")
-						}
-					}
-				}
-			}
-		}
-		if p.auto {
-			// getting prefixes
-			p.logger.Debug().Msg("Configuring network prefixes...")
-			prefix, err := network.GetIPv4PrefixFromInterface(p.iface)
-			if err != nil {
-				p.logger.Warn().Err(err).Msgf("Failed getting prefix for %s", p.iface.Name)
-			} else {
-				p.prefix = &prefix
-			}
-			if p.ipv6enabled {
-				prefix6, err := network.GetIPv6GlobalUnicastPrefixFromInterface(p.iface)
-				if err != nil {
-					p.logger.Warn().Err(err).Msgf("Failed getting IPv6 prefix for %s", p.iface.Name)
-				} else {
-					p.prefix6 = &prefix6
-				}
-			}
 		}
 	}
 
@@ -844,17 +856,17 @@ func (p *Proxy) Run() error {
 			return fmt.Errorf("failed creating ndp spoofer: %v", err)
 		}
 		p.logger.Debug().Msg("Configuring DNS (IPv6)...")
-		p.gwDNS6 = network.GetIPv6Resolver(p.iface)
+		if p.nsEnabled {
+			p.gwDNS6 = p.outNSDNS
+		} else {
+			p.gwDNS6 = network.GetIPv6Resolver(p.iface)
+		}
 	}
 
 	// configuring DNS filters
 	if p.dnsFilterConf.Enabled {
 		p.logger.Debug().Msg("Configuring DNS filters...")
-		var ns netns.NsHandle
-		if p.nsEnabled {
-			ns = *p.outNS
-		}
-		p.filter = newDNSFilter(p.dnsFilterConf, ns, p.logger)
+		p.filter = newDNSFilter(p.dnsFilterConf, p.baseDialer, p.logger)
 	}
 
 	// configure packet capture
@@ -1094,16 +1106,17 @@ func (p *Proxy) Run() error {
 		p.logger.Info().Msgf("TPROXY (udp): %s (%d instance%s)", p.tproxyAddrUDP, p.tproxyUDPWorkers, suffix)
 	}
 
-	if p.tproxyAddrUDP != "" {
-		if p.gwDNS != nil {
-			p.logger.Info().Msgf("DNS (IPv4): %s", p.gwDNS)
-		}
-		if p.gwDNS6 != nil {
-			p.logger.Info().Msgf("DNS (IPv6): %s", p.gwDNS6)
-		}
-		if p.hostDNS6 != nil {
-			p.logger.Info().Msgf("DNS (host): %s", p.hostDNS6)
-		}
+	if p.gwDNS != nil {
+		p.logger.Info().Msgf("DNS (IPv4): %s", p.gwDNS)
+	}
+	if p.gwDNS6 != nil {
+		p.logger.Info().Msgf("DNS (IPv6): %s", p.gwDNS6)
+	}
+	if p.hostDNS6 != nil {
+		p.logger.Info().Msgf("DNS (host): %s", p.hostDNS6)
+	}
+	if p.outNSDNS != nil {
+		p.logger.Info().Msgf("DNS (netns): %s", p.outNSDNS)
 	}
 
 	if p.pprofAddr != "" {

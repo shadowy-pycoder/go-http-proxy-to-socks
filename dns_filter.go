@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/vishvananda/netns"
 )
 
 const dnsFilterTimeout time.Duration = 5 * time.Second
@@ -29,20 +28,14 @@ type dnsFilter struct {
 	spooflist    []dnsSpoofRecord
 }
 
-func newDNSFilter(lists *DNSFilterLists, ns netns.NsHandle, logger *zerolog.Logger) *dnsFilter {
+func newDNSFilter(lists *DNSFilterLists, dialer contextDialer, logger *zerolog.Logger) *dnsFilter {
 	// TODO: make it async, add refresh
 	df := new(dnsFilter)
 	df.blacklistAll = lists.BlacklistAll
-	var d contextDialer
-	if ns > 0 {
-		d = getNSDialer(ns, dnsFilterTimeout, 0)
-	} else {
-		d = getBaseDialer(dnsFilterTimeout, 0)
-	}
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			DialContext:     d.DialContext,
+			DialContext:     dialer.DialContext,
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse

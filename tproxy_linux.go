@@ -330,34 +330,50 @@ ip6tables -t nat -A GOHPTS -p tcp -m multiport --sports %s -j RETURN
 		}
 		if ts.p.httpServerAddr != "" {
 			_, httpPort, _ := net.SplitHostPort(ts.p.httpServerAddr)
-			cmdHTTP0 := fmt.Sprintf(`iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN`, httpPort)
+			cmdHTTP0 := fmt.Sprintf(`
+iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+`, httpPort)
 			ts.p.runRuleCmd(cmdHTTP0)
 			if ts.p.ipv6enabled {
-				cmdHTTP1 := fmt.Sprintf(`ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN`, httpPort)
+				cmdHTTP1 := fmt.Sprintf(`
+ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+`, httpPort)
 				ts.p.runRuleCmd(cmdHTTP1)
 			}
 		}
 		if ts.p.mark > 0 {
-			cmdMark0 := fmt.Sprintf(`iptables -t nat -A GOHPTS -p tcp -m mark --mark %d -j RETURN`, ts.p.mark)
+			cmdMark0 := fmt.Sprintf(`
+iptables -t nat -A GOHPTS -p tcp -m mark --mark %d -j RETURN
+`, ts.p.mark)
 			ts.p.runRuleCmd(cmdMark0)
 			if ts.p.ipv6enabled {
-				cmdMark1 := fmt.Sprintf(`ip6tables -t nat -A GOHPTS -p tcp -m mark --mark %d -j RETURN`, ts.p.mark)
+				cmdMark1 := fmt.Sprintf(`
+ip6tables -t nat -A GOHPTS -p tcp -m mark --mark %d -j RETURN
+`, ts.p.mark)
 				ts.p.runRuleCmd(cmdMark1)
 			}
 		} else {
-			cmd0 := fmt.Sprintf(`iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN`, tproxyPort)
+			cmd0 := fmt.Sprintf(`
+iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+`, tproxyPort)
 			ts.p.runRuleCmd(cmd0)
 			if ts.p.ipv6enabled {
-				cmd01 := fmt.Sprintf(`ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN`, tproxyPort)
+				cmd01 := fmt.Sprintf(`
+ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+`, tproxyPort)
 				ts.p.runRuleCmd(cmd01)
 			}
 			if len(ts.p.proxylist) > 0 {
 				for _, pr := range ts.p.proxylist {
 					_, port, _ := net.SplitHostPort(pr.Address)
-					cmd1 := fmt.Sprintf(`iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN`, port)
+					cmd1 := fmt.Sprintf(`
+iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+`, port)
 					ts.p.runRuleCmd(cmd1)
 					if ts.p.ipv6enabled {
-						cmd11 := fmt.Sprintf(`ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN`, port)
+						cmd11 := fmt.Sprintf(`
+ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+`, port)
 						ts.p.runRuleCmd(cmd11)
 					}
 					if ts.p.proxychain.Type == "strict" {

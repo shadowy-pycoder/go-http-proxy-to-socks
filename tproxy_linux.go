@@ -459,6 +459,12 @@ iptables -t mangle -A GOHPTS -p tcp -d 224.0.0.0/4 -j RETURN
 iptables -t mangle -A GOHPTS -p tcp -d 255.255.255.255/32 -j RETURN
 `
 		ts.p.runRuleCmd(cmdInit0)
+		if ts.p.prefix != nil {
+			cmdInit00 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS -p tcp -d %s -j RETURN
+`, ts.p.prefix.Masked())
+			ts.p.runRuleCmd(cmdInit00)
+		}
 		if ts.p.ipv6enabled {
 			cmdInit01 := `
 ip6tables -t mangle -N GOHPTS 2>/dev/null || true

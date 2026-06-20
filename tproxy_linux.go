@@ -363,23 +363,21 @@ ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
 `, tproxyPort)
 				ts.p.runRuleCmd(cmd01)
 			}
-			if len(ts.p.proxylist) > 0 {
-				for _, pr := range ts.p.proxylist {
-					_, port, _ := net.SplitHostPort(pr.Address)
-					cmd1 := fmt.Sprintf(`
+		}
+		for _, pr := range ts.p.proxylist {
+			_, port, _ := net.SplitHostPort(pr.Address)
+			cmd1 := fmt.Sprintf(`
 iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
 `, port)
-					ts.p.runRuleCmd(cmd1)
-					if ts.p.ipv6enabled {
-						cmd11 := fmt.Sprintf(`
+			ts.p.runRuleCmd(cmd1)
+			if ts.p.ipv6enabled {
+				cmd11 := fmt.Sprintf(`
 ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
 `, port)
-						ts.p.runRuleCmd(cmd11)
-					}
-					if ts.p.proxychain.Type == "strict" {
-						break
-					}
-				}
+				ts.p.runRuleCmd(cmd11)
+			}
+			if ts.p.proxychain.Type == "strict" {
+				break
 			}
 		}
 		var cmdDocker string
@@ -459,6 +457,16 @@ iptables -t mangle -A GOHPTS -p tcp -d 224.0.0.0/4 -j RETURN
 iptables -t mangle -A GOHPTS -p tcp -d 255.255.255.255/32 -j RETURN
 `
 		ts.p.runRuleCmd(cmdInit0)
+		for _, pr := range ts.p.proxylist {
+			_, port, _ := net.SplitHostPort(pr.Address)
+			cmd1 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS -p tcp --dport %s -j RETURN
+`, port)
+			ts.p.runRuleCmd(cmd1)
+			if ts.p.proxychain.Type == "strict" {
+				break
+			}
+		}
 		if ts.p.prefix != nil {
 			cmdInit00 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS -p tcp -d %s -j RETURN
@@ -477,6 +485,16 @@ ip6tables -t mangle -A GOHPTS -p tcp -d fe80::/10 -j RETURN
 ip6tables -t mangle -A GOHPTS -p tcp -d fc00::/7 -j RETURN
 `
 			ts.p.runRuleCmd(cmdInit01)
+			for _, pr := range ts.p.proxylist {
+				_, port, _ := net.SplitHostPort(pr.Address)
+				cmd11 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS -p tcp --dport %s -j RETURN
+`, port)
+				ts.p.runRuleCmd(cmd11)
+				if ts.p.proxychain.Type == "strict" {
+					break
+				}
+			}
 
 			if ts.p.prefix6 != nil {
 				cmdInit02 := fmt.Sprintf(`

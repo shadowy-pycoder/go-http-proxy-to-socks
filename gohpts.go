@@ -702,7 +702,7 @@ func (p *Proxy) Run() error {
 	}
 
 	// configure socks addresses
-	var addrSOCKS string
+	var sockAddr string
 	if p.proxychain.Enabled {
 		p.logger.Debug().Msgf("Configuring %s proxy chain...", p.socksProto)
 		p.availProxyList = make([]ProxyEntry, 0, len(p.proxylist))
@@ -720,7 +720,7 @@ func (p *Proxy) Run() error {
 				return fmt.Errorf("proxy list duplicate entry `%s`", addr)
 			}
 		}
-		addrSOCKS = p.printProxyChain(p.proxylist)
+		sockAddr = p.printProxyChain(p.proxylist)
 	} else {
 		p.logger.Debug().Msgf("Configuring %s proxy client...", p.socksProto)
 		socksProxy := p.proxylist[0]
@@ -728,16 +728,17 @@ func (p *Proxy) Run() error {
 		if err != nil {
 			return err
 		}
-		addrSOCKS = hostPortSOCKS.String()
+		sockAddr = hostPortSOCKS.String()
 		auth := auth{
 			User:     socksProxy.Username,
 			Password: socksProxy.Password,
 		}
-		dialer, err := p.newSOCKSDialer(addrSOCKS, &auth, p.baseDialer, p.tcp)
+		dialer, err := p.newSOCKSDialer(sockAddr, &auth, p.baseDialer, p.tcp)
 		if err != nil {
 			return fmt.Errorf("unable to create %s dialer: %v", p.socksProto, err)
 		}
 		p.sockDialer = dialer
+		p.proxylist[0].Address = sockAddr // used in auto configuration
 	}
 
 	if p.httpEnabled {
@@ -1099,9 +1100,9 @@ func (p *Proxy) Run() error {
 
 	// logging which servers are enabled
 	if p.proxychain.Enabled {
-		p.logger.Info().Msgf("%s Proxy [%s] chain: %s", strings.ToUpper(p.socksProto), p.proxychain.Type, addrSOCKS)
+		p.logger.Info().Msgf("%s Proxy [%s] chain: %s", strings.ToUpper(p.socksProto), p.proxychain.Type, sockAddr)
 	} else {
-		p.logger.Info().Msgf("%s Proxy: %s", strings.ToUpper(p.socksProto), addrSOCKS)
+		p.logger.Info().Msgf("%s Proxy: %s", strings.ToUpper(p.socksProto), sockAddr)
 	}
 
 	if p.httpEnabled {

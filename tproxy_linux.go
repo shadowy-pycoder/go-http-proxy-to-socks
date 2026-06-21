@@ -301,18 +301,56 @@ iptables -t nat -N GOHPTS 2>/dev/null
 iptables -t nat -F GOHPTS
 
 iptables -t nat -A GOHPTS -p tcp -d 127.0.0.0/8 -j RETURN
+iptables -t nat -A GOHPTS -p tcp -d 224.0.0.0/4 -j RETURN
+iptables -t nat -A GOHPTS -p tcp -d 255.255.255.255/32 -j RETURN
 iptables -t nat -A GOHPTS -p tcp --dport 22 -j RETURN
 `
 		ts.p.runRuleCmd(cmdInit0)
+		for _, pr := range ts.p.proxylist {
+			_, port, _ := net.SplitHostPort(pr.Address)
+			cmd1 := fmt.Sprintf(`
+iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+`, port)
+			ts.p.runRuleCmd(cmd1)
+			if ts.p.proxychain.Type == "strict" {
+				break
+			}
+		}
+		if ts.p.prefix != nil {
+			cmdInit00 := fmt.Sprintf(`
+iptables -t nat -A GOHPTS -p tcp -s %s -d %s -j RETURN
+`, ts.p.prefix.Masked(), ts.p.prefix.Masked())
+			ts.p.runRuleCmd(cmdInit00)
+		}
 		if ts.p.ipv6enabled {
 			cmdInit1 := `
 ip6tables -t nat -N GOHPTS 2>/dev/null
 ip6tables -t nat -F GOHPTS
 
+ip6tables -t nat -A GOHPTS -p tcp -d ::/128 -j RETURN
 ip6tables -t nat -A GOHPTS -p tcp -d ::1/128 -j RETURN
+ip6tables -t nat -A GOHPTS -p tcp -d ff00::/8 -j RETURN
+ip6tables -t nat -A GOHPTS -p tcp -d fe80::/10 -j RETURN
+ip6tables -t nat -A GOHPTS -p tcp -d fc00::/7 -j RETURN
 ip6tables -t nat -A GOHPTS -p tcp --dport 22 -j RETURN
 `
 			ts.p.runRuleCmd(cmdInit1)
+			for _, pr := range ts.p.proxylist {
+				_, port, _ := net.SplitHostPort(pr.Address)
+				cmd11 := fmt.Sprintf(`
+ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
+`, port)
+				ts.p.runRuleCmd(cmd11)
+				if ts.p.proxychain.Type == "strict" {
+					break
+				}
+			}
+			if ts.p.prefix6 != nil {
+				cmdInit02 := fmt.Sprintf(`
+ip6tables -t nat -A GOHPTS -p tcp -s %s -d %s -j RETURN
+`, ts.p.prefix6.Masked(), ts.p.prefix6.Masked())
+				ts.p.runRuleCmd(cmdInit02)
+			}
 		}
 		if ts.p.ignoredPorts != "" {
 			cmdInit2 := fmt.Sprintf(`
@@ -362,22 +400,6 @@ iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
 ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
 `, tproxyPort)
 				ts.p.runRuleCmd(cmd01)
-			}
-		}
-		for _, pr := range ts.p.proxylist {
-			_, port, _ := net.SplitHostPort(pr.Address)
-			cmd1 := fmt.Sprintf(`
-iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
-`, port)
-			ts.p.runRuleCmd(cmd1)
-			if ts.p.ipv6enabled {
-				cmd11 := fmt.Sprintf(`
-ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
-`, port)
-				ts.p.runRuleCmd(cmd11)
-			}
-			if ts.p.proxychain.Type == "strict" {
-				break
 			}
 		}
 		var cmdDocker string

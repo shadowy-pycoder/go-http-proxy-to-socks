@@ -22,8 +22,9 @@ type nsDialer struct {
 	ns     netns.NsHandle
 }
 
-func getNSDialer(ns netns.NsHandle, timeout time.Duration, mark uint) *nsDialer {
+func getNSDialer(ns netns.NsHandle, timeout time.Duration, mark uint, nameserver *net.UDPAddr) *nsDialer {
 	_ = mark
+	_ = nameserver
 	dialer := &net.Dialer{Timeout: timeout}
 	return &nsDialer{dialer: dialer, ns: ns}
 }

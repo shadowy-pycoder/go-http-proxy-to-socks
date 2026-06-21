@@ -272,6 +272,8 @@ type Proxy struct {
 	inNSPathOrName  string
 	outNS           *netns.NsHandle
 	outNSPathOrName string
+	outDNS          *net.UDPAddr
+	outDNS6         *net.UDPAddr
 
 	// connection graceful shutdown channel
 	closeConn chan bool
@@ -665,13 +667,13 @@ func (p *Proxy) Run() error {
 				return fmt.Errorf("failed setting namespace: %v", err)
 			}
 		}
-		p.logger.Debug().Msg("Configuring DNS (IPv4)...")
-		p.gwDNS = network.GetIPv4ResolverFromNetworkNamespace(p.outNSPathOrName)
-		p.logger.Debug().Msg("Configuring DNS (IPv6)...")
-		p.gwDNS6 = network.GetIPv6ResolverFromNetworkNamespace(iface, p.outNSPathOrName)
-		outNSDNS := p.gwDNS
+		p.logger.Debug().Msg("Configuring DNS IPv4 (netns)...")
+		p.outDNS = network.GetIPv4ResolverFromNetworkNamespace(p.outNSPathOrName)
+		p.logger.Debug().Msg("Configuring DNS IPv6 (netns)...")
+		p.outDNS6 = network.GetIPv6ResolverFromNetworkNamespace(iface, p.outNSPathOrName)
+		outNSDNS := p.outDNS
 		if p.ipv6enabled {
-			outNSDNS = p.gwDNS6
+			outNSDNS = p.outDNS6
 		}
 		p.baseDialer = getNSDialer(*p.outNS, timeout, p.mark, outNSDNS)
 	} else {
@@ -830,11 +832,9 @@ func (p *Proxy) Run() error {
 		if err != nil {
 			return fmt.Errorf("failed creating arp spoofer: %v", err)
 		}
-		if p.gwDNS == nil {
-			p.logger.Debug().Msg("Configuring DNS (IPv4)...")
-			gw := p.arpspoofer.GatewayIP()
-			p.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
-		}
+		p.logger.Debug().Msg("Configuring DNS IPv4 (gateway)...")
+		gw := p.arpspoofer.GatewayIP()
+		p.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
 	}
 
 	// configure ndp spoofing
@@ -863,7 +863,7 @@ func (p *Proxy) Run() error {
 		}
 		if nsc.RA {
 			var hostIP netip.Addr
-			p.logger.Debug().Msg("Configuring DNS (host)...")
+			p.logger.Debug().Msg("Configuring DNS IPv6 (host)...")
 			hostIP, err = network.GetHostIPv6GlobalUnicastFromRoute()
 			if err != nil {
 				if p.prefix6 != nil {
@@ -884,8 +884,10 @@ func (p *Proxy) Run() error {
 		if err != nil {
 			return fmt.Errorf("failed creating ndp spoofer: %v", err)
 		}
-		if p.gwDNS6 == nil {
-			p.logger.Debug().Msg("Configuring DNS (IPv6)...")
+		p.logger.Debug().Msg("Configuring DNS IPv6 (gateway)...")
+		if p.nsEnabled {
+			p.gwDNS6 = p.outDNS6
+		} else {
 			p.gwDNS6 = network.GetIPv6Resolver(p.iface)
 		}
 	}
@@ -1132,15 +1134,20 @@ func (p *Proxy) Run() error {
 		}
 		p.logger.Info().Msgf("TPROXY (udp): %s (%d instance%s)", p.tproxyAddrUDP, p.tproxyUDPWorkers, suffix)
 	}
-
+	if p.outDNS != nil {
+		p.logger.Info().Msgf("DNS IPv4 (netns): %s", p.outDNS)
+	}
+	if p.outDNS6 != nil {
+		p.logger.Info().Msgf("DNS IPv6 (netns): %s", p.outDNS6)
+	}
 	if p.gwDNS != nil {
-		p.logger.Info().Msgf("DNS (IPv4): %s", p.gwDNS)
+		p.logger.Info().Msgf("DNS IPv4 (gateway): %s", p.gwDNS)
 	}
 	if p.gwDNS6 != nil {
-		p.logger.Info().Msgf("DNS (IPv6): %s", p.gwDNS6)
+		p.logger.Info().Msgf("DNS IPv6 (gateway): %s", p.gwDNS6)
 	}
 	if p.hostDNS6 != nil {
-		p.logger.Info().Msgf("DNS (host): %s", p.hostDNS6)
+		p.logger.Info().Msgf("DNS IPv6 (host): %s", p.hostDNS6)
 	}
 
 	if p.pprofAddr != "" {

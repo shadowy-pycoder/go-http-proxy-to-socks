@@ -39,7 +39,7 @@ type udpConn struct {
 }
 
 func (uc *udpConn) SrcPort() *uint16 {
-	srcPort := uint16(uc.dstAddr.Port)
+	srcPort := uint16(uc.srcAddr.Port)
 	return &srcPort
 }
 
@@ -242,7 +242,11 @@ func (tsu *tproxyServerUDP) Serve() {
 	go tsu.clients.Cleanup()
 	if tsu.p.arpspoofer != nil {
 		go func() {
-			tsu.serveDNS(tsu.gwConn, tsu.p.gwDNS)
+			dnsAddr := tsu.p.gwDNS
+			if tsu.p.nsEnabled {
+				dnsAddr = tsu.p.outDNS
+			}
+			tsu.serveDNS(tsu.gwConn, dnsAddr)
 			tsu.wg.Done()
 		}()
 	}
@@ -1278,13 +1282,20 @@ iptables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
 `
 		tsu.p.runRuleCmd(cmdInit02)
 		if tsu.p.ipv6enabled {
-			cmdInit6 := fmt.Sprintf(`
+			cmdInit006 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
-ip6tables -t mangle -A GOHPTS_UDP -p udp -j TPROXY --on-port %s --tproxy-mark 1
-
+`, tsu.p.mark)
+			tsu.p.runRuleCmd(cmdInit006)
+			if tsu.p.prefix6 != nil {
+				cmdInit016 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 1
+`, tsu.p.prefix6.Masked(), tproxyPortUDP)
+				tsu.p.runRuleCmd(cmdInit016)
+			}
+			cmdInit6 := `
 ip6tables -t mangle -A PREROUTING -p udp -m socket -j DIVERT
 ip6tables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
-`, tsu.p.mark, tproxyPortUDP)
+`
 			tsu.p.runRuleCmd(cmdInit6)
 		}
 		_ = runSysctlOptCmd("net.ipv4.ip_nonlocal_bind", "1", setex, opts, tsu.p.debug, &tsu.p.dump)

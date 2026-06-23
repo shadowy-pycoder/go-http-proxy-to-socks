@@ -1561,7 +1561,6 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 		if proto == 3 {
 			c = p.http3LocalClient
 		} else {
-			fmt.Println("get dilaer")
 			c = p.httpLocalClient
 		}
 	} else if !p.proxychain.Enabled {
@@ -1744,7 +1743,6 @@ func (p *Proxy) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	if !p.socksEnabled || network.IsLocalAddress(r.Host) {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		fmt.Println("get kwdkw")
 		dstConn, err = p.baseDialer.DialContext(ctx, p.tcp, r.Host)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"runtime"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -101,11 +100,7 @@ func (d *nsDialer) DialContext(ctx context.Context, network, address string) (ne
 
 func getNSQUICDialer(dialer *nsDialer) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 	return func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
-		host, portStr, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, err
-		}
-		port, err := strconv.Atoi(portStr)
+		host, port, err := splitHostPort(addr)
 		if err != nil {
 			return nil, err
 		}

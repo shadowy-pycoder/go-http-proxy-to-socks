@@ -130,9 +130,7 @@ func newHTTP3Client(dial func(ctx context.Context, addr string, tlsCfg *tls.Conf
 			InsecureSkipVerify: true,
 			NextProtos:         []string{http3.NextProtoH3},
 		},
-	}
-	if dial != nil {
-		tr.Dial = dial
+		Dial: dial,
 	}
 	c := &http.Client{
 		Transport: tr,

@@ -42,6 +42,8 @@ OPTIONS:
   -i         Bind proxy to specific network interface (either by interface name or index)
   -6         Enable IPv6 support for TCP and UDP
   -socks4    Use SOCKS4/SOCKS4a as the upstream proxy protocol (default: SOCKS5)
+  -nohttp    Disable HTTP proxy server
+  -nosocks   Disable SOCKS upstream proxy
 
   Logs:
   -d         Show logs in DEBUG mode
@@ -61,7 +63,6 @@ const usageExtra string = `
   -T         Address of transparent proxy server
   -Tu        Address of transparent UDP proxy server
   -M         Transparent proxy mode: (redirect, tproxy)
-  -nohttp    Disable HTTP server
   -w         Number of instances of transparent proxy server (Default: number of CPU cores)
   -wu        Number of instances of transparent UDP proxy server (Default: number of CPU cores)
   -auto      Automatically setup iptables and kernel parameters for transparent proxy (requires elevated privileges)
@@ -94,6 +95,8 @@ func root(args []string) error {
 	flags.StringVar(&conf.ServerConfPath, "f", "", "")
 	flags.BoolVar(&conf.IPv6Enabled, "6", false, "")
 	flags.BoolVar(&conf.SOCKS4Enabled, "socks4", false, "")
+	flags.BoolVar(&conf.NoHTTP, "nohttp", false, "")
+	flags.BoolVar(&conf.NoSOCKS, "nosocks", false, "")
 	flags.StringVar(&conf.Interface, "i", "", "")
 	flags.BoolFunc("I", "", func(flagValue string) error {
 		if err := network.DisplayInterfaces(false); err != nil {
@@ -115,7 +118,6 @@ func root(args []string) error {
 			conf.TProxyMode = flagValue
 			return nil
 		})
-		flags.BoolVar(&conf.NoHTTP, "nohttp", false, "")
 		flags.UintVar(&conf.TProxyWorkers, "w", 0, "")
 		flags.UintVar(&conf.TProxyUDPWorkers, "wu", 0, "")
 		flags.BoolVar(&conf.Auto, "auto", false, "")
@@ -177,11 +179,6 @@ func root(args []string) error {
 		if seen["M"] {
 			if !seen["T"] && !seen["Tu"] {
 				return fmt.Errorf("transparent proxy mode requires -T or -Tu flag")
-			}
-		}
-		if seen["nohttp"] {
-			if !seen["T"] && !seen["Tu"] {
-				return fmt.Errorf("no http mode requires -T or -Tu flag")
 			}
 		}
 		if seen["w"] {

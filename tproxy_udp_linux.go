@@ -28,8 +28,18 @@ const (
 	udpBufferSize   int           = 4096
 )
 
-type udpConn struct {
-	*socks5.UDPConn
+var (
+	_ udpConn = &net.UDPConn{}
+	_ udpConn = &socks5.UDPConn{}
+)
+
+type udpConn interface {
+	net.PacketConn
+	net.Conn
+}
+
+type udpRelayConn struct {
+	udpConn
 	srcAddr  *net.UDPAddr
 	dstAddr  *net.UDPAddr
 	lastSeen time.Time
@@ -38,35 +48,35 @@ type udpConn struct {
 	respChan chan layers.Layer
 }
 
-func (uc *udpConn) SrcPort() *uint16 {
+func (uc *udpRelayConn) SrcPort() *uint16 {
 	srcPort := uint16(uc.srcAddr.Port)
 	return &srcPort
 }
 
-func (uc *udpConn) DstPort() *uint16 {
+func (uc *udpRelayConn) DstPort() *uint16 {
 	dstPort := uint16(uc.dstAddr.Port)
 	return &dstPort
 }
 
-func (uc *udpConn) close() error {
+func (uc *udpRelayConn) close() error {
 	close(uc.reqChan)
 	close(uc.respChan)
 	return uc.Close()
 }
 
-func newUDPConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer contextDialer, network string) (*udpConn, error) {
+func newUDPRelayConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, dialer contextDialer, network string) (*udpRelayConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	conn, err := sockDialer.DialContext(ctx, network, dstAddr.String())
+	conn, err := dialer.DialContext(ctx, network, dstAddr.String())
 	if err != nil {
 		return nil, err
 	}
-	relayConn, ok := conn.(*socks5.UDPConn)
+	relayConn, ok := conn.(udpConn)
 	if !ok {
 		return nil, fmt.Errorf("failed obtaining relay connection")
 	}
-	return &udpConn{
-		UDPConn:  relayConn,
+	return &udpRelayConn{
+		udpConn:  relayConn,
 		srcAddr:  srcAddr,
 		dstAddr:  dstAddr,
 		lastSeen: time.Now(),
@@ -79,29 +89,29 @@ type udpConnections struct {
 	wg   sync.WaitGroup
 	quit chan struct{}
 	sync.RWMutex
-	clients map[string]*udpConn
+	clients map[string]*udpRelayConn
 }
 
-func (ucs *udpConnections) Add(conn *udpConn) {
+func (ucs *udpConnections) Add(conn *udpRelayConn) {
 	ucs.Lock()
 	ucs.clients[fmt.Sprintf("%s,%s", conn.srcAddr, conn.dstAddr)] = conn
 	ucs.Unlock()
 }
 
-func (ucs *udpConnections) Get(srcAddr, dstAddr *net.UDPAddr) (*udpConn, bool) {
+func (ucs *udpConnections) Get(srcAddr, dstAddr *net.UDPAddr) (*udpRelayConn, bool) {
 	ucs.RLock()
 	defer ucs.RUnlock()
 	conn, ok := ucs.clients[fmt.Sprintf("%s,%s", srcAddr, dstAddr)]
 	return conn, ok
 }
 
-func (ucs *udpConnections) Remove(conn *udpConn) {
+func (ucs *udpConnections) Remove(conn *udpRelayConn) {
 	ucs.Lock()
 	delete(ucs.clients, fmt.Sprintf("%s,%s", conn.srcAddr, conn.dstAddr))
 	ucs.Unlock()
 }
 
-func (ucs *udpConnections) UpdateLastSeen(conn *udpConn) {
+func (ucs *udpConnections) UpdateLastSeen(conn *udpRelayConn) {
 	ucs.Lock()
 	conn.lastSeen = time.Now()
 	ucs.Unlock()
@@ -182,7 +192,7 @@ func newTproxyServerUDP(p *Proxy) (*tproxyServerUDP, error) {
 		return nil, err
 	}
 	tsu.conn = pconn.(*net.UDPConn)
-	tsu.clients = &udpConnections{quit: tsu.quit, clients: make(map[string]*udpConn)}
+	tsu.clients = &udpConnections{quit: tsu.quit, clients: make(map[string]*udpRelayConn)}
 	if tsu.p.arpspoofer != nil && tsu.p.gwDNS != nil {
 		lc = net.ListenConfig{
 			Control: func(network, address string, conn syscall.RawConn) error {
@@ -451,14 +461,19 @@ func (tsu *tproxyServerUDP) Serve() {
 				} else {
 					conn, found := tsu.clients.Get(srcAddr, dstAddr)
 					if !found {
-						sockDialer, err := tsu.p.getSockDialer()
-						if err != nil {
-							tsu.p.logger.Error().
-								Err(err).
-								Msgf("[udp %s] Failed getting %s client for %s%s%s", tsu.p.tproxyMode, tsu.p.socksProto, srcAddr, arrow, dstAddr)
-							continue
+						var dialer contextDialer
+						if tsu.p.socksEnabled {
+							dialer, err = tsu.p.getSockDialer()
+							if err != nil {
+								tsu.p.logger.Error().
+									Err(err).
+									Msgf("[udp %s] Failed getting %s client for %s%s%s", tsu.p.tproxyMode, tsu.p.socksProto, srcAddr, arrow, dstAddr)
+								continue
+							}
+						} else {
+							dialer = tsu.p.baseDialer
 						}
-						conn, err = newUDPConn(srcAddr, dstAddr, sockDialer, tsu.p.udp)
+						conn, err = newUDPRelayConn(srcAddr, dstAddr, dialer, tsu.p.udp)
 						if err != nil {
 							tsu.p.logger.Error().
 								Err(err).
@@ -519,7 +534,7 @@ func (tsu *tproxyServerUDP) Serve() {
 							conn.reqChan <- next
 						}
 					}
-					nw, err := conn.WriteToUDP(buf[:n], dstAddr)
+					nw, err := conn.Write(buf[:n])
 					if err != nil {
 						if ne, ok := err.(net.Error); ok && ne.Timeout() {
 							continue
@@ -551,7 +566,7 @@ func (tsu *tproxyServerUDP) Serve() {
 	}
 }
 
-func (tsu *tproxyServerUDP) handleConnection(conn *udpConn) {
+func (tsu *tproxyServerUDP) handleConnection(conn *udpRelayConn) {
 	if tsu.closingFlag.Load() {
 		return
 	}

@@ -27,6 +27,8 @@ type Config struct {
 	ServerConfPath string
 	IPv6Enabled    bool
 	SOCKS4Enabled  bool
+	NoHTTP         bool
+	NoSOCKS        bool
 
 	// transparent proxy
 	TProxyMode       string
@@ -34,7 +36,6 @@ type Config struct {
 	TProxyWorkers    uint
 	TProxyUDP        string
 	TProxyUDPWorkers uint
-	NoHTTP           bool
 	Auto             bool
 	Dump             bool
 	Mark             uint
@@ -92,10 +93,11 @@ type DNSFilterLists struct {
 
 type yamlConfig struct {
 	Interface     string `yaml:"interface"`
-	IPv6Enabled   bool   `yaml:"ipv6_enabled"`
-	SOCKS4Enabled bool   `yaml:"socks4_enabled"`
+	IPv6Enabled   bool   `yaml:"ipv6"`
+	NoHTTP        bool   `yaml:"disable_http"`
+	NoSOCKS       bool   `yaml:"disable_socks"`
+	SOCKS4Enabled bool   `yaml:"socks4"`
 	HTTPServer    struct {
-		Enabled  bool   `yaml:"enabled"`
 		Address  string `yaml:"address"`
 		Username string `yaml:"username"`
 		Password string `yaml:"password"`
@@ -128,7 +130,6 @@ type yamlConfig struct {
 			Workers int    `yaml:"workers"`
 		} `yaml:"udp"`
 		Mode         string `yaml:"mode"`
-		DisableHTTP  bool   `yaml:"disable_http"`
 		Auto         bool   `yaml:"auto"`
 		DumpRules    bool   `yaml:"dump_rules"`
 		IgnoredPorts []int  `yaml:"ignored_ports"`
@@ -166,7 +167,9 @@ func createConfigFromPath(path string) (*Config, error) {
 	}
 	conf := Config{}
 
-	if sconf.HTTPServer.Enabled {
+	conf.NoHTTP = sconf.NoHTTP
+	conf.NoSOCKS = sconf.NoSOCKS
+	if !conf.NoHTTP {
 		conf.AddrHTTP = sconf.HTTPServer.Address
 		conf.ServerUser = sconf.HTTPServer.Username
 		conf.ServerPass = sconf.HTTPServer.Password
@@ -191,7 +194,6 @@ func createConfigFromPath(path string) (*Config, error) {
 			conf.TProxyUDPWorkers = uint(sconf.TransparentProxy.UDP.Workers)
 		}
 		conf.TProxyMode = sconf.TransparentProxy.Mode
-		conf.NoHTTP = sconf.TransparentProxy.DisableHTTP
 		conf.Auto = sconf.TransparentProxy.Auto
 		conf.Mark = uint(sconf.TransparentProxy.Mark)
 		if conf.Auto {
@@ -240,6 +242,12 @@ func parseConfig(conf *Config) error {
 			return err
 		}
 		conf.ServerConfPath = ""
+		if !conf.NoHTTP {
+			conf.NoHTTP = yamlConf.NoHTTP
+		}
+		if !conf.NoSOCKS {
+			conf.NoSOCKS = yamlConf.NoSOCKS
+		}
 		// if user did not specify http address (from CLI), use address from config or default
 		if conf.AddrHTTP == "" {
 			if yamlConf.AddrHTTP == "" {
@@ -341,10 +349,6 @@ func parseConfig(conf *Config) error {
 			conf.TProxyUDPWorkers = yamlConf.TProxyUDPWorkers
 		}
 
-		if !conf.NoHTTP {
-			conf.NoHTTP = yamlConf.NoHTTP
-		}
-
 		if !conf.Auto {
 			conf.Auto = yamlConf.Auto
 		}
@@ -414,9 +418,6 @@ func parseConfig(conf *Config) error {
 		}
 		if conf.Mark > 0 {
 			return fmt.Errorf("option `Mark` is available only on linux/android systems")
-		}
-		if conf.NoHTTP {
-			return fmt.Errorf("option `NoHTTP` is available only on linux/android systems")
 		}
 		if conf.ARPSpoof != "" {
 			return fmt.Errorf("option `ARPSpoof` is available only on linux/android systems")

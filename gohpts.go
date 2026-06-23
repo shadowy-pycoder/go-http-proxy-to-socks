@@ -124,13 +124,15 @@ func (c *httpClient) Close() error {
 	return nil
 }
 
-func newHTTP3Client(dialer func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error)) *http3Client {
+func newHTTP3Client(dial func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error)) *http3Client {
 	tr := &http3.Transport{
-		Dial: dialer,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			NextProtos:         []string{http3.NextProtoH3},
 		},
+	}
+	if dial != nil {
+		tr.Dial = dial
 	}
 	c := &http.Client{
 		Transport: tr,
@@ -175,6 +177,8 @@ type Proxy struct {
 	http3Client *http3Client
 	// http3 client for local connections
 	http3LocalClient *http3Client
+	// enable upstream socks proxy
+	socksEnabled bool
 	// enable socks4/socks4a
 	socks4enabled bool
 	// socks protocol version for logging
@@ -540,14 +544,17 @@ func New(conf *Config) (*Proxy, error) {
 	}
 
 	// set proxy chain
-	p.proxychain = conf.SocksProxyChain
-	p.proxylist = conf.SocksProxy
-	if p.proxychain.Enabled {
-		chainType := p.proxychain.Type
-		if !slices.Contains(supportedChainTypes, chainType) {
-			return nil, fmt.Errorf("chain type `%s` is not supported", chainType)
+	p.socksEnabled = !conf.NoSOCKS
+	if p.socksEnabled {
+		p.proxychain = conf.SocksProxyChain
+		p.proxylist = conf.SocksProxy
+		if p.proxychain.Enabled {
+			chainType := p.proxychain.Type
+			if !slices.Contains(supportedChainTypes, chainType) {
+				return nil, fmt.Errorf("chain type `%s` is not supported", chainType)
+			}
+			p.rrIndexReset = rrIndexMax
 		}
-		p.rrIndexReset = rrIndexMax
 	}
 
 	p.arpSpoofConf = conf.ARPSpoof
@@ -675,7 +682,7 @@ func (p *Proxy) Run() error {
 		if p.ipv6enabled {
 			outNSDNS = p.outDNS6
 		}
-		p.baseDialer = getNSDialer(*p.outNS, timeout, p.mark, outNSDNS)
+		p.baseDialer = getNSDialer(p.outNS, timeout, p.mark, outNSDNS)
 	} else {
 		p.baseDialer = getBaseDialer(timeout, p.mark)
 	}
@@ -703,42 +710,44 @@ func (p *Proxy) Run() error {
 
 	// configure socks addresses
 	var sockAddr string
-	if p.proxychain.Enabled {
-		p.logger.Debug().Msgf("Configuring %s proxy chain...", p.socksProto)
-		p.availProxyList = make([]ProxyEntry, 0, len(p.proxylist))
-		seen := make(map[string]struct{})
-		for idx, pr := range p.proxylist {
-			hpAddr, err := network.ParseAddrPort(pr.Address, ifaceAddr)
+	if p.socksEnabled {
+		if p.proxychain.Enabled {
+			p.logger.Debug().Msgf("Configuring %s proxy chain...", p.socksProto)
+			p.availProxyList = make([]ProxyEntry, 0, len(p.proxylist))
+			seen := make(map[string]struct{})
+			for idx, pr := range p.proxylist {
+				hpAddr, err := network.ParseAddrPort(pr.Address, ifaceAddr)
+				if err != nil {
+					return err
+				}
+				addr := hpAddr.String()
+				if _, ok := seen[addr]; !ok {
+					seen[addr] = struct{}{}
+					p.proxylist[idx].Address = addr
+				} else {
+					return fmt.Errorf("proxy list duplicate entry `%s`", addr)
+				}
+			}
+			sockAddr = p.printProxyChain(p.proxylist)
+		} else {
+			p.logger.Debug().Msgf("Configuring %s proxy client...", p.socksProto)
+			socksProxy := p.proxylist[0]
+			hostPortSOCKS, err := network.ParseAddrPort(socksProxy.Address, ifaceAddr)
 			if err != nil {
 				return err
 			}
-			addr := hpAddr.String()
-			if _, ok := seen[addr]; !ok {
-				seen[addr] = struct{}{}
-				p.proxylist[idx].Address = addr
-			} else {
-				return fmt.Errorf("proxy list duplicate entry `%s`", addr)
+			sockAddr = hostPortSOCKS.String()
+			auth := auth{
+				User:     socksProxy.Username,
+				Password: socksProxy.Password,
 			}
+			dialer, err := p.newSOCKSDialer(sockAddr, &auth, p.baseDialer, p.tcp)
+			if err != nil {
+				return fmt.Errorf("unable to create %s dialer: %v", p.socksProto, err)
+			}
+			p.sockDialer = dialer
+			p.proxylist[0].Address = sockAddr // used in auto configuration
 		}
-		sockAddr = p.printProxyChain(p.proxylist)
-	} else {
-		p.logger.Debug().Msgf("Configuring %s proxy client...", p.socksProto)
-		socksProxy := p.proxylist[0]
-		hostPortSOCKS, err := network.ParseAddrPort(socksProxy.Address, ifaceAddr)
-		if err != nil {
-			return err
-		}
-		sockAddr = hostPortSOCKS.String()
-		auth := auth{
-			User:     socksProxy.Username,
-			Password: socksProxy.Password,
-		}
-		dialer, err := p.newSOCKSDialer(sockAddr, &auth, p.baseDialer, p.tcp)
-		if err != nil {
-			return fmt.Errorf("unable to create %s dialer: %v", p.socksProto, err)
-		}
-		p.sockDialer = dialer
-		p.proxylist[0].Address = sockAddr // used in auto configuration
 	}
 
 	if p.httpEnabled {
@@ -802,7 +811,11 @@ func (p *Proxy) Run() error {
 					Handler:        p.replayCheck(httpHandler),
 					MaxHeaderBytes: 1 << 20,
 				}
-				p.http3LocalClient = newHTTP3Client(getQUICDialer(p.baseDialer))
+				if p.nsEnabled {
+					p.http3LocalClient = newHTTP3Client(getNSQUICDialer(p.baseDialer.(*nsDialer)))
+				} else {
+					p.http3LocalClient = newHTTP3Client(nil)
+				}
 				if p.sockDialer != nil {
 					p.http3Client = newHTTP3Client(getQUICDialer(p.sockDialer))
 				}
@@ -1066,7 +1079,9 @@ func (p *Proxy) Run() error {
 	} else {
 		p.logger.Info().Msg("IPv6 disabled")
 	}
-	p.logger.Info().Msgf("SOCKS version: %s", p.socksProto)
+	if p.socksEnabled {
+		p.logger.Info().Msgf("SOCKS version: %s", p.socksProto)
+	}
 
 	if p.proxychain.Enabled {
 		p.chDialer = &chainedDialer{}
@@ -1099,10 +1114,12 @@ func (p *Proxy) Run() error {
 	}
 
 	// logging which servers are enabled
-	if p.proxychain.Enabled {
-		p.logger.Info().Msgf("%s Proxy [%s] chain: %s", strings.ToUpper(p.socksProto), p.proxychain.Type, sockAddr)
-	} else {
-		p.logger.Info().Msgf("%s Proxy: %s", strings.ToUpper(p.socksProto), sockAddr)
+	if p.socksEnabled {
+		if p.proxychain.Enabled {
+			p.logger.Info().Msgf("%s Proxy [%s] chain: %s", strings.ToUpper(p.socksProto), p.proxychain.Type, sockAddr)
+		} else {
+			p.logger.Info().Msgf("%s Proxy: %s", strings.ToUpper(p.socksProto), sockAddr)
+		}
 	}
 
 	if p.httpEnabled {
@@ -1542,10 +1559,11 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	var chunked bool
 	var respBodySaved []byte
 	var c httpClienter
-	if network.IsLocalAddress(r.Host) {
+	if !p.socksEnabled || network.IsLocalAddress(r.Host) {
 		if proto == 3 {
 			c = p.http3LocalClient
 		} else {
+			fmt.Println("get dilaer")
 			c = p.httpLocalClient
 		}
 	} else if !p.proxychain.Enabled {
@@ -1725,9 +1743,10 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 func (p *Proxy) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	var dstConn net.Conn
 	var err error
-	if network.IsLocalAddress(r.Host) {
+	if !p.socksEnabled || network.IsLocalAddress(r.Host) {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
+		fmt.Println("get kwdkw")
 		dstConn, err = p.baseDialer.DialContext(ctx, p.tcp, r.Host)
 		if err != nil {
 			p.logger.Error().Err(err).Msgf("Failed connecting to %s", r.Host)

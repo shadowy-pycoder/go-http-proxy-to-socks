@@ -1,8 +1,7 @@
 interface: "eth0" # if specified, overrides http server IP address
-ipv6_enabled: false # this must be enabled for ndpspoof
+ipv6: false # this must be enabled for ndpspoof
 
 http_server:
-  enabled: true
   address: 127.0.0.1:8080
   username: username
   password: password
@@ -41,7 +40,6 @@ transparent_proxy:
     address: 0.0.0.0:8889
     workers: 1
   mode: "tproxy"
-  disable_http: false
   auto: false
   dump_rules: false
   ignored_ports: []

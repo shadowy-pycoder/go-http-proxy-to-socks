@@ -179,7 +179,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	default:
 		ts.p.logger.Fatal().Msg("Unknown tproxyMode")
 	}
-	if network.IsLocalAddress(dst) {
+	if !ts.p.socksEnabled || network.IsLocalAddress(dst) {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		dstConn, err = ts.p.baseDialer.DialContext(ctx, ts.p.tcp, dst)
@@ -306,14 +306,16 @@ iptables -t nat -A GOHPTS -p tcp -d 255.255.255.255/32 -j RETURN
 iptables -t nat -A GOHPTS -p tcp --dport 22 -j RETURN
 `
 		ts.p.runRuleCmd(cmdInit0)
-		for _, pr := range ts.p.proxylist {
-			_, port, _ := net.SplitHostPort(pr.Address)
-			cmd1 := fmt.Sprintf(`
+		if ts.p.socksEnabled {
+			for _, pr := range ts.p.proxylist {
+				_, port, _ := net.SplitHostPort(pr.Address)
+				cmd1 := fmt.Sprintf(`
 iptables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
 `, port)
-			ts.p.runRuleCmd(cmd1)
-			if ts.p.proxychain.Type == "strict" {
-				break
+				ts.p.runRuleCmd(cmd1)
+				if ts.p.proxychain.Type == "strict" {
+					break
+				}
 			}
 		}
 		if ts.p.prefix != nil {
@@ -335,14 +337,16 @@ ip6tables -t nat -A GOHPTS -p tcp -d fc00::/7 -j RETURN
 ip6tables -t nat -A GOHPTS -p tcp --dport 22 -j RETURN
 `
 			ts.p.runRuleCmd(cmdInit1)
-			for _, pr := range ts.p.proxylist {
-				_, port, _ := net.SplitHostPort(pr.Address)
-				cmd11 := fmt.Sprintf(`
+			if ts.p.socksEnabled {
+				for _, pr := range ts.p.proxylist {
+					_, port, _ := net.SplitHostPort(pr.Address)
+					cmd11 := fmt.Sprintf(`
 ip6tables -t nat -A GOHPTS -p tcp --dport %s -j RETURN
 `, port)
-				ts.p.runRuleCmd(cmd11)
-				if ts.p.proxychain.Type == "strict" {
-					break
+					ts.p.runRuleCmd(cmd11)
+					if ts.p.proxychain.Type == "strict" {
+						break
+					}
 				}
 			}
 			if ts.p.prefix6 != nil {
@@ -479,14 +483,16 @@ iptables -t mangle -A GOHPTS -p tcp -d 224.0.0.0/4 -j RETURN
 iptables -t mangle -A GOHPTS -p tcp -d 255.255.255.255/32 -j RETURN
 `
 		ts.p.runRuleCmd(cmdInit0)
-		for _, pr := range ts.p.proxylist {
-			_, port, _ := net.SplitHostPort(pr.Address)
-			cmd1 := fmt.Sprintf(`
+		if ts.p.socksEnabled {
+			for _, pr := range ts.p.proxylist {
+				_, port, _ := net.SplitHostPort(pr.Address)
+				cmd1 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS -p tcp --dport %s -j RETURN
 `, port)
-			ts.p.runRuleCmd(cmd1)
-			if ts.p.proxychain.Type == "strict" {
-				break
+				ts.p.runRuleCmd(cmd1)
+				if ts.p.proxychain.Type == "strict" {
+					break
+				}
 			}
 		}
 		if ts.p.prefix != nil {
@@ -507,17 +513,18 @@ ip6tables -t mangle -A GOHPTS -p tcp -d fe80::/10 -j RETURN
 ip6tables -t mangle -A GOHPTS -p tcp -d fc00::/7 -j RETURN
 `
 			ts.p.runRuleCmd(cmdInit01)
-			for _, pr := range ts.p.proxylist {
-				_, port, _ := net.SplitHostPort(pr.Address)
-				cmd11 := fmt.Sprintf(`
+			if ts.p.socksEnabled {
+				for _, pr := range ts.p.proxylist {
+					_, port, _ := net.SplitHostPort(pr.Address)
+					cmd11 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS -p tcp --dport %s -j RETURN
 `, port)
-				ts.p.runRuleCmd(cmd11)
-				if ts.p.proxychain.Type == "strict" {
-					break
+					ts.p.runRuleCmd(cmd11)
+					if ts.p.proxychain.Type == "strict" {
+						break
+					}
 				}
 			}
-
 			if ts.p.prefix6 != nil {
 				cmdInit02 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS -p tcp -s %s -d %s -j RETURN

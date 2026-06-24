@@ -577,7 +577,7 @@ fi
 		ts.p.runRuleCmd(cmdDocker)
 		cmdInit2 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS -p tcp -m mark --mark %d -j RETURN
-iptables -t mangle -A GOHPTS -p tcp -j TPROXY --on-port %s --tproxy-mark 1
+iptables -t mangle -A GOHPTS -p tcp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1
 
 iptables -t mangle -A PREROUTING -p tcp -m socket -j DIVERT
 iptables -t mangle -A PREROUTING -p tcp -j GOHPTS
@@ -586,7 +586,7 @@ iptables -t mangle -A PREROUTING -p tcp -j GOHPTS
 		if ts.p.ipv6enabled {
 			cmdInit21 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS -p tcp -m mark --mark %d -j RETURN
-ip6tables -t mangle -A GOHPTS -p tcp -j TPROXY --on-port %s --tproxy-mark 1
+ip6tables -t mangle -A GOHPTS -p tcp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1
 
 ip6tables -t mangle -A PREROUTING -p tcp -m socket -j DIVERT
 ip6tables -t mangle -A PREROUTING -p tcp -j GOHPTS

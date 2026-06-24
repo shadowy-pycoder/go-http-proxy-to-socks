@@ -1287,7 +1287,7 @@ iptables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
 		tsu.p.runRuleCmd(cmdInit00)
 		if tsu.p.prefix != nil {
 			cmdInit01 := fmt.Sprintf(`
-iptables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 1
+iptables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1
 `, tsu.p.prefix.Masked(), tproxyPortUDP)
 			tsu.p.runRuleCmd(cmdInit01)
 		}
@@ -1303,7 +1303,7 @@ ip6tables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
 			tsu.p.runRuleCmd(cmdInit006)
 			if tsu.p.prefix6 != nil {
 				cmdInit016 := fmt.Sprintf(`
-ip6tables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 1
+ip6tables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1
 `, tsu.p.prefix6.Masked(), tproxyPortUDP)
 				tsu.p.runRuleCmd(cmdInit016)
 			}

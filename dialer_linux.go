@@ -98,7 +98,35 @@ func (d *nsDialer) DialContext(ctx context.Context, network, address string) (ne
 	return d.dialer.DialContext(ctx, network, address)
 }
 
-func getNSQUICDialer(dialer *nsDialer) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+func getNSQUICDialer(
+	dialer contextDialer,
+	resolver *net.Resolver,
+) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+	return func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+		udpConn, err := dialer.DialContext(ctx, "udp", addr)
+		if err != nil {
+			return nil, err
+		}
+		host, port, err := splitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+
+		addrs, err := resolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			udpConn.Close()
+			return nil, err
+		}
+		if len(addrs) == 0 {
+			udpConn.Close()
+			return nil, fmt.Errorf("no addresses for %s", host)
+		}
+		udpAddr := &net.UDPAddr{IP: addrs[0].IP, Port: port, Zone: addrs[0].Zone}
+		return quic.DialEarly(ctx, udpConn.(net.PacketConn), udpAddr, tlsCfg, cfg)
+	}
+}
+
+func getNSQUICDialerDirect(dialer *nsDialer) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 	return func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 		host, port, err := splitHostPort(addr)
 		if err != nil {

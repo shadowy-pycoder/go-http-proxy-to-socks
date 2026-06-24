@@ -37,7 +37,16 @@ func (d *nsDialer) DialContext(ctx context.Context, network, address string) (ne
 	return d.dialer.DialContext(ctx, network, address)
 }
 
-func getNSQUICDialer(dialer *nsDialer) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+func getNSQUICDialer(
+	dialer contextDialer,
+	resolver *net.Resolver,
+) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+	_ = dialer
+	_ = resolver
+	return quic.DialAddrEarly
+}
+
+func getNSQUICDialerDirect(dialer *nsDialer) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 	_ = dialer
 	return quic.DialAddrEarly
 }

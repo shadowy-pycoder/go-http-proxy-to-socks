@@ -810,12 +810,16 @@ func (p *Proxy) Run() error {
 					MaxHeaderBytes: 1 << 20,
 				}
 				if p.nsEnabled {
-					p.http3LocalClient = newHTTP3Client(getNSQUICDialer(p.baseDialer.(*nsDialer)))
+					p.http3LocalClient = newHTTP3Client(getNSQUICDialerDirect(p.baseDialer.(*nsDialer)))
 				} else {
 					p.http3LocalClient = newHTTP3Client(nil)
 				}
 				if p.sockDialer != nil {
-					p.http3Client = newHTTP3Client(getQUICDialer(p.sockDialer))
+					if p.nsEnabled {
+						p.http3Client = newHTTP3Client(getNSQUICDialer(p.sockDialer, p.baseDialer.(*nsDialer).resolver))
+					} else {
+						p.http3Client = newHTTP3Client(getQUICDialer(p.sockDialer))
+					}
 				}
 			}
 

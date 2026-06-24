@@ -20,7 +20,9 @@
   - [Configuration via YAML file](#configuration-via-yaml-file)
 - [Transparent proxy](#transparent-proxy)
   - [redirect (via NAT and SO_ORIGINAL_DST)](#redirect-via-nat-and-so_original_dst)
+  - [Auto configuration for redirect mode](#auto-configuration-for-redirect-mode)
   - [tproxy (via MANGLE and IP_TRANSPARENT)](#tproxy-via-mangle-and-ip_transparent)
+  - [Auto configuration for tproxy mode](#auto-configuration-for-tproxy-mode)
   - [UDP support](#udp-support)
   - [Android support](#android-support)
   - [YAML configuration](#yaml-configuration)
@@ -28,12 +30,17 @@
   - [JSON format](#json-format)
   - [Colored format](#colored-format)
 - [HTTP2 and HTTP3 support](#http2-and-http3-support)
+  - [Example setup using self-signed certificate](#example-setup-using-self-signed-certificate)
+  - [Test connection](#test-connection)
+  - [Test connection in a browser](#test-connection-in-a-browser)
 - [IPv6 support](#ipv6-support)
 - [ARP spoofing](#arp-spoofing)
 - [NDP spoofing](#ndp-spoofing)
 - [DNS spoofing](#dns-spoofing)
 - [Packet Capture](#packet-capture)
 - [Network Namespaces](#network-namespaces)
+  - [Playground setup](#playground-setup)
+  - [Usage examples](#usage-examples)
 - [Links](#links)
 - [Contributing](#contributing)
 - [License](#license)
@@ -401,7 +408,7 @@ This functionality available only on Linux systems and Android (arm64) and requi
 
 There are two modes `redirect` and `tproxy` that can be specified with `-M` flag
 
-## `redirect` (via _NAT_ and _SO_ORIGINAL_DST_)
+### `redirect` (via _NAT_ and _SO_ORIGINAL_DST_)
 
 [[Back]](#table-of-contents)
 
@@ -410,6 +417,8 @@ In this mode proxying happens with `iptables` `nat` table and `REDIRECT` target.
 To run `GoHPTS` in this mode you use `-T` flag with `-M redirect`
 
 ### Example
+
+[[Back]](#table-of-contents)
 
 ```shell
 # run the proxy
@@ -488,7 +497,7 @@ You can optionally specify `-mark <value>` to prevent possible proxy loops
 sudo env PATH=$PATH gohpts -d -T 8888 -M redirect -auto -mark 100
 ```
 
-## `tproxy` (via _MANGLE_ and _IP_TRANSPARENT_)
+### `tproxy` (via _MANGLE_ and _IP_TRANSPARENT_)
 
 [[Back]](#table-of-contents)
 
@@ -503,6 +512,8 @@ sudo setcap 'cap_net_admin+ep' ~/go/bin/gohpts
 To run `GoHPTS` in this mode you use `-T` flag with `-M tproxy`
 
 ### Example
+
+[[Back]](#table-of-contents)
 
 ```shell
 # run the proxy
@@ -828,7 +839,9 @@ gohpts -sniff -body -nocolor
 
 `GoHPTS` proxy handles HTTP/1.1, HTTP/2, and HTTP/3 requests using the same server address and TLS certificate. This allows clients to automatically choose the best available protocol without changing configuration. TLS certificate can be obtained in several ways: cloud providers (Google, AWS, Cloudflare), free certificate from Let's Encrypt, or you can create self-signed certificate using `openssl` (Linux/macOS) or `New-SelfSignedCertificate` (Windows).
 
-### Example setup using self-signed certificate:
+### Example setup using self-signed certificate
+
+[[Back]](#table-of-contents)
 
 - Create `key.pem` and `cert.pem` files:
 
@@ -902,6 +915,8 @@ gohpts -sniff -body -nocolor
 
 ### Test connection
 
+[[Back]](#table-of-contents)
+
 - For HTTP/2 proxy server you can use `curl`:
 
   ```shell
@@ -930,6 +945,8 @@ gohpts -sniff -body -nocolor
   Go to terminal tab with `GoHPTS` proxy and check logs, you should see all your requests there.
 
 ### Test connection in a browser
+
+[[Back]](#table-of-contents)
 
 - Create proper self-signed ceritificate for browser:
 
@@ -1042,7 +1059,7 @@ Check proxy logs for traffic from other devices from your LAN
 
 For more information about arpspoof options see `gohpts -h` and [https://github.com/shadowy-pycoder/arpspoof](https://github.com/shadowy-pycoder/arpspoof)
 
-### NDP spoofing
+## NDP spoofing
 
 [[Back]](#table-of-contents)
 
@@ -1100,7 +1117,7 @@ gohpts -s 203.0.113.10:3000 -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -mark 
 
 8. Profit!
 
-### DNS spoofing
+## DNS spoofing
 
 [[Back]](#table-of-contents)
 
@@ -1178,7 +1195,7 @@ sudo ./gohpts -f ./gohpts_dns_spoof.yaml
 
 More information can be found here: [https://en.wikipedia.org/wiki/DNS_spoofing](https://en.wikipedia.org/wiki/DNS_spoofing)
 
-### Packet Capture
+## Packet Capture
 
 [[Back]](#table-of-contents)
 
@@ -1214,6 +1231,8 @@ For more information about pcap options see `gohpts -h` and [https://github.com/
 By default `GoHPTS` proxy is running within single network namespace but this can be overriden. Listening sockets (e.g. http server or transparent proxy server) and outbound sockets (socks proxy or direct dialer) created by `GoHPTS` can be isolated with Linux/Android [network_namespaces (7)](https://man7.org/linux/man-pages/man7/network_namespaces.7.html). When starting proxy process, users can specify `-in-netns` (listeners) and `-out-netns` (dialers) flags with name or path to network namespace to control in which isolated environment to create sockets. If you want to create either listeners or dialers in the current (default) namespace, just omit the flag.
 
 ### Playground setup
+
+[[Back]](#table-of-contents)
 
 - Run socks5 server with UDP ASSOCIATE support
 
@@ -1272,7 +1291,9 @@ By default `GoHPTS` proxy is running within single network namespace but this ca
   WLAN_IP=$(ip -4 -c=never route get 8.8.8.8 | awk '{print $7}' | tr -d '\n')
   ```
 
-### Examples
+### Usage examples
+
+[[Back]](#table-of-contents)
 
 1. **HTTP proxy - proxy listeners in `ns1` (no default route, no internet access), outbound sockets on host**
 

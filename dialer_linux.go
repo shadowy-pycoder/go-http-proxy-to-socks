@@ -174,3 +174,32 @@ func getNSQUICDialerDirect(dialer *nsDialer) func(ctx context.Context, addr stri
 		return quic.DialEarly(ctx, udpConn, udpAddr, tlsCfg, cfg)
 	}
 }
+
+func getPacketDial(mark uint, ns *netns.NsHandle) func(ctx context.Context, network, addr string) (net.PacketConn, error) {
+	lc := &net.ListenConfig{}
+	if mark > 0 {
+		lc = &net.ListenConfig{
+			Control: func(_, _ string, c syscall.RawConn) error {
+				return c.Control(func(fd uintptr) {
+					unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
+				})
+			},
+		}
+	}
+	return func(ctx context.Context, network, addr string) (net.PacketConn, error) {
+		if ns != nil {
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+			currentNs, err := netns.Get()
+			if err != nil {
+				return nil, err
+			}
+			defer currentNs.Close()
+			defer netns.Set(currentNs)
+			if err := netns.Set(*ns); err != nil {
+				return nil, err
+			}
+		}
+		return lc.ListenPacket(ctx, network, addr)
+	}
+}

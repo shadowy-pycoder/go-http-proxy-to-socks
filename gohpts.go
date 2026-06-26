@@ -183,6 +183,7 @@ type Proxy struct {
 	socksProto string
 	// socks5 dialer with UDP ASSOCIATE support or socks4/socks4a TCP only
 	sockDialer contextDialer
+	packetDial func(ctx context.Context, network string, address string) (net.PacketConn, error)
 	// contextDialer with timeout (used for local connections and as a forward dialer in socks5 proxy)
 	baseDialer contextDialer
 	// credetials used in HTTP BasicAuth
@@ -708,6 +709,7 @@ func (p *Proxy) Run() error {
 
 	// configure socks addresses
 	var sockAddr string
+	p.packetDial = getPacketDial(p.mark, p.outNS)
 	if p.socksEnabled {
 		if p.proxychain.Enabled {
 			p.logger.Debug().Msgf("Configuring %s proxy chain...", p.socksProto)
@@ -2620,7 +2622,7 @@ func (p *Proxy) newSOCKSDialer(address string, auth *auth, forward contextDialer
 	if p.socks4enabled {
 		return newSOCKS4Dialer(address, auth, forward, network)
 	}
-	return newSOCKS5Dialer(address, auth, forward, network)
+	return newSOCKS5Dialer(address, auth, forward, network, p.packetDial)
 }
 
 func (p *Proxy) applyCommonRedirectRules(opts map[string]string) {

@@ -26,7 +26,13 @@ var (
 	_ contextDialer = &net.Dialer{}
 )
 
-func newSOCKS5Dialer(address string, auth *auth, forward contextDialer, network string) (*socks5.Dialer, error) {
+func newSOCKS5Dialer(
+	address string,
+	auth *auth,
+	forward contextDialer,
+	network string,
+	packetDial func(ctx context.Context, network string, address string) (net.PacketConn, error),
+) (*socks5.Dialer, error) {
 	d := &socks5.Dialer{
 		ProxyNetwork: network,
 		IsResolve:    false,
@@ -44,9 +50,8 @@ func newSOCKS5Dialer(address string, auth *auth, forward contextDialer, network 
 		d.Username = auth.User
 		d.Password = auth.Password
 	}
-	if forward != nil {
-		d.ProxyDial = forward.DialContext
-	}
+	d.ProxyDial = forward.DialContext
+	d.ProxyPacketDial = packetDial
 	return d, nil
 }
 
@@ -67,9 +72,7 @@ func newSOCKS4Dialer(address string, auth *auth, forward contextDialer, network 
 	if auth != nil {
 		d.Username = auth.User
 	}
-	if forward != nil {
-		d.ProxyDial = forward.DialContext
-	}
+	d.ProxyDial = forward.DialContext
 	return d, nil
 }
 

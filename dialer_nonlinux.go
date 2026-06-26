@@ -50,3 +50,12 @@ func getNSQUICDialerDirect(dialer *nsDialer) func(ctx context.Context, addr stri
 	_ = dialer
 	return quic.DialAddrEarly
 }
+
+func getPacketDial(mark uint, ns *netns.NsHandle) func(ctx context.Context, network, addr string) (net.PacketConn, error) {
+	_ = mark
+	_ = ns
+	lc := &net.ListenConfig{}
+	return func(ctx context.Context, network, addr string) (net.PacketConn, error) {
+		return lc.ListenPacket(ctx, network, addr)
+	}
+}

@@ -990,10 +990,11 @@ func replyToClient4(clientAddr, originalDst *net.UDPAddr, data []byte, mark int,
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		currentNs, err := netns.Get()
-		if err == nil {
-			defer currentNs.Close()
-			defer netns.Set(currentNs)
+		if err != nil {
+			return err
 		}
+		defer currentNs.Close()
+		defer netns.Set(currentNs)
 		if err := netns.Set(*ns); err != nil {
 			return err
 		}
@@ -1036,10 +1037,11 @@ func replyToClient6(clientAddr, originalDst *net.UDPAddr, data []byte, mark int,
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		currentNs, err := netns.Get()
-		if err == nil {
-			defer currentNs.Close()
-			defer netns.Set(currentNs)
+		if err != nil {
+			return err
 		}
+		defer currentNs.Close()
+		defer netns.Set(currentNs)
 		if err := netns.Set(*ns); err != nil {
 			return err
 		}

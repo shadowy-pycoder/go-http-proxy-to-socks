@@ -121,7 +121,7 @@ func TestNewProxyErr(t *testing.T) {
 				ARPSpoof:      "targets 192.168.10.0/24;fullduplex true;debug true;interval 10s",
 				NDPSpoof:      "ra true;debug true;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;interval 10s;mtu 1500;packet HRD F2 DSDS",
 			},
-			errMsg: "[redirect] transparent UDP server only supports tproxy mode",
+			errMsg: "[redirect] transparent UDP server only supports tproxy or tproxylocal mode",
 		},
 		{
 			name: "auto requires root",

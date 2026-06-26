@@ -45,7 +45,7 @@ func newTproxyServer(p *Proxy) (*tproxyServer, error) {
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
-				if ts.p.tproxyMode == "tproxy" {
+				if ts.p.tproxyMode == "tproxy" || ts.p.tproxyMode == "tproxylocal" {
 					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
 					if ts.p.ipv6enabled {
 						operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
@@ -174,7 +174,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed to get destination address", ts.p.tproxyMode)
 			return
 		}
-	case "tproxy":
+	case "tproxy", "tproxylocal":
 		dst = srcConn.LocalAddr().String()
 	default:
 		ts.p.logger.Fatal().Msg("Unknown tproxyMode")
@@ -457,6 +457,109 @@ ip6tables -t nat -A OUTPUT -p tcp -j GOHPTS
 `, tproxyPort)
 			ts.p.runRuleCmd(cmdNat1)
 		}
+	case "tproxylocal":
+		cmdClear0 := `
+iptables -t mangle -D OUTPUT -p tcp -j GOHPTS_OUT 2>/dev/null || true
+iptables -t mangle -F GOHPTS_OUT 2>/dev/null || true
+iptables -t mangle -X GOHPTS_OUT 2>/dev/null || true
+`
+		ts.p.runRuleCmd(cmdClear0)
+		if ts.p.ipv6enabled {
+			cmdClear1 := `
+ip6tables -t mangle -D OUTPUT -p tcp -j GOHPTS_OUT 2>/dev/null || true
+ip6tables -t mangle -F GOHPTS_OUT 2>/dev/null || true
+ip6tables -t mangle -X GOHPTS_OUT 2>/dev/null || true
+`
+			ts.p.runRuleCmd(cmdClear1)
+		}
+		cmdInit0 := `
+iptables -t mangle -N GOHPTS_OUT 2>/dev/null || true
+iptables -t mangle -F GOHPTS_OUT
+iptables -t mangle -A GOHPTS_OUT -p tcp -d 127.0.0.0/8 -j RETURN
+iptables -t mangle -A GOHPTS_OUT -p tcp -d 224.0.0.0/4 -j RETURN
+iptables -t mangle -A GOHPTS_OUT -p tcp -d 255.255.255.255/32 -j RETURN
+`
+		ts.p.runRuleCmd(cmdInit0)
+		if ts.p.socksEnabled {
+			for _, pr := range ts.p.proxylist {
+				_, port, _ := net.SplitHostPort(pr.Address)
+				cmd1 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT -p tcp --dport %s -j RETURN
+`, port)
+				ts.p.runRuleCmd(cmd1)
+				if ts.p.proxychain.Type == "strict" {
+					break
+				}
+			}
+		}
+		if ts.p.prefix != nil {
+			cmdInit00 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT -p tcp -d %s -j RETURN
+`, ts.p.prefix.Masked())
+			ts.p.runRuleCmd(cmdInit00)
+		}
+		if ts.p.ipv6enabled {
+			cmdInit01 := `
+ip6tables -t mangle -N GOHPTS_OUT 2>/dev/null || true
+ip6tables -t mangle -F GOHPTS_OUT
+
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -d ::/128 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -d ::1/128 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -d ff00::/8 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -d fe80::/10 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -d fc00::/7 -j RETURN
+`
+			ts.p.runRuleCmd(cmdInit01)
+			if ts.p.socksEnabled {
+				for _, pr := range ts.p.proxylist {
+					_, port, _ := net.SplitHostPort(pr.Address)
+					cmd11 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT -p tcp --dport %s -j RETURN
+`, port)
+					ts.p.runRuleCmd(cmd11)
+					if ts.p.proxychain.Type == "strict" {
+						break
+					}
+				}
+			}
+			if ts.p.prefix6 != nil {
+				cmdInit02 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -s %s -d %s -j RETURN
+`, ts.p.prefix6.Masked(), ts.p.prefix6.Masked())
+				ts.p.runRuleCmd(cmdInit02)
+			}
+		}
+		if ts.p.ignoredPorts != "" {
+			cmdInit1 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT -p tcp -m multiport --dports %s -j RETURN
+iptables -t mangle -A GOHPTS_OUT -p tcp -m multiport --sports %s -j RETURN
+`, ts.p.ignoredPorts, ts.p.ignoredPorts)
+			ts.p.runRuleCmd(cmdInit1)
+			if ts.p.ipv6enabled {
+				cmdInit11 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -m multiport --dports %s -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -m multiport --sports %s -j RETURN
+`, ts.p.ignoredPorts, ts.p.ignoredPorts)
+				ts.p.runRuleCmd(cmdInit11)
+			}
+		}
+		cmdInit2 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT -p tcp -m mark --mark %d -j RETURN
+iptables -t mangle -A GOHPTS_OUT -p tcp -j MARK --set-mark 2
+iptables -t mangle -A OUTPUT -p tcp -j GOHPTS_OUT
+`, ts.p.mark)
+		ts.p.runRuleCmd(cmdInit2)
+		if ts.p.ipv6enabled {
+			cmdInit21 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -m mark --mark %d -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -j MARK --set-mark 2
+ip6tables -t mangle -A OUTPUT -p tcp -j GOHPTS_OUT
+`, ts.p.mark)
+			ts.p.runRuleCmd(cmdInit21)
+		}
+
+		fallthrough
+
 	case "tproxy":
 		cmdClear0 := `
 iptables -t mangle -D PREROUTING -p tcp -m socket -j DIVERT 2>/dev/null || true
@@ -639,6 +742,22 @@ ip6tables -t nat -X GOHPTS 2>/dev/null || true
 `
 			ts.p.runRuleCmd(cmd1)
 		}
+	case "tproxylocal":
+		cmd0 := `
+iptables -t mangle -D OUTPUT -p tcp -j GOHPTS_OUT 2>/dev/null || true
+iptables -t mangle -F GOHPTS_OUT 2>/dev/null || true
+iptables -t mangle -X GOHPTS_OUT 2>/dev/null || true
+`
+		ts.p.runRuleCmd(cmd0)
+		if ts.p.ipv6enabled {
+			cmd1 := `
+ip6tables -t mangle -D OUTPUT -p tcp -j GOHPTS_OUT 2>/dev/null || true
+ip6tables -t mangle -F GOHPTS_OUT 2>/dev/null || true
+ip6tables -t mangle -X GOHPTS_OUT 2>/dev/null || true
+`
+			ts.p.runRuleCmd(cmd1)
+		}
+		fallthrough
 	case "tproxy":
 		cmd0 := `
 iptables -t mangle -D PREROUTING -p tcp -m socket -j DIVERT 2>/dev/null || true

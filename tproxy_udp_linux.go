@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/shadowy-pycoder/mshark/layers"
 	"github.com/shadowy-pycoder/mshark/network"
+	"github.com/vishvananda/netns"
 	"github.com/wzshiming/socks5"
 	"golang.org/x/sys/unix"
 )
@@ -295,7 +297,7 @@ func (tsu *tproxyServerUDP) Serve() {
 					continue
 				}
 				if dstAddr.Port == 53 {
-					conn, err := newDNSDirectConn(srcAddr, dstAddr, tsu.p.baseDialer, tsu.p.udp)
+					conn, err := newDNSDirectConn(srcAddr, dstAddr, tsu.p.baseDialer, tsu.p.udp, tsu.p.mark, tsu.p.outNS)
 					if err != nil {
 						tsu.p.logger.Error().
 							Err(err).
@@ -966,6 +968,8 @@ type dnsDirectConn struct {
 	written  atomic.Uint64
 	reqChan  chan layers.Layer
 	respChan chan layers.Layer
+	mark     int
+	ns       *netns.NsHandle
 }
 
 func (ddc *dnsDirectConn) close() error {
@@ -976,12 +980,24 @@ func (ddc *dnsDirectConn) close() error {
 
 func (ddc *dnsDirectConn) replyToClient(data []byte) error {
 	if ddc.dstAddr.IP.To4() != nil {
-		return replyToClient4(ddc.srcAddr, ddc.dstAddr, data)
+		return replyToClient4(ddc.srcAddr, ddc.dstAddr, data, ddc.mark, ddc.ns)
 	}
-	return replyToClient6(ddc.srcAddr, ddc.dstAddr, data)
+	return replyToClient6(ddc.srcAddr, ddc.dstAddr, data, ddc.mark, ddc.ns)
 }
 
-func replyToClient4(clientAddr, originalDst *net.UDPAddr, data []byte) error {
+func replyToClient4(clientAddr, originalDst *net.UDPAddr, data []byte, mark int, ns *netns.NsHandle) error {
+	if ns != nil {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		currentNs, err := netns.Get()
+		if err == nil {
+			defer currentNs.Close()
+			defer netns.Set(currentNs)
+		}
+		if err := netns.Set(*ns); err != nil {
+			return err
+		}
+	}
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
 	if err != nil {
 		return err
@@ -993,6 +1009,9 @@ func replyToClient4(clientAddr, originalDst *net.UDPAddr, data []byte) error {
 	}
 
 	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
+		return err
+	}
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, mark); err != nil {
 		return err
 	}
 	bindAddr := &unix.SockaddrInet4{
@@ -1012,7 +1031,19 @@ func replyToClient4(clientAddr, originalDst *net.UDPAddr, data []byte) error {
 	return nil
 }
 
-func replyToClient6(clientAddr, originalDst *net.UDPAddr, data []byte) error {
+func replyToClient6(clientAddr, originalDst *net.UDPAddr, data []byte, mark int, ns *netns.NsHandle) error {
+	if ns != nil {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		currentNs, err := netns.Get()
+		if err == nil {
+			defer currentNs.Close()
+			defer netns.Set(currentNs)
+		}
+		if err := netns.Set(*ns); err != nil {
+			return err
+		}
+	}
 	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM, 0)
 	if err != nil {
 		return err
@@ -1024,6 +1055,9 @@ func replyToClient6(clientAddr, originalDst *net.UDPAddr, data []byte) error {
 	}
 
 	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
+		return err
+	}
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, mark); err != nil {
 		return err
 	}
 	bindAddr := &unix.SockaddrInet6{
@@ -1043,7 +1077,7 @@ func replyToClient6(clientAddr, originalDst *net.UDPAddr, data []byte) error {
 	return nil
 }
 
-func newDNSDirectConn(srcAddr, dstAddr *net.UDPAddr, dialer contextDialer, network string) (*dnsDirectConn, error) {
+func newDNSDirectConn(srcAddr, dstAddr *net.UDPAddr, dialer contextDialer, network string, mark uint, ns *netns.NsHandle) (*dnsDirectConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	conn, err := dialer.DialContext(ctx, network, dstAddr.String())
@@ -1060,6 +1094,8 @@ func newDNSDirectConn(srcAddr, dstAddr *net.UDPAddr, dialer contextDialer, netwo
 		dstAddr:  dstAddr,
 		reqChan:  make(chan layers.Layer),
 		respChan: make(chan layers.Layer),
+		mark:     int(mark),
+		ns:       ns,
 	}, nil
 }
 
@@ -1186,6 +1222,110 @@ func (tsu *tproxyServerUDP) ApplyRedirectRules(opts map[string]string) {
 	switch tsu.p.tproxyMode {
 	case "redirect":
 		tsu.p.logger.Fatal().Msgf("Unsupported mode: %s", tsu.p.tproxyMode)
+
+	case "tproxylocal":
+		cmdClear0 := `
+iptables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
+iptables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
+iptables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
+`
+		tsu.p.runRuleCmd(cmdClear0)
+		if tsu.p.ipv6enabled {
+			cmdClear1 := `
+ip6tables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
+ip6tables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
+ip6tables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
+`
+			tsu.p.runRuleCmd(cmdClear1)
+		}
+		cmdInit0 := `
+iptables -t mangle -N GOHPTS_OUT_UDP 2>/dev/null || true
+iptables -t mangle -F GOHPTS_OUT_UDP
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 127.0.0.0/8 -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 224.0.0.0/4 -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 255.255.255.255/32 -j RETURN
+`
+		tsu.p.runRuleCmd(cmdInit0)
+		if tsu.p.socksEnabled {
+			for _, pr := range tsu.p.proxylist {
+				_, port, _ := net.SplitHostPort(pr.Address)
+				cmd1 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp --dport %s -j RETURN
+`, port)
+				tsu.p.runRuleCmd(cmd1)
+				if tsu.p.proxychain.Type == "strict" {
+					break
+				}
+			}
+		}
+		if tsu.p.prefix != nil {
+			cmdInit00 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d %s -j RETURN
+`, tsu.p.prefix.Masked())
+			tsu.p.runRuleCmd(cmdInit00)
+		}
+		if tsu.p.ipv6enabled {
+			cmdInit01 := `
+ip6tables -t mangle -N GOHPTS_OUT_UDP 2>/dev/null || true
+ip6tables -t mangle -F GOHPTS_OUT_UDP
+
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -d ::/128 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -d ::1/128 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -d ff00::/8 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -d fe80::/10 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -d fc00::/7 -j RETURN
+`
+			tsu.p.runRuleCmd(cmdInit01)
+			if tsu.p.socksEnabled {
+				for _, pr := range tsu.p.proxylist {
+					_, port, _ := net.SplitHostPort(pr.Address)
+					cmd11 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp --dport %s -j RETURN
+`, port)
+					tsu.p.runRuleCmd(cmd11)
+					if tsu.p.proxychain.Type == "strict" {
+						break
+					}
+				}
+			}
+			if tsu.p.prefix6 != nil {
+				cmdInit02 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -s %s -d %s -j RETURN
+`, tsu.p.prefix6.Masked(), tsu.p.prefix6.Masked())
+				tsu.p.runRuleCmd(cmdInit02)
+			}
+		}
+		if tsu.p.ignoredPorts != "" {
+			cmdInit1 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --dports %s -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --sports %s -j RETURN
+`, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
+			tsu.p.runRuleCmd(cmdInit1)
+			if tsu.p.ipv6enabled {
+				cmdInit11 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --dports %s -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --sports %s -j RETURN
+`, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
+				tsu.p.runRuleCmd(cmdInit11)
+			}
+		}
+		cmdInit2 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m mark --mark %d -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -j MARK --set-mark 2
+iptables -t mangle -A OUTPUT -p udp -j GOHPTS_OUT_UDP
+`, tsu.p.mark)
+		tsu.p.runRuleCmd(cmdInit2)
+		if tsu.p.ipv6enabled {
+			cmdInit21 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m mark --mark %d -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -j MARK --set-mark 2
+ip6tables -t mangle -A OUTPUT -p udp -j GOHPTS_OUT_UDP
+`, tsu.p.mark)
+			tsu.p.runRuleCmd(cmdInit21)
+		}
+
+		fallthrough
+
 	case "tproxy":
 		cmdClear0 := `
 iptables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
@@ -1323,7 +1463,24 @@ ip6tables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
 }
 
 func (tsu *tproxyServerUDP) ClearRedirectRules() error {
-	if tsu.p.tproxyMode == "tproxy" {
+	switch tsu.p.tproxyMode {
+	case "tproxylocal":
+		cmd0 := `
+iptables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
+iptables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
+iptables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
+`
+		tsu.p.runRuleCmd(cmd0)
+		if tsu.p.ipv6enabled {
+			cmd1 := `
+ip6tables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
+ip6tables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
+ip6tables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
+`
+			tsu.p.runRuleCmd(cmd1)
+		}
+		fallthrough
+	case "tproxy":
 		cmd0 := `
 iptables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
 iptables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true

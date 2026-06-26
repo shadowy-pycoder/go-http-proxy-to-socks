@@ -1230,6 +1230,18 @@ For more information about pcap options see `gohpts -h` and [https://github.com/
 
 By default `GoHPTS` proxy is running within single network namespace but this can be overriden. Listening sockets (e.g. http server or transparent proxy server) and outbound sockets (socks proxy or direct dialer) created by `GoHPTS` can be isolated with Linux/Android [network_namespaces (7)](https://man7.org/linux/man-pages/man7/network_namespaces.7.html). When starting proxy process, users can specify `-in-netns` (listeners) and `-out-netns` (dialers) flags with name or path to network namespace to control in which isolated environment to create sockets. If you want to create either listeners or dialers in the current (default) namespace, just omit the flag.
 
+`GoHPTS` supports [ip-netns (8)](https://man7.org/linux/man-pages/man8/ip-netns.8.html) convention for providing network configuration via files located in `/etc/netns/NAME/` directory. So, to specify custom nameservers for `ns1` network namespace you do the following:
+
+```shell
+sudo mkdir -p /etc/netns/ns1
+sudo tee /etc/netns/ns1/resolv.conf << EOF
+8.8.8.8
+2001:4860:4860:0:0:0:0:8888
+EOF
+```
+
+If no config is found, Google DNS servers will be used to resolve domain names.
+
 ### Playground setup
 
 [[Back]](#table-of-contents)
@@ -1253,7 +1265,7 @@ By default `GoHPTS` proxy is running within single network namespace but this ca
 - Clone the repo and compile
 
   ```shell
-  git clone --branch namespaces https://github.com/shadowy-pycoder/go-http-proxy-to-socks.git
+  git clone https://github.com/shadowy-pycoder/go-http-proxy-to-socks.git
   cd go-http-proxy-to-socks
   make
   ```

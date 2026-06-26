@@ -64,7 +64,7 @@ const (
 
 var (
 	supportedChainTypes  = []string{"strict", "dynamic", "random", "round_robin"}
-	SupportedTProxyModes = []string{"redirect", "tproxy"}
+	SupportedTProxyModes = []string{"redirect", "tproxy", "tproxylocal"}
 	SupportedTProxyOS    = []string{"linux", "android"}
 	errInvalidWrite      = errors.New("invalid write result")
 )
@@ -236,7 +236,7 @@ type Proxy struct {
 	tproxyAddr string
 	// address of udp transparent proxy
 	tproxyAddrUDP string
-	// tproxy or redirect
+	// tproxy, tproxylocal or redirect
 	tproxyMode string
 	// number of tcp transparent proxy servers
 	tproxyWorkers uint
@@ -472,11 +472,11 @@ func New(conf *Config) (*Proxy, error) {
 			p.tproxyAddr = tproxyAddr.String()
 		}
 		if conf.TProxyUDP != "" {
-			if p.tproxyMode != "tproxy" {
-				return nil, fmt.Errorf("[%s] transparent UDP server only supports tproxy mode", conf.TProxyMode)
+			if p.tproxyMode != "tproxy" && p.tproxyMode != "tproxylocal" {
+				return nil, fmt.Errorf("[%s] transparent UDP server only supports tproxy or tproxylocal mode", p.tproxyMode)
 			}
 			if p.socks4enabled {
-				return nil, fmt.Errorf("[%s] transparent UDP server requires socks5 enabled", conf.TProxyMode)
+				return nil, fmt.Errorf("[%s] transparent UDP server requires socks5 enabled", p.tproxyMode)
 			}
 			var tproxyAddrUDP netip.AddrPort
 			tproxyAddrUDP, err = network.ParseAddrPort(conf.TProxyUDP, "0.0.0.0")
@@ -500,7 +500,7 @@ func New(conf *Config) (*Proxy, error) {
 		if p.mark > 0xFFFFFFFF {
 			return nil, fmt.Errorf("option SO_MARK is out of range")
 		}
-		if p.mark == 0 && p.tproxyMode == "tproxy" {
+		if p.mark == 0 && (p.tproxyMode == "tproxy" || p.tproxyMode == "tproxylocal") {
 			p.mark = 100
 		}
 
@@ -1140,7 +1140,7 @@ func (p *Proxy) Run() error {
 		if p.tproxyWorkers != 1 {
 			suffix = "s"
 		}
-		if p.tproxyMode == "tproxy" {
+		if p.tproxyMode == "tproxy" || p.tproxyMode == "tproxylocal" {
 			p.logger.Info().Msgf("TPROXY: %s (%d instance%s)", p.tproxyAddr, p.tproxyWorkers, suffix)
 		} else {
 			p.logger.Info().Msgf("REDIRECT: %s (%d instance%s)", p.tproxyAddr, p.tproxyWorkers, suffix)
@@ -2629,7 +2629,7 @@ func (p *Proxy) applyCommonRedirectRules(opts map[string]string) {
 	if p.debug {
 		setex = "set -ex"
 	}
-	if p.tproxyMode == "tproxy" {
+	if p.tproxyMode == "tproxy" || p.tproxyMode == "tproxylocal" {
 		cmdClear0 := `
 iptables -t mangle -F DIVERT 2>/dev/null || true
 iptables -t mangle -X DIVERT 2>/dev/null || true
@@ -2638,37 +2638,72 @@ ip rule del fwmark 1 lookup 100 2>/dev/null || true
 ip route flush table 100 2>/dev/null || true
 `
 		p.runRuleCmd(cmdClear0)
-		if p.ipv6enabled {
+		if p.tproxyMode == "tproxylocal" {
 			cmdClear1 := `
+ip rule del fwmark 2 lookup 101 2>/dev/null || true
+ip route flush table 101 2>/dev/null || true
+`
+			p.runRuleCmd(cmdClear1)
+		}
+		if p.ipv6enabled {
+			cmdClear2 := `
 ip6tables -t mangle -F DIVERT 2>/dev/null || true
 ip6tables -t mangle -X DIVERT 2>/dev/null || true
 
 ip -6 rule del fwmark 1 lookup 100 2>/dev/null || true
 ip -6 route flush table 100 2>/dev/null || true
 `
-			p.runRuleCmd(cmdClear1)
+			p.runRuleCmd(cmdClear2)
+			if p.tproxyMode == "tproxylocal" {
+				cmdClear3 := `
+ip -6 rule del fwmark 2 lookup 101 2>/dev/null || true
+ip -6 route flush table 101 2>/dev/null || true
+`
+				p.runRuleCmd(cmdClear3)
+			}
 		}
 		cmdInit0 := `
 ip rule add fwmark 1 lookup 100 2>/dev/null || true
 ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
+`
+		p.runRuleCmd(cmdInit0)
 
+		if p.tproxyMode == "tproxylocal" {
+			cmdInit1 := `
+ip rule add fwmark 2 lookup 101 2>/dev/null || true
+ip route add local 0.0.0.0/0 dev lo table 101 2>/dev/null || true
+`
+			p.runRuleCmd(cmdInit1)
+		}
+		if p.ipv6enabled {
+			cmdInit2 := `
+ip -6 rule add fwmark 1 lookup 100 2>/dev/null || true
+ip -6 route add local ::/0 dev lo table 100 2>/dev/null || true
+`
+			p.runRuleCmd(cmdInit2)
+			if p.tproxyMode == "tproxylocal" {
+				cmdInit3 := `
+ip -6 rule add fwmark 2 lookup 101 2>/dev/null || true
+ip -6 route add local ::/0 dev lo table 101 2>/dev/null || true
+`
+				p.runRuleCmd(cmdInit3)
+			}
+		}
+		cmdInit4 := `
 iptables -t mangle -N DIVERT 2>/dev/null || true
 iptables -t mangle -F DIVERT 2>/dev/null || true
 iptables -t mangle -A DIVERT -j MARK --set-mark 1
 iptables -t mangle -A DIVERT -j ACCEPT
 `
-		p.runRuleCmd(cmdInit0)
+		p.runRuleCmd(cmdInit4)
 		if p.ipv6enabled {
-			cmdInit1 := `
-ip -6 rule add fwmark 1 lookup 100 2>/dev/null || true
-ip -6 route add local ::/0 dev lo table 100 2>/dev/null || true
-
+			cmdInit5 := `
 ip6tables -t mangle -N DIVERT 2>/dev/null || true
 ip6tables -t mangle -F DIVERT 2>/dev/null || true
 ip6tables -t mangle -A DIVERT -j MARK --set-mark 1
 ip6tables -t mangle -A DIVERT -j ACCEPT
 `
-			p.runRuleCmd(cmdInit1)
+			p.runRuleCmd(cmdInit5)
 		}
 	}
 	_ = runSysctlOptCmd("net.ipv4.ip_forward", "1", setex, opts, p.debug, &p.dump)
@@ -2760,31 +2795,46 @@ ip6tables -t filter -D OUTPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
 			p.runRuleCmd(cmdClear2)
 		}
 	}
-	cmds := make([]string, 0, len(opts))
-	for _, cmd := range slices.Sorted(maps.Keys(opts)) {
-		cmds = append(cmds, fmt.Sprintf("sysctl -w %s=%q", cmd, opts[cmd]))
-	}
-	cmdRestoreOpts := strings.Join(cmds, "\n")
-	p.runRuleCmd(cmdRestoreOpts)
-	if p.tproxyMode == "tproxy" {
-		cmd0 := `
+	if p.tproxyMode == "tproxy" || p.tproxyMode == "tproxylocal" {
+		cmdClear3 := `
 iptables -t mangle -F DIVERT 2>/dev/null || true
 iptables -t mangle -X DIVERT 2>/dev/null || true
 
 ip rule del fwmark 1 lookup 100 2>/dev/null || true
 ip route flush table 100 2>/dev/null || true
 `
-		p.runRuleCmd(cmd0)
+		p.runRuleCmd(cmdClear3)
+		if p.tproxyMode == "tproxylocal" {
+			cmdClear4 := `
+ip rule del fwmark 2 lookup 101 2>/dev/null || true
+ip route flush table 101 2>/dev/null || true
+`
+			p.runRuleCmd(cmdClear4)
+		}
 		if p.ipv6enabled {
-			cmd1 := `
+			cmdClear5 := `
 ip6tables -t mangle -F DIVERT 2>/dev/null || true
 ip6tables -t mangle -X DIVERT 2>/dev/null || true
 
 ip -6 rule del fwmark 1 lookup 100 2>/dev/null || true
 ip -6 route flush table 100 2>/dev/null || true
 `
-			p.runRuleCmd(cmd1)
+			p.runRuleCmd(cmdClear5)
+			if p.tproxyMode == "tproxylocal" {
+				cmdClear6 := `
+ip -6 rule del fwmark 2 lookup 101 2>/dev/null || true
+ip -6 route flush table 101 2>/dev/null || true
+`
+				p.runRuleCmd(cmdClear6)
+			}
 		}
 	}
+
+	cmds := make([]string, 0, len(opts))
+	for _, cmd := range slices.Sorted(maps.Keys(opts)) {
+		cmds = append(cmds, fmt.Sprintf("sysctl -w %s=%q", cmd, opts[cmd]))
+	}
+	cmdRestoreOpts := strings.Join(cmds, "\n")
+	p.runRuleCmd(cmdRestoreOpts)
 	return nil
 }

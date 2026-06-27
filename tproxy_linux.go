@@ -45,7 +45,7 @@ func newTproxyServer(p *Proxy) (*tproxyServer, error) {
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
 				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
-				if ts.p.tproxyMode == "tproxy" || ts.p.tproxyMode == "tproxylocal" {
+				if ts.p.tproxyMode == "tproxy" || ts.p.tproxyMode == "tlocal" {
 					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
 					if ts.p.ipv6enabled {
 						operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
@@ -174,7 +174,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed to get destination address", ts.p.tproxyMode)
 			return
 		}
-	case "tproxy", "tproxylocal":
+	case "tproxy", "tlocal":
 		dst = srcConn.LocalAddr().String()
 	default:
 		ts.p.logger.Fatal().Msg("Unknown tproxyMode")
@@ -457,7 +457,7 @@ ip6tables -t nat -A OUTPUT -p tcp -j GOHPTS
 `, tproxyPort)
 			ts.p.runRuleCmd(cmdNat1)
 		}
-	case "tproxylocal":
+	case "tlocal":
 		cmdClear0 := `
 iptables -t mangle -D OUTPUT -p tcp -j GOHPTS_OUT 2>/dev/null || true
 iptables -t mangle -F GOHPTS_OUT 2>/dev/null || true
@@ -742,7 +742,7 @@ ip6tables -t nat -X GOHPTS 2>/dev/null || true
 `
 			ts.p.runRuleCmd(cmd1)
 		}
-	case "tproxylocal":
+	case "tlocal":
 		cmd0 := `
 iptables -t mangle -D OUTPUT -p tcp -j GOHPTS_OUT 2>/dev/null || true
 iptables -t mangle -F GOHPTS_OUT 2>/dev/null || true

@@ -1225,7 +1225,7 @@ func (tsu *tproxyServerUDP) ApplyRedirectRules(opts map[string]string) {
 	case "redirect":
 		tsu.p.logger.Fatal().Msgf("Unsupported mode: %s", tsu.p.tproxyMode)
 
-	case "tproxylocal":
+	case "tlocal":
 		cmdClear0 := `
 iptables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
 iptables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
@@ -1466,7 +1466,7 @@ ip6tables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
 
 func (tsu *tproxyServerUDP) ClearRedirectRules() error {
 	switch tsu.p.tproxyMode {
-	case "tproxylocal":
+	case "tlocal":
 		cmd0 := `
 iptables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
 iptables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true

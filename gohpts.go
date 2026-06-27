@@ -64,7 +64,7 @@ const (
 
 var (
 	supportedChainTypes  = []string{"strict", "dynamic", "random", "round_robin"}
-	SupportedTProxyModes = []string{"redirect", "tproxy", "tproxylocal"}
+	SupportedTProxyModes = []string{"redirect", "tproxy", "tlocal"}
 	SupportedTProxyOS    = []string{"linux", "android"}
 	errInvalidWrite      = errors.New("invalid write result")
 )
@@ -237,7 +237,7 @@ type Proxy struct {
 	tproxyAddr string
 	// address of udp transparent proxy
 	tproxyAddrUDP string
-	// tproxy, tproxylocal or redirect
+	// tproxy, tlocal or redirect
 	tproxyMode string
 	// number of tcp transparent proxy servers
 	tproxyWorkers uint
@@ -473,8 +473,8 @@ func New(conf *Config) (*Proxy, error) {
 			p.tproxyAddr = tproxyAddr.String()
 		}
 		if conf.TProxyUDP != "" {
-			if p.tproxyMode != "tproxy" && p.tproxyMode != "tproxylocal" {
-				return nil, fmt.Errorf("[%s] transparent UDP server only supports tproxy or tproxylocal mode", p.tproxyMode)
+			if p.tproxyMode != "tproxy" && p.tproxyMode != "tlocal" {
+				return nil, fmt.Errorf("[%s] transparent UDP server only supports tproxy or tlocal mode", p.tproxyMode)
 			}
 			if p.socks4enabled {
 				return nil, fmt.Errorf("[%s] transparent UDP server requires socks5 enabled", p.tproxyMode)
@@ -501,7 +501,7 @@ func New(conf *Config) (*Proxy, error) {
 		if p.mark > 0xFFFFFFFF {
 			return nil, fmt.Errorf("option SO_MARK is out of range")
 		}
-		if p.mark == 0 && (p.tproxyMode == "tproxy" || p.tproxyMode == "tproxylocal") {
+		if p.mark == 0 && (p.tproxyMode == "tproxy" || p.tproxyMode == "tlocal") {
 			p.mark = 100
 		}
 
@@ -1142,7 +1142,7 @@ func (p *Proxy) Run() error {
 		if p.tproxyWorkers != 1 {
 			suffix = "s"
 		}
-		if p.tproxyMode == "tproxy" || p.tproxyMode == "tproxylocal" {
+		if p.tproxyMode == "tproxy" || p.tproxyMode == "tlocal" {
 			p.logger.Info().Msgf("TPROXY: %s (%d instance%s)", p.tproxyAddr, p.tproxyWorkers, suffix)
 		} else {
 			p.logger.Info().Msgf("REDIRECT: %s (%d instance%s)", p.tproxyAddr, p.tproxyWorkers, suffix)
@@ -2631,7 +2631,7 @@ func (p *Proxy) applyCommonRedirectRules(opts map[string]string) {
 	if p.debug {
 		setex = "set -ex"
 	}
-	if p.tproxyMode == "tproxy" || p.tproxyMode == "tproxylocal" {
+	if p.tproxyMode == "tproxy" || p.tproxyMode == "tlocal" {
 		cmdClear0 := `
 iptables -t mangle -F DIVERT 2>/dev/null || true
 iptables -t mangle -X DIVERT 2>/dev/null || true
@@ -2640,7 +2640,7 @@ ip rule del fwmark 1 lookup 100 2>/dev/null || true
 ip route flush table 100 2>/dev/null || true
 `
 		p.runRuleCmd(cmdClear0)
-		if p.tproxyMode == "tproxylocal" {
+		if p.tproxyMode == "tlocal" {
 			cmdClear1 := `
 ip rule del fwmark 2 lookup 101 2>/dev/null || true
 ip route flush table 101 2>/dev/null || true
@@ -2656,7 +2656,7 @@ ip -6 rule del fwmark 1 lookup 100 2>/dev/null || true
 ip -6 route flush table 100 2>/dev/null || true
 `
 			p.runRuleCmd(cmdClear2)
-			if p.tproxyMode == "tproxylocal" {
+			if p.tproxyMode == "tlocal" {
 				cmdClear3 := `
 ip -6 rule del fwmark 2 lookup 101 2>/dev/null || true
 ip -6 route flush table 101 2>/dev/null || true
@@ -2670,7 +2670,7 @@ ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
 `
 		p.runRuleCmd(cmdInit0)
 
-		if p.tproxyMode == "tproxylocal" {
+		if p.tproxyMode == "tlocal" {
 			cmdInit1 := `
 ip rule add fwmark 2 lookup 101 2>/dev/null || true
 ip route add local 0.0.0.0/0 dev lo table 101 2>/dev/null || true
@@ -2683,7 +2683,7 @@ ip -6 rule add fwmark 1 lookup 100 2>/dev/null || true
 ip -6 route add local ::/0 dev lo table 100 2>/dev/null || true
 `
 			p.runRuleCmd(cmdInit2)
-			if p.tproxyMode == "tproxylocal" {
+			if p.tproxyMode == "tlocal" {
 				cmdInit3 := `
 ip -6 rule add fwmark 2 lookup 101 2>/dev/null || true
 ip -6 route add local ::/0 dev lo table 101 2>/dev/null || true
@@ -2797,7 +2797,7 @@ ip6tables -t filter -D OUTPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
 			p.runRuleCmd(cmdClear2)
 		}
 	}
-	if p.tproxyMode == "tproxy" || p.tproxyMode == "tproxylocal" {
+	if p.tproxyMode == "tproxy" || p.tproxyMode == "tlocal" {
 		cmdClear3 := `
 iptables -t mangle -F DIVERT 2>/dev/null || true
 iptables -t mangle -X DIVERT 2>/dev/null || true
@@ -2806,7 +2806,7 @@ ip rule del fwmark 1 lookup 100 2>/dev/null || true
 ip route flush table 100 2>/dev/null || true
 `
 		p.runRuleCmd(cmdClear3)
-		if p.tproxyMode == "tproxylocal" {
+		if p.tproxyMode == "tlocal" {
 			cmdClear4 := `
 ip rule del fwmark 2 lookup 101 2>/dev/null || true
 ip route flush table 101 2>/dev/null || true
@@ -2822,7 +2822,7 @@ ip -6 rule del fwmark 1 lookup 100 2>/dev/null || true
 ip -6 route flush table 100 2>/dev/null || true
 `
 			p.runRuleCmd(cmdClear5)
-			if p.tproxyMode == "tproxylocal" {
+			if p.tproxyMode == "tlocal" {
 				cmdClear6 := `
 ip -6 rule del fwmark 2 lookup 101 2>/dev/null || true
 ip -6 route flush table 101 2>/dev/null || true

@@ -59,6 +59,8 @@ github.com/wzshiming/socks4 v0.4.0 h1:QBqTq8rGPi5QL26CBKyfIhSzFYAuaXpQsqza+m26EN
 github.com/wzshiming/socks4 v0.4.0/go.mod h1:YEPfhjf/4JezwdTmgXZU+UX+A2KvD05quzhsUBVMNA0=
 github.com/wzshiming/socks5 v0.5.2 h1:LtoowVNwAmkIQSkP1r1Wg435xUmC+tfRxorNW30KtnM=
 github.com/wzshiming/socks5 v0.5.2/go.mod h1:BvCAqlzocQN5xwLjBZDBbvWlrx8sCYSSbHEOf2wZgT0=
+github.com/wzshiming/socks5 v0.7.0 h1:euJ+U48WrvVngi+opC8vAnpZ5sK12y1C2hPvb1f48Rg=
+github.com/wzshiming/socks5 v0.7.0/go.mod h1:BvCAqlzocQN5xwLjBZDBbvWlrx8sCYSSbHEOf2wZgT0=
 go.uber.org/mock v0.5.2 h1:LbtPTcP8A5k9WPXj54PPPbjcI4Y6lhyOZXn+VS7wNko=
 go.uber.org/mock v0.5.2/go.mod h1:wLlUxC2vVTPTaE3UD51E0BGOAElKrILxhVSDYQLld5o=
 golang.org/x/crypto v0.41.0 h1:WKYxWedPGCTVVl5+WHSSrOBT0O8lx32+zxmHxijgXp4=

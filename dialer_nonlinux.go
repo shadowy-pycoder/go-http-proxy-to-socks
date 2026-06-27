@@ -12,9 +12,19 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
+func getBaseDialer(timeout time.Duration, mark uint, nameserver *net.UDPAddr) *net.Dialer {
 	_ = mark
-	return &net.Dialer{Timeout: timeout}
+	resolver := net.DefaultResolver
+	if nameserver != nil {
+		dnsDialer := &net.Dialer{Timeout: timeout}
+		resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return dnsDialer.DialContext(ctx, network, nameserver.String())
+			},
+		}
+	}
+	return &net.Dialer{Timeout: timeout, Resolver: resolver}
 }
 
 var _ contextDialer = &nsDialer{}

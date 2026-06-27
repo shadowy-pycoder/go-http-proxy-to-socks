@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
+func getBaseDialer(timeout time.Duration, mark uint, nameserver *net.UDPAddr) *net.Dialer {
 	var dialer *net.Dialer
 	if mark > 0 {
 		dialer = &net.Dialer{
@@ -30,6 +30,17 @@ func getBaseDialer(timeout time.Duration, mark uint) *net.Dialer {
 	} else {
 		dialer = &net.Dialer{Timeout: timeout}
 	}
+	resolver := net.DefaultResolver
+	if nameserver != nil {
+		dnsDialer := &net.Dialer{Timeout: timeout}
+		resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return dnsDialer.DialContext(ctx, network, nameserver.String())
+			},
+		}
+	}
+	dialer.Resolver = resolver
 	return dialer
 }
 

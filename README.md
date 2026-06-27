@@ -210,6 +210,7 @@ OPTIONS:
   -socks4    Use SOCKS4/SOCKS4a as the upstream proxy protocol (default: SOCKS5)
   -nohttp    Disable HTTP proxy server
   -nosocks   Disable SOCKS upstream proxy
+  -dns       Use custom DNS server (Example: "8.8.8.8" or "2001:4860:4860::8888")
 
   Logs:
   -d         Show logs in DEBUG mode
@@ -325,6 +326,7 @@ disable_http: false # disable http proxy (default: false)
 disable_socks: false # disable upstream socks proxy (default: false)
 ipv6: false # this must be enabled for ndpspoof (default: false)
 socks4: false # use SOCKS4/SOCKS4a protocol (tcp only protocol, no udp tproxy or http3 possible) (default: false)
+dns: 8.8.8.8 # custom DNS server (used in direct dialer, namespaces, spoofing)
 
 http_server:
   address: 127.0.0.1:8080

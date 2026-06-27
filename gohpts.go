@@ -189,6 +189,9 @@ type Proxy struct {
 	// credetials used in HTTP BasicAuth
 	user, pass string
 
+	// custom dns server
+	dns *net.UDPAddr
+
 	// allows running HTTP server over TLS (required for HTTP/2 and HTTP/3)
 	certFile, keyFile string
 
@@ -261,6 +264,7 @@ type Proxy struct {
 	gwDNS        *net.UDPAddr
 	gwDNS6       *net.UDPAddr
 	hostDNS6     *net.UDPAddr
+	afDNS        *net.UDPAddr
 
 	// dns filtering/spoofing
 	dnsFilterConf *DNSFilterLists
@@ -457,6 +461,18 @@ func New(conf *Config) (*Proxy, error) {
 		p.socksProto = "socks5"
 	}
 
+	// parse custom dns server
+	if conf.DNS != "" {
+		dnsIP := net.ParseIP(conf.DNS)
+		if dnsIP == nil {
+			return nil, fmt.Errorf("failed parsing dns server address %s", conf.DNS)
+		}
+		if dnsIP.To4() == nil && !p.ipv6enabled {
+			return nil, fmt.Errorf("enable IPv6 to use dns server address %s", dnsIP)
+		}
+		p.dns = &net.UDPAddr{IP: dnsIP, Port: 53}
+	}
+
 	// transparent proxy setup
 	if conf.TProxyMode != "" && (conf.TProxy != "" || conf.TProxyUDP != "") {
 		p.tproxyMode = conf.TProxyMode
@@ -647,43 +663,48 @@ func (p *Proxy) Run() error {
 	// configure base dialer
 	p.logger.Debug().Msg("Configuring base dialer...")
 	if p.nsEnabled {
-		p.logger.Debug().Msg("Configuring default interface for outbound namespace...")
-		var iface *net.Interface
-		if p.outNS.Equal(*p.inNS) {
-			iface = p.iface
-		} else {
-			if err = netns.Set(*p.outNS); err != nil {
-				return fmt.Errorf("failed setting namespace: %v", err)
-			}
-			iface, err = network.GetDefaultInterface()
-			if err != nil {
-				iface, err = network.GetDefaultInterfaceFromRoute()
+		var outNSDNS *net.UDPAddr
+		if p.dns == nil {
+			p.logger.Debug().Msg("Configuring default interface for outbound namespace...")
+			var iface *net.Interface
+			if p.outNS.Equal(*p.inNS) {
+				iface = p.iface
+			} else {
+				if err = netns.Set(*p.outNS); err != nil {
+					return fmt.Errorf("failed setting namespace: %v", err)
+				}
+				iface, err = network.GetDefaultInterface()
 				if err != nil {
-					iface, err = network.GetDefaultInterfaceFromRouteIPv6()
+					iface, err = network.GetDefaultInterfaceFromRoute()
 					if err != nil {
-						p.logger.Warn().Msg("failed getting default network interface for outbound namespace, trying detect from route")
-						iface, err = network.GetFirstAvailableInterfaceFromRoute()
+						iface, err = network.GetDefaultInterfaceFromRouteIPv6()
 						if err != nil {
-							return fmt.Errorf("failed getting default network interface for outbound namespace")
+							p.logger.Warn().Msg("failed getting default network interface for outbound namespace, trying detect from route")
+							iface, err = network.GetFirstAvailableInterfaceFromRoute()
+							if err != nil {
+								return fmt.Errorf("failed getting default network interface for outbound namespace")
+							}
 						}
 					}
 				}
+				if err = netns.Set(*p.inNS); err != nil {
+					return fmt.Errorf("failed setting namespace: %v", err)
+				}
 			}
-			if err = netns.Set(*p.inNS); err != nil {
-				return fmt.Errorf("failed setting namespace: %v", err)
+			p.logger.Debug().Msg("Configuring DNS IPv4 (netns)...")
+			p.outDNS = network.GetIPv4ResolverFromNetworkNamespace(p.outNSPathOrName)
+			p.logger.Debug().Msg("Configuring DNS IPv6 (netns)...")
+			p.outDNS6 = network.GetIPv6ResolverFromNetworkNamespace(iface, p.outNSPathOrName)
+			outNSDNS = p.outDNS
+			if p.ipv6enabled {
+				outNSDNS = p.outDNS6
 			}
-		}
-		p.logger.Debug().Msg("Configuring DNS IPv4 (netns)...")
-		p.outDNS = network.GetIPv4ResolverFromNetworkNamespace(p.outNSPathOrName)
-		p.logger.Debug().Msg("Configuring DNS IPv6 (netns)...")
-		p.outDNS6 = network.GetIPv6ResolverFromNetworkNamespace(iface, p.outNSPathOrName)
-		outNSDNS := p.outDNS
-		if p.ipv6enabled {
-			outNSDNS = p.outDNS6
+		} else {
+			outNSDNS = p.dns
 		}
 		p.baseDialer = getNSDialer(p.outNS, timeout, p.mark, outNSDNS)
 	} else {
-		p.baseDialer = getBaseDialer(timeout, p.mark)
+		p.baseDialer = getBaseDialer(timeout, p.mark, p.dns)
 	}
 
 	// pprof address configuration
@@ -852,7 +873,16 @@ func (p *Proxy) Run() error {
 		}
 		p.logger.Debug().Msg("Configuring DNS IPv4 (gateway)...")
 		gw := p.arpspoofer.GatewayIP()
-		p.gwDNS = &net.UDPAddr{IP: net.ParseIP(gw.String()), Port: 53}
+		if gwIP := net.ParseIP(gw.String()); gwIP != nil {
+			p.gwDNS = &net.UDPAddr{IP: gwIP, Port: 53}
+		}
+		if p.dns != nil {
+			p.afDNS = p.dns
+		} else if p.nsEnabled {
+			p.afDNS = p.outDNS
+		} else {
+			p.afDNS = p.gwDNS
+		}
 	}
 
 	// configure ndp spoofing
@@ -903,7 +933,9 @@ func (p *Proxy) Run() error {
 			return fmt.Errorf("failed creating ndp spoofer: %v", err)
 		}
 		p.logger.Debug().Msg("Configuring DNS IPv6 (gateway)...")
-		if p.nsEnabled {
+		if p.dns != nil {
+			p.gwDNS6 = p.dns
+		} else if p.nsEnabled {
 			p.gwDNS6 = p.outDNS6
 		} else {
 			p.gwDNS6 = network.GetIPv6Resolver(p.iface)
@@ -1155,6 +1187,9 @@ func (p *Proxy) Run() error {
 			suffix = "s"
 		}
 		p.logger.Info().Msgf("TPROXY (udp): %s (%d instance%s)", p.tproxyAddrUDP, p.tproxyUDPWorkers, suffix)
+	}
+	if p.dns != nil {
+		p.logger.Info().Msgf("DNS: %s", p.dns)
 	}
 	if p.outDNS != nil {
 		p.logger.Info().Msgf("DNS IPv4 (netns): %s", p.outDNS)

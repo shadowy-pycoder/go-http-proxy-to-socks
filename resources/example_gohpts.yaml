@@ -4,6 +4,7 @@ disable_http: false # disable http proxy (default: false)
 disable_socks: false # disable upstream socks proxy (default: false)
 ipv6: false # this must be enabled for ndpspoof (default: false)
 socks4: false # use SOCKS4/SOCKS4a protocol (tcp only protocol, no udp tproxy or http3 possible) (default: false)
+dns: 8.8.8.8 # custom DNS server (used in direct dialer, namespaces, spoofing)
 
 http_server:
   address: 127.0.0.1:8080

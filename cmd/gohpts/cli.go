@@ -44,6 +44,7 @@ OPTIONS:
   -socks4    Use SOCKS4/SOCKS4a as the upstream proxy protocol (default: SOCKS5)
   -nohttp    Disable HTTP proxy server
   -nosocks   Disable SOCKS upstream proxy
+  -dns       Use custom DNS server (Example: "8.8.8.8" or "2001:4860:4860::8888")
 
   Logs:
   -d         Show logs in DEBUG mode
@@ -97,6 +98,7 @@ func root(args []string) error {
 	flags.BoolVar(&conf.SOCKS4Enabled, "socks4", false, "")
 	flags.BoolVar(&conf.NoHTTP, "nohttp", false, "")
 	flags.BoolVar(&conf.NoSOCKS, "nosocks", false, "")
+	flags.StringVar(&conf.DNS, "dns", "", "")
 	flags.StringVar(&conf.Interface, "i", "", "")
 	flags.BoolFunc("I", "", func(flagValue string) error {
 		if err := network.DisplayInterfaces(false); err != nil {
@@ -227,7 +229,7 @@ func root(args []string) error {
 			return fmt.Errorf("-u and -U flags do not work in daemon mode")
 		}
 	}
-	if seen["u"] && !seen["socks4"] {
+	if seen["u"] && !seen["socks4"] && !seen["nosocks"] {
 		fmt.Print("SOCKS5 Password: ")
 		bytepw, err := term.ReadPassword(int(os.Stdin.Fd()))
 		if err != nil {
@@ -236,7 +238,7 @@ func root(args []string) error {
 		passSocks = string(bytepw)
 		fmt.Print("\033[2K\r")
 	}
-	if seen["U"] {
+	if seen["U"] && !seen["nohttp"] {
 		fmt.Print("HTTP Password: ")
 		bytepw, err := term.ReadPassword(int(os.Stdin.Fd()))
 		if err != nil {

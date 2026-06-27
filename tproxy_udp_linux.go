@@ -195,7 +195,7 @@ func newTproxyServerUDP(p *Proxy) (*tproxyServerUDP, error) {
 	}
 	tsu.conn = pconn.(*net.UDPConn)
 	tsu.clients = &udpConnections{quit: tsu.quit, clients: make(map[string]*udpRelayConn)}
-	if tsu.p.arpspoofer != nil && tsu.p.gwDNS != nil {
+	if tsu.p.arpspoofer != nil && tsu.p.gwDNS != nil && tsu.p.afDNS != nil {
 		lc = net.ListenConfig{
 			Control: func(network, address string, conn syscall.RawConn) error {
 				var operr error
@@ -254,11 +254,7 @@ func (tsu *tproxyServerUDP) Serve() {
 	go tsu.clients.Cleanup()
 	if tsu.p.arpspoofer != nil {
 		go func() {
-			dnsAddr := tsu.p.gwDNS
-			if tsu.p.nsEnabled {
-				dnsAddr = tsu.p.outDNS
-			}
-			tsu.serveDNS(tsu.gwConn, dnsAddr)
+			tsu.serveDNS(tsu.gwConn, tsu.p.afDNS)
 			tsu.wg.Done()
 		}()
 	}

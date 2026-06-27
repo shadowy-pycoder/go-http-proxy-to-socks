@@ -277,6 +277,14 @@ func TestNewProxyErr(t *testing.T) {
 			},
 			errMsg: "chain type `test` is not supported",
 		},
+		{
+			name: "dns server IPv6 with IPv6 disabled",
+			config: &Config{
+				IPv6Enabled: false,
+				DNS:         "2001:4860:4860::8844",
+			},
+			errMsg: "enable IPv6 to use dns server address 2001:4860:4860::8844",
+		},
 	}
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {

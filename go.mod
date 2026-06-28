@@ -9,7 +9,7 @@ require (
 	github.com/rs/zerolog v1.34.0
 	github.com/shadowy-pycoder/arpspoof v0.0.8-0.20260616110519-9dd88ce14d01
 	github.com/shadowy-pycoder/colors v0.0.2
-	github.com/shadowy-pycoder/mshark v0.0.32-0.20260617053649-18360656dd2f
+	github.com/shadowy-pycoder/mshark v0.0.32-0.20260628051220-6a6da19eb879
 	github.com/shadowy-pycoder/ndpspoof v0.0.11-0.20260616110508-2ac2609dc5a1
 	github.com/stretchr/testify v1.11.1
 	github.com/vishvananda/netns v0.0.5

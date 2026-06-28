@@ -17,30 +17,37 @@ import (
 )
 
 func getBaseDialer(timeout time.Duration, mark uint, nameserver *net.UDPAddr) *net.Dialer {
-	var dialer *net.Dialer
+	dialer := &net.Dialer{Timeout: timeout}
+	control := func(_, _ string, c syscall.RawConn) error {
+		return c.Control(func(fd uintptr) {
+			unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
+		})
+	}
 	if mark > 0 {
-		dialer = &net.Dialer{
-			Timeout: timeout,
-			Control: func(_, _ string, c syscall.RawConn) error {
-				return c.Control(func(fd uintptr) {
-					unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
-				})
+		dialer.Control = control
+	}
+	dnsDialer := &net.Dialer{Timeout: timeout}
+	if mark > 0 {
+		dnsDialer.Control = control
+		dialer.Resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				if nameserver != nil {
+					address = nameserver.String()
+				}
+				return dnsDialer.DialContext(ctx, network, address)
 			},
 		}
-	} else {
-		dialer = &net.Dialer{Timeout: timeout}
-	}
-	resolver := net.DefaultResolver
-	if nameserver != nil {
-		dnsDialer := &net.Dialer{Timeout: timeout}
-		resolver = &net.Resolver{
+	} else if nameserver != nil {
+		dialer.Resolver = &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 				return dnsDialer.DialContext(ctx, network, nameserver.String())
 			},
 		}
+	} else {
+		dialer.Resolver = net.DefaultResolver
 	}
-	dialer.Resolver = resolver
 	return dialer
 }
 
@@ -54,22 +61,19 @@ type nsDialer struct {
 }
 
 func getNSDialer(ns *netns.NsHandle, timeout time.Duration, mark uint, nameserver *net.UDPAddr) *nsDialer {
-	var dialer *net.Dialer
+	dialer := &net.Dialer{Timeout: timeout, FallbackDelay: -1}
+	control := func(_, _ string, c syscall.RawConn) error {
+		return c.Control(func(fd uintptr) {
+			unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
+		})
+	}
 	if mark > 0 {
-		dialer = &net.Dialer{
-			Timeout:       timeout,
-			FallbackDelay: -1,
-			Control: func(_, _ string, c syscall.RawConn) error {
-				return c.Control(func(fd uintptr) {
-					unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
-				})
-			},
-		}
-	} else {
-		dialer = &net.Dialer{Timeout: timeout, FallbackDelay: -1}
+		dialer.Control = control
 	}
 	dnsDialer := &net.Dialer{Timeout: timeout}
-
+	if mark > 0 {
+		dnsDialer.Control = control
+	}
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {

@@ -1238,12 +1238,28 @@ By default `GoHPTS` proxy is running within single network namespace but this ca
 ```shell
 sudo mkdir -p /etc/netns/ns1
 sudo tee /etc/netns/ns1/resolv.conf << EOF
-8.8.8.8
-2001:4860:4860:0:0:0:0:8888
+nameserver 8.8.8.8
+nameserver 2001:4860:4860:0:0:0:0:8888
 EOF
 ```
 
 If no config is found, Google DNS servers will be used to resolve domain names.
+
+If your system have [systemd-resolved.service (8)](https://man7.org/linux/man-pages/man8/systemd-resolved.service.8.html) enabled you may want to disable it temporarily when doing queries via custom network namespaces:
+
+```shell
+sudo ip netns exec ns1 unshare --mount bash -c '
+    mount --bind /dev/null /run/systemd/resolve/io.systemd.Resolve
+    curl -Nvk https://example.com'
+```
+
+Or make it persistent for specific shell instance:
+
+```shell
+sudo ip netns exec ns1 unshare --mount bash -c '
+    mount --bind /dev/null /run/systemd/resolve/io.systemd.Resolve
+    exec bash --login
+```
 
 ### Playground setup
 

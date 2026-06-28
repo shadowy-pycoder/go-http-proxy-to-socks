@@ -100,6 +100,7 @@ var (
 )
 
 func newHTTPClient(dialer contextDialer) *httpClient {
+	// TODO: client fine tuning
 	c := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -1111,12 +1112,14 @@ func (p *Proxy) Run() error {
 	signal.Notify(quit, os.Interrupt)
 
 	if p.ipv6enabled {
-		p.logger.Info().Msg("IPv6 enabled")
+		p.logger.Info().Msg("IPv6: enabled")
 	} else {
-		p.logger.Info().Msg("IPv6 disabled")
+		p.logger.Info().Msg("IPv6: disabled")
 	}
 	if p.socksEnabled {
-		p.logger.Info().Msgf("SOCKS version: %s", p.socksProto)
+		p.logger.Info().Msgf("SOCKS: %s", p.socksProto)
+	} else {
+		p.logger.Info().Msg("SOCKS: disabled")
 	}
 
 	if p.proxychain.Enabled {

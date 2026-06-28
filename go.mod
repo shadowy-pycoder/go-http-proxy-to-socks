@@ -15,7 +15,7 @@ require (
 	github.com/vishvananda/netns v0.0.5
 	github.com/wzshiming/socks4 v0.4.0
 	github.com/wzshiming/socks5 v0.7.0
-	golang.org/x/sys v0.35.0
+	golang.org/x/sys v0.46.0
 	golang.org/x/term v0.34.0
 )
 

@@ -1186,25 +1186,26 @@ func (tsu *tproxyServerUDP) getOriginalDst(oob []byte) (*net.UDPAddr, error) {
 	}
 	for _, cmsg := range cmsgs {
 		if cmsg.Header.Level == unix.SOL_IP && cmsg.Header.Type == unix.IP_RECVORIGDSTADDR {
-			originalDst := &syscall.RawSockaddrInet4{}
+			originalDst := &unix.RawSockaddrInet4{}
 			copy((*[unsafe.Sizeof(*originalDst)]byte)(unsafe.Pointer(originalDst))[:], cmsg.Data)
 			dstHost := netip.AddrFrom4(originalDst.Addr)
 			dstPort := uint16(originalDst.Port<<8) | originalDst.Port>>8
-			dstAddr, err := net.ResolveUDPAddr(tsu.p.udp /* NOTE: does not matter */, netip.AddrPortFrom(dstHost, dstPort).String())
-			if err != nil {
-				return nil, err
-			}
+			dstAddr := &net.UDPAddr{IP: net.ParseIP(dstHost.String()), Port: int(dstPort)}
 			return dstAddr, nil
 		}
 		if cmsg.Header.Level == unix.SOL_IPV6 && cmsg.Header.Type == unix.IPV6_RECVORIGDSTADDR {
-			originalDst := &syscall.RawSockaddrInet6{}
+			originalDst := &unix.RawSockaddrInet6{}
 			copy((*[unsafe.Sizeof(*originalDst)]byte)(unsafe.Pointer(originalDst))[:], cmsg.Data)
 			dstHost := netip.AddrFrom16(originalDst.Addr)
 			dstPort := uint16(originalDst.Port<<8) | originalDst.Port>>8
-			dstAddr, err := net.ResolveUDPAddr(tsu.p.udp, netip.AddrPortFrom(dstHost, dstPort).String())
-			if err != nil {
-				return nil, err
+			var zone string
+			if originalDst.Scope_id != 0 {
+				iface, err := net.InterfaceByIndex(int(originalDst.Scope_id))
+				if err == nil {
+					zone = iface.Name
+				}
 			}
+			dstAddr := &net.UDPAddr{IP: net.ParseIP(dstHost.String()), Port: int(dstPort), Zone: zone}
 			return dstAddr, nil
 		}
 	}

@@ -145,11 +145,11 @@ func (ts *tproxyServer) getOriginalDst(rawConn syscall.RawConn, addr *net.TCPAdd
 		}
 	})
 	if err != nil {
-		ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed invoking control connection", ts.p.tproxyMode)
+		ts.p.logger.Error().Err(err).Msgf("[%s %s] Failed invoking control connection", ts.p.tcp, ts.p.tproxyMode)
 		return "", err
 	}
 	if !dstHost.IsValid() || dstPort == 0 {
-		return "", fmt.Errorf("[tcp %s] getsockopt SO_ORIGINAL_DST failed", ts.p.tproxyMode)
+		return "", fmt.Errorf("[%s %s] getsockopt SO_ORIGINAL_DST failed", ts.p.tcp, ts.p.tproxyMode)
 	}
 	return netip.AddrPortFrom(dstHost, dstPort).String(), nil
 }
@@ -165,13 +165,13 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	case "redirect":
 		rawConn, err := srcConn.(*net.TCPConn).SyscallConn()
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed to get raw connection", ts.p.tproxyMode)
+			ts.p.logger.Error().Err(err).Msgf("[%s %s] Failed to get raw connection", ts.p.tcp, ts.p.tproxyMode)
 			return
 		}
 		addr := srcConn.RemoteAddr().(*net.TCPAddr)
 		dst, err = ts.getOriginalDst(rawConn, addr)
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed to get destination address", ts.p.tproxyMode)
+			ts.p.logger.Error().Err(err).Msgf("[%s %s] Failed to get destination address", ts.p.tcp, ts.p.tproxyMode)
 			return
 		}
 	case "tproxy", "tlocal":
@@ -184,20 +184,20 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 		defer cancel()
 		dstConn, err = ts.p.baseDialer.DialContext(ctx, ts.p.tcp, dst)
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed connecting to %s", ts.p.tproxyMode, dst)
+			ts.p.logger.Error().Err(err).Msgf("[%s %s] Failed connecting to %s", ts.p.tcp, ts.p.tproxyMode, dst)
 			return
 		}
 	} else {
 		sockDialer, err := ts.p.getSockDialer()
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed getting %s client", ts.p.tproxyMode, ts.p.socksProto)
+			ts.p.logger.Error().Err(err).Msgf("[%s %s] Failed getting %s client", ts.p.tcp, ts.p.tproxyMode, ts.p.socksProto)
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		dstConn, err = sockDialer.DialContext(ctx, ts.p.tcp, dst)
 		if err != nil {
-			ts.p.logger.Error().Err(err).Msgf("[tcp %s] Failed connecting to %s", ts.p.tproxyMode, dst)
+			ts.p.logger.Error().Err(err).Msgf("[%s %s] Failed connecting to %s", ts.p.tcp, ts.p.tproxyMode, dst)
 			return
 		}
 	}
@@ -210,7 +210,7 @@ func (ts *tproxyServer) handleConnection(srcConn net.Conn) {
 	dstConnStr := fmt.Sprintf("%s%s%s%s%s", dstConn.LocalAddr().String(), arrow, dstConn.RemoteAddr().String(), arrow, dst)
 	srcConnStr := fmt.Sprintf("%s%s%s", srcConn.RemoteAddr().String(), arrow, srcConn.LocalAddr().String())
 
-	ts.p.logger.Debug().Msgf("[tcp %s] src: %s - dst: %s", ts.p.tproxyMode, srcConnStr, dstConnStr)
+	ts.p.logger.Debug().Msgf("[%s %s] src: %s - dst: %s", ts.p.tcp, ts.p.tproxyMode, srcConnStr, dstConnStr)
 
 	reqChan := make(chan layers.Layer)
 	respChan := make(chan layers.Layer)
@@ -267,7 +267,7 @@ func (ts *tproxyServer) Shutdown() {
 	case <-done:
 		return
 	case <-time.After(shutdownTimeout):
-		ts.p.logger.Error().Msgf("[tcp %s] Server timed out waiting for connections to finish", ts.p.tproxyMode)
+		ts.p.logger.Error().Msgf("[%s %s] Server timed out waiting for connections to finish", ts.p.tcp, ts.p.tproxyMode)
 		return
 	}
 }

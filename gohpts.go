@@ -1264,25 +1264,25 @@ func (p *Proxy) Run() error {
 				})
 			}
 			if tproxyEnabled {
-				p.logger.Info().Msgf("[tcp %s] Server is shutting down...", p.tproxyMode)
+				p.logger.Info().Msgf("[%s %s] Server is shutting down...", p.tcp, p.tproxyMode)
 				wg.Add(int(p.tproxyWorkers))
 				for i, tproxyServer := range tproxyServers {
 					go func() {
-						p.logger.Info().Msgf("[tcp %s] Server %d is shutting down...", p.tproxyMode, i)
+						p.logger.Info().Msgf("[%s %s] Server %d is shutting down...", p.tcp, p.tproxyMode, i)
 						tproxyServer.Shutdown()
-						p.logger.Info().Msgf("[tcp %s] Server %d gracefully shutdown", p.tproxyMode, i)
+						p.logger.Info().Msgf("[%s %s] Server %d gracefully shutdown", p.tcp, p.tproxyMode, i)
 						wg.Done()
 					}()
 				}
 			}
 			if tproxyUDPEnabled {
-				p.logger.Info().Msgf("[udp %s] Server is shutting down...", p.tproxyMode)
+				p.logger.Info().Msgf("[%s %s] Server is shutting down...", p.udp, p.tproxyMode)
 				wg.Add(int(p.tproxyUDPWorkers))
 				for i, tproxyServerUDP := range tproxyUDPServers {
 					go func() {
-						p.logger.Info().Msgf("[udp %s] Server %d is shutting down...", p.tproxyMode, i)
+						p.logger.Info().Msgf("[%s %s] Server %d is shutting down...", p.udp, p.tproxyMode, i)
 						tproxyServerUDP.Shutdown()
-						p.logger.Info().Msgf("[udp %s] Server %d gracefully shutdown", p.tproxyMode, i)
+						p.logger.Info().Msgf("[%s %s] Server %d gracefully shutdown", p.udp, p.tproxyMode, i)
 						wg.Done()
 					}()
 				}
@@ -1425,9 +1425,9 @@ func (p *Proxy) Run() error {
 				wg.Add(int(p.tproxyWorkers))
 				for i, tproxyServer := range tproxyServers {
 					go func() {
-						p.logger.Info().Msgf("[tcp %s] Server %d is shutting down...", p.tproxyMode, i)
+						p.logger.Info().Msgf("[%s %s] Server %d is shutting down...", p.tcp, p.tproxyMode, i)
 						tproxyServer.Shutdown()
-						p.logger.Info().Msgf("[tcp %s] Server %d gracefully shutdown", p.tproxyMode, i)
+						p.logger.Info().Msgf("[%s %s] Server %d gracefully shutdown", p.tcp, p.tproxyMode, i)
 						wg.Done()
 					}()
 				}
@@ -1436,9 +1436,9 @@ func (p *Proxy) Run() error {
 				wg.Add(int(p.tproxyUDPWorkers))
 				for i, tproxyServerUDP := range tproxyUDPServers {
 					go func() {
-						p.logger.Info().Msgf("[udp %s] Server %d is shutting down...", p.tproxyMode, i)
+						p.logger.Info().Msgf("[%s %s] Server %d is shutting down...", p.udp, p.tproxyMode, i)
 						tproxyServerUDP.Shutdown()
-						p.logger.Info().Msgf("[udp %s] Server %d gracefully shutdown", p.tproxyMode, i)
+						p.logger.Info().Msgf("[%s %s] Server %d gracefully shutdown", p.udp, p.tproxyMode, i)
 						wg.Done()
 					}()
 				}
@@ -1918,27 +1918,27 @@ func (p *Proxy) printProxyChain(pc []ProxyEntry) string {
 		if p.tproxyAddr != "" {
 			sb.WriteString(" | ")
 			sb.WriteString(p.tproxyAddr)
-			fmt.Fprintf(&sb, " (tcp/%s)", p.tproxyMode)
+			fmt.Fprintf(&sb, " (%s/%s)", p.tcp, p.tproxyMode)
 		}
 		if p.tproxyAddrUDP != "" {
 			sb.WriteString(" | ")
 			sb.WriteString(p.tproxyAddrUDP)
-			fmt.Fprintf(&sb, " (udp/%s)", p.tproxyMode)
+			fmt.Fprintf(&sb, " (%s/%s)", p.udp, p.tproxyMode)
 		}
 		sb.WriteString(arrow)
 	} else if p.tproxyAddr != "" || p.tproxyAddrUDP != "" {
 		if p.tproxyAddr != "" && p.tproxyAddrUDP != "" {
 			sb.WriteString(p.tproxyAddr)
-			fmt.Fprintf(&sb, " (tcp/%s)", p.tproxyMode)
+			fmt.Fprintf(&sb, " (%s/%s)", p.tcp, p.tproxyMode)
 			sb.WriteString(" | ")
 			sb.WriteString(p.tproxyAddrUDP)
-			fmt.Fprintf(&sb, " (udp/%s)", p.tproxyMode)
+			fmt.Fprintf(&sb, " (%s/%s)", p.udp, p.tproxyMode)
 		} else if p.tproxyAddr != "" {
 			sb.WriteString(p.tproxyAddr)
-			fmt.Fprintf(&sb, " (tcp/%s)", p.tproxyMode)
+			fmt.Fprintf(&sb, " (%s/%s)", p.tcp, p.tproxyMode)
 		} else {
 			sb.WriteString(p.tproxyAddrUDP)
-			fmt.Fprintf(&sb, " (udp/%s)", p.tproxyMode)
+			fmt.Fprintf(&sb, " (%s/%s)", p.udp, p.tproxyMode)
 		}
 		sb.WriteString(arrow)
 	}

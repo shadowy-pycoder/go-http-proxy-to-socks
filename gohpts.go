@@ -45,7 +45,9 @@ import (
 const (
 	App                      string        = "gohpts"
 	addrSOCKS                string        = "127.0.0.1:1080"
+	addr6SOCKS               string        = "[::1]:1080"
 	addrHTTP                 string        = "127.0.0.1:8080"
+	addr6HTTP                string        = "[::1]:8080"
 	readTimeout              time.Duration = 30 * time.Second
 	writeTimeout             time.Duration = 30 * time.Second
 	timeout                  time.Duration = 10 * time.Second
@@ -233,9 +235,12 @@ type Proxy struct {
 	prefix    *netip.Prefix
 	prefix6   *netip.Prefix
 
-	// network types ("tcp", "udp" when IPv6 is enabled, "tcp4" and "udp4" otherwise)
-	tcp, udp    string
-	ipv6enabled bool
+	// network types ("ip", "tcp", "udp" when IPv6 is enabled, "ip4", "tcp4" and "udp4" otherwise)
+	ip, tcp, udp string
+	ipv4enabled  bool
+	ipv4only     bool
+	ipv6enabled  bool
+	ipv6only     bool
 
 	// address of tcp transparent proxy
 	tproxyAddr string
@@ -443,15 +448,28 @@ func New(conf *Config) (*Proxy, error) {
 	p.logger = &l
 	p.snifflogger = &sl
 
-	// enable ipv6
-	if conf.IPv6Enabled {
+	// determine networks
+	// if both true or both false assume dualstack
+	if (conf.IPv4Enabled && conf.IPv6Enabled) || (!conf.IPv4Enabled && !conf.IPv6Enabled) {
+		p.ip = "ip"
 		p.tcp = "tcp"
 		p.udp = "udp"
+		p.ipv4enabled = true
 		p.ipv6enabled = true
+	} else if conf.IPv6Enabled {
+		p.ip = "ip6"
+		p.tcp = "tcp6"
+		p.udp = "udp6"
+		p.ipv4enabled = false
+		p.ipv6enabled = true
+		p.ipv6only = true
 	} else {
+		p.ip = "ip4"
 		p.tcp = "tcp4"
 		p.udp = "udp4"
+		p.ipv4enabled = true
 		p.ipv6enabled = false
+		p.ipv4only = true
 	}
 
 	// set socks4 flag
@@ -464,14 +482,17 @@ func New(conf *Config) (*Proxy, error) {
 
 	// parse custom dns server
 	if conf.DNS != "" {
-		dnsIP := net.ParseIP(conf.DNS)
-		if dnsIP == nil {
+		dnsIP, err := netip.ParseAddr(conf.DNS)
+		if err != nil {
 			return nil, fmt.Errorf("failed parsing dns server address %s", conf.DNS)
 		}
-		if dnsIP.To4() == nil && !p.ipv6enabled {
+		if p.ipv4only && !dnsIP.Is4() {
 			return nil, fmt.Errorf("enable IPv6 to use dns server address %s", dnsIP)
 		}
-		p.dns = &net.UDPAddr{IP: dnsIP, Port: 53}
+		if p.ipv6only && !network.Is6(dnsIP) {
+			return nil, fmt.Errorf("enable IPv4 to use dns server address %s", dnsIP)
+		}
+		p.dns = &net.UDPAddr{IP: net.ParseIP(dnsIP.String()), Port: 53}
 	}
 
 	// transparent proxy setup
@@ -480,12 +501,22 @@ func New(conf *Config) (*Proxy, error) {
 		if !slices.Contains(SupportedTProxyModes, p.tproxyMode) {
 			return nil, fmt.Errorf("unknown transparent proxy mode: %s", p.tproxyMode)
 		}
+		tproxyDefaultAddr := netip.IPv4Unspecified().String()
+		if p.ipv6only {
+			tproxyDefaultAddr = netip.IPv6Unspecified().String()
+		}
 		// check addresses for transparent proxy
 		if conf.TProxy != "" {
 			var tproxyAddr netip.AddrPort
-			tproxyAddr, err = network.ParseAddrPort(conf.TProxy, "0.0.0.0")
+			tproxyAddr, err = network.ParseAddrPort(conf.TProxy, tproxyDefaultAddr)
 			if err != nil {
 				return nil, err
+			}
+			if p.ipv4only && !tproxyAddr.Addr().Is4() {
+				return nil, fmt.Errorf("enable IPv6 to bind transparent proxy to %s", tproxyAddr)
+			}
+			if p.ipv6only && !network.Is6(tproxyAddr.Addr()) {
+				return nil, fmt.Errorf("enable IPv4 to bind transparent proxy to %s", tproxyAddr)
 			}
 			p.tproxyAddr = tproxyAddr.String()
 		}
@@ -497,9 +528,15 @@ func New(conf *Config) (*Proxy, error) {
 				return nil, fmt.Errorf("[%s] transparent UDP server requires socks5 enabled", p.tproxyMode)
 			}
 			var tproxyAddrUDP netip.AddrPort
-			tproxyAddrUDP, err = network.ParseAddrPort(conf.TProxyUDP, "0.0.0.0")
+			tproxyAddrUDP, err = network.ParseAddrPort(conf.TProxyUDP, tproxyDefaultAddr)
 			if err != nil {
 				return nil, err
+			}
+			if p.ipv4only && !tproxyAddrUDP.Addr().Is4() {
+				return nil, fmt.Errorf("enable IPv6 to bind transparent proxy to %s", tproxyAddrUDP)
+			}
+			if p.ipv6only && !network.Is6(tproxyAddrUDP.Addr()) {
+				return nil, fmt.Errorf("enable IPv4 to bind transparent proxy to %s", tproxyAddrUDP)
 			}
 			p.tproxyAddrUDP = tproxyAddrUDP.String()
 		}
@@ -637,13 +674,17 @@ func (p *Proxy) Run() error {
 		if p.auto {
 			// getting prefixes
 			p.logger.Debug().Msg("Configuring network prefixes...")
-			prefix, err := network.GetIPv4PrefixFromInterface(p.iface)
-			if err != nil {
-				p.logger.Warn().Err(err).Msgf("Failed getting prefix for %s", p.iface.Name)
-			} else {
-				p.prefix = &prefix
+			if p.ipv4enabled {
+				p.logger.Debug().Msg("Configuring IPv4 prefix...")
+				prefix, err := network.GetIPv4PrefixFromInterface(p.iface)
+				if err != nil {
+					p.logger.Warn().Err(err).Msgf("Failed getting IPv4 prefix for %s", p.iface.Name)
+				} else {
+					p.prefix = &prefix
+				}
 			}
 			if p.ipv6enabled {
+				p.logger.Debug().Msg("Configuring IPv6 prefix...")
 				prefix6, err := network.GetIPv6GlobalUnicastPrefixFromInterface(p.iface)
 				if err != nil {
 					p.logger.Warn().Err(err).Msgf("Failed getting IPv6 prefix for %s", p.iface.Name)
@@ -656,7 +697,7 @@ func (p *Proxy) Run() error {
 
 	// getting address from interface
 	p.logger.Debug().Msg("Configuring interface address...")
-	ifaceAddr, err := getAddressFromInterface(p.iface, p.ipv6enabled, bindToLocalhost)
+	ifaceAddr, err := getAddressFromInterface(p.iface, p.ipv6only, bindToLocalhost)
 	if err != nil {
 		return err
 	}
@@ -692,20 +733,22 @@ func (p *Proxy) Run() error {
 					return fmt.Errorf("failed setting namespace: %v", err)
 				}
 			}
-			p.logger.Debug().Msg("Configuring DNS IPv4 (netns)...")
-			p.outDNS = network.GetIPv4ResolverFromNetworkNamespace(p.outNSPathOrName)
-			p.logger.Debug().Msg("Configuring DNS IPv6 (netns)...")
-			p.outDNS6 = network.GetIPv6ResolverFromNetworkNamespace(iface, p.outNSPathOrName)
-			outNSDNS = p.outDNS
+			if p.ipv4enabled {
+				p.logger.Debug().Msg("Configuring DNS IPv4 (netns)...")
+				p.outDNS = network.GetIPv4ResolverFromNetworkNamespace(p.outNSPathOrName)
+				outNSDNS = p.outDNS
+			}
 			if p.ipv6enabled {
-				outNSDNS = p.outDNS6
+				p.logger.Debug().Msg("Configuring DNS IPv6 (netns)...")
+				p.outDNS6 = network.GetIPv6ResolverFromNetworkNamespace(iface, p.outNSPathOrName)
+				outNSDNS = p.outDNS6 // override IPv4 dns if set
 			}
 		} else {
 			outNSDNS = p.dns
 		}
-		p.baseDialer = getNSDialer(p.outNS, timeout, p.mark, outNSDNS)
+		p.baseDialer = getNSDialer(p.ip, p.outNS, timeout, p.mark, outNSDNS)
 	} else {
-		p.baseDialer = getBaseDialer(timeout, p.mark, p.dns)
+		p.baseDialer = getBaseDialer(p.ip, timeout, p.mark, p.dns)
 	}
 
 	// pprof address configuration
@@ -714,6 +757,12 @@ func (p *Proxy) Run() error {
 		parsedAddrPprof, err := network.ParseAddrPort(p.pprofAddr, ifaceAddr)
 		if err != nil {
 			return err
+		}
+		if p.ipv4only && !parsedAddrPprof.Addr().Is4() {
+			return fmt.Errorf("enable IPv6 to bind PPROF server to %s", parsedAddrPprof)
+		}
+		if p.ipv6only && !network.Is6(parsedAddrPprof.Addr()) {
+			return fmt.Errorf("enable IPv4 to bind PPROF server to %s", parsedAddrPprof)
 		}
 		p.pprofAddr = parsedAddrPprof.String()
 		if !bindToLocalhost {
@@ -731,7 +780,7 @@ func (p *Proxy) Run() error {
 
 	// configure socks addresses
 	var sockAddr string
-	p.packetDial = getPacketDial(p.mark, p.outNS)
+	p.packetDial = getPacketDial(p.udp, p.mark, p.outNS)
 	if p.socksEnabled {
 		if p.proxychain.Enabled {
 			p.logger.Debug().Msgf("Configuring %s proxy chain...", p.socksProto)
@@ -741,6 +790,12 @@ func (p *Proxy) Run() error {
 				hpAddr, err := network.ParseAddrPort(pr.Address, ifaceAddr)
 				if err != nil {
 					return err
+				}
+				if p.ipv4only && !hpAddr.Addr().Is4() {
+					return fmt.Errorf("enable IPv6 to use %s for upstream SOCKS", hpAddr)
+				}
+				if p.ipv6only && !network.Is6(hpAddr.Addr()) {
+					return fmt.Errorf("enable IPv4 to use %s for upstream SOCKS", hpAddr)
 				}
 				addr := hpAddr.String()
 				if _, ok := seen[addr]; !ok {
@@ -757,6 +812,12 @@ func (p *Proxy) Run() error {
 			hostPortSOCKS, err := network.ParseAddrPort(socksProxy.Address, ifaceAddr)
 			if err != nil {
 				return err
+			}
+			if p.ipv4only && !hostPortSOCKS.Addr().Is4() {
+				return fmt.Errorf("enable IPv6 to use %s for upstream SOCKS", hostPortSOCKS)
+			}
+			if p.ipv6only && !network.Is6(hostPortSOCKS.Addr()) {
+				return fmt.Errorf("enable IPv4 to use %s for upstream SOCKS", hostPortSOCKS)
 			}
 			sockAddr = hostPortSOCKS.String()
 			auth := auth{
@@ -783,6 +844,12 @@ func (p *Proxy) Run() error {
 		parsedAddrHTTP, err := network.ParseAddrPort(p.httpServerAddr, ifaceAddr)
 		if err != nil {
 			return err
+		}
+		if p.ipv4only && !parsedAddrHTTP.Addr().Is4() {
+			return fmt.Errorf("enable IPv6 to use %s for http server", parsedAddrHTTP)
+		}
+		if p.ipv6only && !network.Is6(parsedAddrHTTP.Addr()) {
+			return fmt.Errorf("enable IPv4 to use %s for http server", parsedAddrHTTP)
 		}
 		p.httpServerAddr = parsedAddrHTTP.String()
 		if !bindToLocalhost {
@@ -834,15 +901,15 @@ func (p *Proxy) Run() error {
 					MaxHeaderBytes: 1 << 20,
 				}
 				if p.nsEnabled {
-					p.http3LocalClient = newHTTP3Client(getNSQUICDialerDirect(p.baseDialer.(*nsDialer)))
+					p.http3LocalClient = newHTTP3Client(getNSQUICDialerDirect(p.baseDialer.(*nsDialer), p.ip, p.udp))
 				} else {
 					p.http3LocalClient = newHTTP3Client(nil)
 				}
 				if p.sockDialer != nil {
 					if p.nsEnabled {
-						p.http3Client = newHTTP3Client(getNSQUICDialer(p.sockDialer, p.baseDialer.(*nsDialer).resolver))
+						p.http3Client = newHTTP3Client(getNSQUICDialer(p.sockDialer, p.ip, p.udp, p.baseDialer.(*nsDialer).resolver))
 					} else {
-						p.http3Client = newHTTP3Client(getQUICDialer(p.sockDialer))
+						p.http3Client = newHTTP3Client(getQUICDialer(p.sockDialer, p.udp))
 					}
 				}
 			}
@@ -851,13 +918,15 @@ func (p *Proxy) Run() error {
 	}
 
 	// configure arp spoofing
-	if p.arpSpoofConf != "" {
+	if p.arpSpoofConf != "" && !p.ipv4enabled {
+		p.logger.Warn().Msg("arp spoofer requires IPv4 enabled")
+	} else if p.arpSpoofConf != "" {
 		p.logger.Debug().Msg("Configuring arp spoofer...")
 		if p.iface == nil {
 			return fmt.Errorf("failed getting network interface")
 		}
 		if !p.auto {
-			p.logger.Warn().Msg("arpspoof setup requires iptables configuration")
+			p.logger.Warn().Msg("arp spoofer setup requires iptables configuration")
 		}
 		asc, err := arpspoof.NewARPSpoofConfig(p.arpSpoofConf, p.logger)
 		if err != nil {
@@ -887,16 +956,19 @@ func (p *Proxy) Run() error {
 	}
 
 	// configure ndp spoofing
-	if p.ndpSpoofConf != "" {
+
+	if p.ndpSpoofConf != "" && !p.ipv6enabled {
+		p.logger.Warn().Msg("ndp spoofer requires IPv6 enabled")
+	} else if p.ndpSpoofConf != "" {
 		p.logger.Debug().Msg("Configuring ndp spoofer...")
 		if p.iface == nil {
 			return fmt.Errorf("failed getting network interface")
 		}
 		if !p.ipv6enabled {
-			return fmt.Errorf("ndpspoof requires IPv6 enabled")
+			return fmt.Errorf("ndp spoofer requires IPv6 enabled")
 		}
 		if !p.auto {
-			p.logger.Warn().Msg("nfpspoof setup requires iptables configuration")
+			p.logger.Warn().Msg("ndp spoofer setup requires iptables configuration")
 		}
 		nsc, err := ndpspoof.NewNDPSpoofConfig(p.ndpSpoofConf, p.logger)
 		if err != nil {
@@ -1111,6 +1183,11 @@ func (p *Proxy) Run() error {
 	p.closeConn = make(chan bool)
 	signal.Notify(quit, os.Interrupt)
 
+	if p.ipv4enabled {
+		p.logger.Info().Msg("IPv4: enabled")
+	} else {
+		p.logger.Info().Msg("IPv4: disabled")
+	}
 	if p.ipv6enabled {
 		p.logger.Info().Msg("IPv6: enabled")
 	} else {
@@ -2125,7 +2202,7 @@ func (p *Proxy) getHTTP3Client() (*http3Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	http3Client := newHTTP3Client(getQUICDialer(sockDialer))
+	http3Client := newHTTP3Client(getQUICDialer(sockDialer, p.udp))
 	return http3Client, nil
 }
 
@@ -2656,11 +2733,11 @@ func (p *Proxy) runRuleCmd(rule string) {
 	p.dump.WriteString(rule)
 }
 
-func (p *Proxy) newSOCKSDialer(address string, auth *auth, forward contextDialer, network string) (contextDialer, error) {
+func (p *Proxy) newSOCKSDialer(address string, auth *auth, forward contextDialer, tcp string) (contextDialer, error) {
 	if p.socks4enabled {
-		return newSOCKS4Dialer(address, auth, forward, network)
+		return newSOCKS4Dialer(address, auth, forward, tcp)
 	}
-	return newSOCKS5Dialer(address, auth, forward, network, p.packetDial)
+	return newSOCKS5Dialer(address, auth, forward, tcp, p.packetDial)
 }
 
 func (p *Proxy) applyCommonRedirectRules(opts map[string]string) {
@@ -2669,21 +2746,69 @@ func (p *Proxy) applyCommonRedirectRules(opts map[string]string) {
 	if p.debug {
 		setex = "set -ex"
 	}
+	if p.ipv4enabled {
+		_ = runSysctlOptCmd("net.ipv4.ip_forward", "1", setex, opts, p.debug, &p.dump)
+		if p.arpspoofer != nil {
+			_ = runSysctlOptCmd("net.ipv4.conf.all.send_redirects", "0", setex, opts, p.debug, &p.dump)
+			_ = runSysctlOptCmd(fmt.Sprintf("net.ipv4.conf.%s.send_redirects", p.arpspoofer.Interface().Name), "0", setex, opts, p.debug, &p.dump)
+			_ = runSysctlOptCmd("net.ipv4.conf.all.accept_redirects", "0", setex, opts, p.debug, &p.dump)
+			_ = runSysctlOptCmd("net.ipv4.conf.default.accept_redirects", "0", setex, opts, p.debug, &p.dump)
+		}
+	}
+	if p.ipv6enabled {
+		_ = runSysctlOptCmd("net.ipv6.conf.all.forwarding", "1", setex, opts, p.debug, &p.dump)
+		_ = runSysctlOptCmd("net.ipv6.conf.default.forwarding", "1", setex, opts, p.debug, &p.dump)
+		if p.ndpspoofer != nil {
+			_ = runSysctlOptCmd("net.ipv6.conf.all.accept_ra", "0", setex, opts, p.debug, &p.dump)
+			_ = runSysctlOptCmd("net.ipv6.conf.all.accept_redirects", "0", setex, opts, p.debug, &p.dump)
+			_ = runSysctlOptCmd("net.ipv6.conf.default.accept_redirects", "0", setex, opts, p.debug, &p.dump)
+		}
+	}
+	_ = runSysctlOptCmd("net.core.rmem_default", "4194304", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.wmem_default", "4194304", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.rmem_max", "4194304", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.wmem_max", "4194304", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.netdev_budget", "600", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.netdev_budget_usecs", "8000", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.netdev_max_backlog", "250000", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("fs.file-max", "2097152", setex, opts, p.debug, &p.dump)
 	if p.tproxyMode == "tproxy" || p.tproxyMode == "tlocal" {
-		cmdClear0 := `
+		if p.ipv4enabled {
+			cmdClear0 := `
 iptables -t mangle -F DIVERT 2>/dev/null || true
 iptables -t mangle -X DIVERT 2>/dev/null || true
 
 ip rule del fwmark 1 lookup 100 2>/dev/null || true
 ip route flush table 100 2>/dev/null || true
 `
-		p.runRuleCmd(cmdClear0)
-		if p.tproxyMode == "tlocal" {
-			cmdClear1 := `
+			p.runRuleCmd(cmdClear0)
+			if p.tproxyMode == "tlocal" {
+				cmdClear1 := `
 ip rule del fwmark 2 lookup 101 2>/dev/null || true
 ip route flush table 101 2>/dev/null || true
 `
-			p.runRuleCmd(cmdClear1)
+				p.runRuleCmd(cmdClear1)
+			}
+			cmdInit0 := `
+ip rule add fwmark 1 lookup 100 2>/dev/null || true
+ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
+`
+			p.runRuleCmd(cmdInit0)
+
+			if p.tproxyMode == "tlocal" {
+				cmdInit1 := `
+ip rule add fwmark 2 lookup 101 2>/dev/null || true
+ip route add local 0.0.0.0/0 dev lo table 101 2>/dev/null || true
+`
+				p.runRuleCmd(cmdInit1)
+			}
+			cmdInit2 := `
+iptables -t mangle -N DIVERT 2>/dev/null || true
+iptables -t mangle -F DIVERT 2>/dev/null || true
+iptables -t mangle -A DIVERT -j MARK --set-mark 1
+iptables -t mangle -A DIVERT -j ACCEPT
+`
+			p.runRuleCmd(cmdInit2)
 		}
 		if p.ipv6enabled {
 			cmdClear2 := `
@@ -2701,42 +2826,18 @@ ip -6 route flush table 101 2>/dev/null || true
 `
 				p.runRuleCmd(cmdClear3)
 			}
-		}
-		cmdInit0 := `
-ip rule add fwmark 1 lookup 100 2>/dev/null || true
-ip route add local 0.0.0.0/0 dev lo table 100 2>/dev/null || true
-`
-		p.runRuleCmd(cmdInit0)
-
-		if p.tproxyMode == "tlocal" {
-			cmdInit1 := `
-ip rule add fwmark 2 lookup 101 2>/dev/null || true
-ip route add local 0.0.0.0/0 dev lo table 101 2>/dev/null || true
-`
-			p.runRuleCmd(cmdInit1)
-		}
-		if p.ipv6enabled {
-			cmdInit2 := `
+			cmdInit3 := `
 ip -6 rule add fwmark 1 lookup 100 2>/dev/null || true
 ip -6 route add local ::/0 dev lo table 100 2>/dev/null || true
 `
-			p.runRuleCmd(cmdInit2)
+			p.runRuleCmd(cmdInit3)
 			if p.tproxyMode == "tlocal" {
-				cmdInit3 := `
+				cmdInit4 := `
 ip -6 rule add fwmark 2 lookup 101 2>/dev/null || true
 ip -6 route add local ::/0 dev lo table 101 2>/dev/null || true
 `
-				p.runRuleCmd(cmdInit3)
+				p.runRuleCmd(cmdInit4)
 			}
-		}
-		cmdInit4 := `
-iptables -t mangle -N DIVERT 2>/dev/null || true
-iptables -t mangle -F DIVERT 2>/dev/null || true
-iptables -t mangle -A DIVERT -j MARK --set-mark 1
-iptables -t mangle -A DIVERT -j ACCEPT
-`
-		p.runRuleCmd(cmdInit4)
-		if p.ipv6enabled {
 			cmdInit5 := `
 ip6tables -t mangle -N DIVERT 2>/dev/null || true
 ip6tables -t mangle -F DIVERT 2>/dev/null || true
@@ -2746,36 +2847,24 @@ ip6tables -t mangle -A DIVERT -j ACCEPT
 			p.runRuleCmd(cmdInit5)
 		}
 	}
-	_ = runSysctlOptCmd("net.ipv4.ip_forward", "1", setex, opts, p.debug, &p.dump)
-	if p.arpspoofer != nil {
-		_ = runSysctlOptCmd("net.ipv4.conf.all.send_redirects", "0", setex, opts, p.debug, &p.dump)
-		_ = runSysctlOptCmd(fmt.Sprintf("net.ipv4.conf.%s.send_redirects", p.arpspoofer.Interface().Name), "0", setex, opts, p.debug, &p.dump)
-		_ = runSysctlOptCmd("net.ipv4.conf.all.accept_redirects", "0", setex, opts, p.debug, &p.dump)
-		_ = runSysctlOptCmd("net.ipv4.conf.default.accept_redirects", "0", setex, opts, p.debug, &p.dump)
-	}
-	if p.ipv6enabled {
-		_ = runSysctlOptCmd("net.ipv6.conf.all.forwarding", "1", setex, opts, p.debug, &p.dump)
-		_ = runSysctlOptCmd("net.ipv6.conf.default.forwarding", "1", setex, opts, p.debug, &p.dump)
-	}
-	if p.ndpspoofer != nil {
-		_ = runSysctlOptCmd("net.ipv6.conf.all.accept_ra", "0", setex, opts, p.debug, &p.dump)
-		_ = runSysctlOptCmd("net.ipv6.conf.all.accept_redirects", "0", setex, opts, p.debug, &p.dump)
-		_ = runSysctlOptCmd("net.ipv6.conf.default.accept_redirects", "0", setex, opts, p.debug, &p.dump)
-	}
-	_ = runSysctlOptCmd("net.core.rmem_default", "4194304", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.wmem_default", "4194304", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.rmem_max", "4194304", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.wmem_max", "4194304", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.netdev_budget", "600", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.netdev_budget_usecs", "8000", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.netdev_max_backlog", "250000", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("fs.file-max", "2097152", setex, opts, p.debug, &p.dump)
-	cmdClearForward0 := `
+	if p.ipv4enabled {
+		cmdClearForward0 := `
 iptables -t filter -F GOHPTS 2>/dev/null || true
 iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
 iptables -t filter -X GOHPTS  2>/dev/null || true
 `
-	p.runRuleCmd(cmdClearForward0)
+		p.runRuleCmd(cmdClearForward0)
+		cmdForwardFilter0 := fmt.Sprintf(`
+iptables -t filter -N GOHPTS 2>/dev/null
+iptables -t filter -F GOHPTS
+iptables -t filter -A FORWARD -j GOHPTS
+iptables -t filter -A GOHPTS -i %s -j ACCEPT
+iptables -t filter -A GOHPTS -o %s -j ACCEPT
+`,
+			p.iface.Name, p.iface.Name)
+
+		p.runRuleCmd(cmdForwardFilter0)
+	}
 	if p.ipv6enabled {
 		cmdClearForward1 := `
 ip6tables -t filter -F GOHPTS 2>/dev/null || true
@@ -2783,18 +2872,6 @@ ip6tables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
 ip6tables -t filter -X GOHPTS  2>/dev/null || true
 `
 		p.runRuleCmd(cmdClearForward1)
-	}
-	cmdForwardFilter0 := fmt.Sprintf(`
-iptables -t filter -N GOHPTS 2>/dev/null
-iptables -t filter -F GOHPTS
-iptables -t filter -A FORWARD -j GOHPTS
-iptables -t filter -A GOHPTS -i %s -j ACCEPT
-iptables -t filter -A GOHPTS -o %s -j ACCEPT
-`,
-		p.iface.Name, p.iface.Name)
-
-	p.runRuleCmd(cmdForwardFilter0)
-	if p.ipv6enabled {
 		cmdForwardFilter1 := fmt.Sprintf(`
 ip6tables -t filter -N GOHPTS 2>/dev/null
 ip6tables -t filter -F GOHPTS
@@ -2814,12 +2891,14 @@ ip6tables -t filter -A OUTPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
 }
 
 func (p *Proxy) clearCommonRedirectRules(opts map[string]string) error {
-	cmdClear0 := `
+	if p.ipv4enabled {
+		cmdClear0 := `
 iptables -t filter -F GOHPTS 2>/dev/null || true
 iptables -t filter -D FORWARD -j GOHPTS  2>/dev/null || true
 iptables -t filter -X GOHPTS  2>/dev/null || true
 `
-	p.runRuleCmd(cmdClear0)
+		p.runRuleCmd(cmdClear0)
+	}
 	if p.ipv6enabled {
 		cmdClear1 := `
 ip6tables -t filter -F GOHPTS 2>/dev/null || true
@@ -2836,20 +2915,22 @@ ip6tables -t filter -D OUTPUT -p ipv6-icmp --icmpv6-type redirect -j DROP
 		}
 	}
 	if p.tproxyMode == "tproxy" || p.tproxyMode == "tlocal" {
-		cmdClear3 := `
+		if p.ipv4enabled {
+			cmdClear3 := `
 iptables -t mangle -F DIVERT 2>/dev/null || true
 iptables -t mangle -X DIVERT 2>/dev/null || true
 
 ip rule del fwmark 1 lookup 100 2>/dev/null || true
 ip route flush table 100 2>/dev/null || true
 `
-		p.runRuleCmd(cmdClear3)
-		if p.tproxyMode == "tlocal" {
-			cmdClear4 := `
+			p.runRuleCmd(cmdClear3)
+			if p.tproxyMode == "tlocal" {
+				cmdClear4 := `
 ip rule del fwmark 2 lookup 101 2>/dev/null || true
 ip route flush table 101 2>/dev/null || true
 `
-			p.runRuleCmd(cmdClear4)
+				p.runRuleCmd(cmdClear4)
+			}
 		}
 		if p.ipv6enabled {
 			cmdClear5 := `

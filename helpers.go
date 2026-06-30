@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,20 +73,28 @@ func expandPath(p string) string {
 	return p
 }
 
-func getAddressFromInterface(iface *net.Interface, ipv6, bindToLocalhost bool) (string, error) {
+func getAddressFromInterface(iface *net.Interface, ipv6only, bindToLocalhost bool) (string, error) {
 	if bindToLocalhost {
+		if ipv6only {
+			return "::1", nil
+		}
 		return "127.0.0.1", nil
 	}
-	var prefix netip.Prefix
-	var err error
-	prefix, err = network.GetIPv4PrefixFromInterface(iface)
-	if err != nil && ipv6 {
-		prefix, err = network.GetIPv6LinkLocalUnicastPrefixFromInterface(iface)
+	var addr string
+	if ipv6only {
+		prefix, err := network.GetIPv6LinkLocalUnicastPrefixFromInterface(iface)
 		if err != nil {
 			return "", err
 		}
+		addr = prefix.Addr().WithZone(iface.Name).String()
+	} else {
+		prefix, err := network.GetIPv4PrefixFromInterface(iface)
+		if err != nil {
+			return "", err
+		}
+		addr = prefix.Addr().String()
 	}
-	return prefix.Addr().String(), nil
+	return addr, nil
 }
 
 func parseProxyAuth(auth string) (username, password string, ok bool) {

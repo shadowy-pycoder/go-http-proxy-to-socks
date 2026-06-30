@@ -25,6 +25,7 @@ type Config struct {
 	// misc
 	Interface      string
 	ServerConfPath string
+	IPv4Enabled    bool
 	IPv6Enabled    bool
 	SOCKS4Enabled  bool
 	NoHTTP         bool
@@ -94,6 +95,7 @@ type DNSFilterLists struct {
 
 type yamlConfig struct {
 	Interface     string `yaml:"interface"`
+	IPv4Enabled   bool   `yaml:"ipv4"`
 	IPv6Enabled   bool   `yaml:"ipv6"`
 	NoHTTP        bool   `yaml:"disable_http"`
 	NoSOCKS       bool   `yaml:"disable_socks"`
@@ -183,6 +185,7 @@ func createConfigFromPath(path string) (*Config, error) {
 	conf.SocksProxyChain = sconf.ProxyChain
 
 	conf.Interface = sconf.Interface
+	conf.IPv4Enabled = sconf.IPv4Enabled
 	conf.IPv6Enabled = sconf.IPv6Enabled
 	conf.SOCKS4Enabled = sconf.SOCKS4Enabled
 	conf.DNS = sconf.DNS
@@ -251,10 +254,25 @@ func parseConfig(conf *Config) error {
 		if !conf.NoSOCKS {
 			conf.NoSOCKS = yamlConf.NoSOCKS
 		}
+		if !conf.IPv4Enabled {
+			conf.IPv4Enabled = yamlConf.IPv4Enabled
+		}
+
+		if !conf.IPv6Enabled {
+			conf.IPv6Enabled = yamlConf.IPv6Enabled
+		}
+		var ipv6only bool
+		if conf.IPv6Enabled && !conf.IPv4Enabled {
+			ipv6only = true
+		}
 		// if user did not specify http address (from CLI), use address from config or default
 		if conf.AddrHTTP == "" {
 			if yamlConf.AddrHTTP == "" {
-				conf.AddrHTTP = addrHTTP
+				if ipv6only {
+					conf.AddrHTTP = addr6HTTP
+				} else {
+					conf.AddrHTTP = addrHTTP
+				}
 			} else {
 				conf.AddrHTTP = yamlConf.AddrHTTP
 			}
@@ -284,16 +302,16 @@ func parseConfig(conf *Config) error {
 				conf.SocksProxy = yamlConf.SocksProxy
 			} else {
 				// fallback to default address
-				conf.SocksProxy[0].Address = addrSOCKS
+				if ipv6only {
+					conf.SocksProxy[0].Address = addr6SOCKS
+				} else {
+					conf.SocksProxy[0].Address = addrSOCKS
+				}
 			}
 		}
 
 		if conf.Interface == "" {
 			conf.Interface = yamlConf.Interface
-		}
-
-		if !conf.IPv6Enabled {
-			conf.IPv6Enabled = yamlConf.IPv6Enabled
 		}
 
 		if !conf.SOCKS4Enabled {
@@ -393,12 +411,24 @@ func parseConfig(conf *Config) error {
 		}
 		conf.DNSFilter = yamlConf.DNSFilter
 	} else {
+		var ipv6only bool
+		if conf.IPv6Enabled && !conf.IPv4Enabled {
+			ipv6only = true
+		}
 		// only set defaults for http and socks
 		if conf.AddrHTTP == "" {
-			conf.AddrHTTP = addrHTTP
+			if ipv6only {
+				conf.AddrHTTP = addr6HTTP
+			} else {
+				conf.AddrHTTP = addrHTTP
+			}
 		}
 		if conf.SocksProxy[0].Address == "" {
-			conf.SocksProxy[0].Address = addrSOCKS
+			if ipv6only {
+				conf.SocksProxy[0].Address = addr6SOCKS
+			} else {
+				conf.SocksProxy[0].Address = addrSOCKS
+			}
 		}
 	}
 	if !slices.Contains(SupportedTProxyOS, runtime.GOOS) {

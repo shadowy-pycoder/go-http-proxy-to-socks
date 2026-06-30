@@ -12,17 +12,17 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-func getBaseDialer(timeout time.Duration, mark uint, nameserver *net.UDPAddr) *net.Dialer {
+func getBaseDialer(ipver string, timeout time.Duration, mark uint, nameserver *net.UDPAddr) *net.Dialer {
 	_ = mark
-	resolver := net.DefaultResolver
-	if nameserver != nil {
-		dnsDialer := &net.Dialer{Timeout: timeout}
-		resolver = &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				return dnsDialer.DialContext(ctx, network, nameserver.String())
-			},
-		}
+	dnsDialer := &net.Dialer{Timeout: timeout}
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if nameserver != nil {
+				address = nameserver.String()
+			}
+			return dnsDialer.DialContext(ctx, ipver, address)
+		},
 	}
 	return &net.Dialer{Timeout: timeout, Resolver: resolver}
 }
@@ -36,11 +36,18 @@ type nsDialer struct {
 	resolver *net.Resolver
 }
 
-func getNSDialer(ns *netns.NsHandle, timeout time.Duration, mark uint, nameserver *net.UDPAddr) *nsDialer {
+func getNSDialer(ipver string, ns *netns.NsHandle, timeout time.Duration, mark uint, nameserver *net.UDPAddr) *nsDialer {
 	_ = mark
 	_ = nameserver
-	dialer := &net.Dialer{Timeout: timeout}
-	return &nsDialer{dialer: dialer, ns: ns, mark: 0, resolver: net.DefaultResolver}
+	dnsDialer := &net.Dialer{Timeout: timeout}
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dnsDialer.DialContext(ctx, ipver, address)
+		},
+	}
+	dialer := &net.Dialer{Timeout: timeout, Resolver: resolver}
+	return &nsDialer{dialer: dialer, ns: ns, mark: 0, resolver: resolver}
 }
 
 func (d *nsDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -49,23 +56,31 @@ func (d *nsDialer) DialContext(ctx context.Context, network, address string) (ne
 
 func getNSQUICDialer(
 	dialer contextDialer,
+	ipver, udp string,
 	resolver *net.Resolver,
 ) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 	_ = dialer
+	_ = ipver
+	_ = udp
 	_ = resolver
 	return quic.DialAddrEarly
 }
 
-func getNSQUICDialerDirect(dialer *nsDialer) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+func getNSQUICDialerDirect(
+	dialer *nsDialer,
+	ipver, udp string,
+) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 	_ = dialer
+	_ = ipver
+	_ = udp
 	return quic.DialAddrEarly
 }
 
-func getPacketDial(mark uint, ns *netns.NsHandle) func(ctx context.Context, network, addr string) (net.PacketConn, error) {
+func getPacketDial(udp string, mark uint, ns *netns.NsHandle) func(ctx context.Context, network, addr string) (net.PacketConn, error) {
 	_ = mark
 	_ = ns
 	lc := &net.ListenConfig{}
 	return func(ctx context.Context, network, addr string) (net.PacketConn, error) {
-		return lc.ListenPacket(ctx, network, addr)
+		return lc.ListenPacket(ctx, udp, addr)
 	}
 }

@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func getBaseDialer(timeout time.Duration, mark uint, nameserver *net.UDPAddr) *net.Dialer {
+func getBaseDialer(ipver string, timeout time.Duration, mark uint, nameserver *net.UDPAddr) *net.Dialer {
 	dialer := &net.Dialer{Timeout: timeout}
 	control := func(_, _ string, c syscall.RawConn) error {
 		return c.Control(func(fd uintptr) {
@@ -35,18 +35,23 @@ func getBaseDialer(timeout time.Duration, mark uint, nameserver *net.UDPAddr) *n
 				if nameserver != nil {
 					address = nameserver.String()
 				}
-				return dnsDialer.DialContext(ctx, network, address)
+				return dnsDialer.DialContext(ctx, ipver, address)
 			},
 		}
 	} else if nameserver != nil {
 		dialer.Resolver = &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				return dnsDialer.DialContext(ctx, network, nameserver.String())
+				return dnsDialer.DialContext(ctx, ipver, nameserver.String())
 			},
 		}
 	} else {
-		dialer.Resolver = net.DefaultResolver
+		dialer.Resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return dnsDialer.DialContext(ctx, ipver, address)
+			},
+		}
 	}
 	return dialer
 }
@@ -60,7 +65,7 @@ type nsDialer struct {
 	resolver *net.Resolver
 }
 
-func getNSDialer(ns *netns.NsHandle, timeout time.Duration, mark uint, nameserver *net.UDPAddr) *nsDialer {
+func getNSDialer(ipver string, ns *netns.NsHandle, timeout time.Duration, mark uint, nameserver *net.UDPAddr) *nsDialer {
 	dialer := &net.Dialer{Timeout: timeout, FallbackDelay: -1}
 	control := func(_, _ string, c syscall.RawConn) error {
 		return c.Control(func(fd uintptr) {
@@ -89,7 +94,7 @@ func getNSDialer(ns *netns.NsHandle, timeout time.Duration, mark uint, nameserve
 			if err := netns.Set(*ns); err != nil {
 				return nil, err
 			}
-			return dnsDialer.DialContext(ctx, network, nameserver.String())
+			return dnsDialer.DialContext(ctx, ipver, nameserver.String())
 		},
 	}
 	dialer.Resolver = resolver
@@ -115,10 +120,11 @@ func (d *nsDialer) DialContext(ctx context.Context, network, address string) (ne
 
 func getNSQUICDialer(
 	dialer contextDialer,
+	ipver, udp string,
 	resolver *net.Resolver,
 ) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 	return func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
-		udpConn, err := dialer.DialContext(ctx, "udp", addr)
+		udpConn, err := dialer.DialContext(ctx, udp, addr)
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +133,7 @@ func getNSQUICDialer(
 			return nil, err
 		}
 
-		addrs, err := resolver.LookupIPAddr(ctx, host)
+		addrs, err := resolver.LookupIP(ctx, ipver, host)
 		if err != nil {
 			udpConn.Close()
 			return nil, err
@@ -136,26 +142,33 @@ func getNSQUICDialer(
 			udpConn.Close()
 			return nil, fmt.Errorf("no addresses for %s", host)
 		}
-		udpAddr := &net.UDPAddr{IP: addrs[0].IP, Port: port, Zone: addrs[0].Zone}
+		udpAddr := &net.UDPAddr{IP: addrs[0], Port: port}
 		return quic.DialEarly(ctx, udpConn.(net.PacketConn), udpAddr, tlsCfg, cfg)
 	}
 }
 
-func getNSQUICDialerDirect(dialer *nsDialer) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+func getNSQUICDialerDirect(
+	dialer *nsDialer,
+	ipver, udp string,
+) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+	ip := net.IPv4zero
+	if udp == "udp6" {
+		ip = net.IPv6zero
+	}
 	return func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 		host, port, err := splitHostPort(addr)
 		if err != nil {
 			return nil, err
 		}
 
-		addrs, err := dialer.resolver.LookupIPAddr(ctx, host)
+		addrs, err := dialer.resolver.LookupIP(ctx, ipver, host)
 		if err != nil {
 			return nil, err
 		}
 		if len(addrs) == 0 {
 			return nil, fmt.Errorf("no addresses for %s", host)
 		}
-		udpAddr := &net.UDPAddr{IP: addrs[0].IP, Port: port, Zone: addrs[0].Zone}
+		udpAddr := &net.UDPAddr{IP: addrs[0], Port: port}
 
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
@@ -171,7 +184,7 @@ func getNSQUICDialerDirect(dialer *nsDialer) func(ctx context.Context, addr stri
 			return nil, err
 		}
 
-		udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+		udpConn, err := net.ListenUDP(udp, &net.UDPAddr{IP: ip, Port: 0})
 		if err != nil {
 			return nil, err
 		}
@@ -190,7 +203,7 @@ func getNSQUICDialerDirect(dialer *nsDialer) func(ctx context.Context, addr stri
 	}
 }
 
-func getPacketDial(mark uint, ns *netns.NsHandle) func(ctx context.Context, network, addr string) (net.PacketConn, error) {
+func getPacketDial(udp string, mark uint, ns *netns.NsHandle) func(ctx context.Context, network, addr string) (net.PacketConn, error) {
 	lc := &net.ListenConfig{}
 	if mark > 0 {
 		lc = &net.ListenConfig{
@@ -215,6 +228,6 @@ func getPacketDial(mark uint, ns *netns.NsHandle) func(ctx context.Context, netw
 				return nil, err
 			}
 		}
-		return lc.ListenPacket(ctx, network, addr)
+		return lc.ListenPacket(ctx, udp, addr)
 	}
 }

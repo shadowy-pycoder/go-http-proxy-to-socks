@@ -33,14 +33,15 @@ OPTIONS:
   -f         Path to proxy configuration file in YAML format
 
   Proxy:
-  -l         Address of HTTP proxy server (Default: "127.0.0.1:8080")
-  -s         Address of SOCKS5 proxy server (Default: "127.0.0.1:1080")
+  -l         Address of HTTP proxy server (Default: "127.0.0.1:8080" for IPv4, "[::1]:8080" for IPv6)
+  -s         Address of SOCKS5 proxy server (Default: "127.0.0.1:1080" for IPv4 "[::1]:1080" for IPv6)
   -c         Path to certificate PEM encoded file
   -k         Path to private key PEM encoded file
   -U         User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
   -u         User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
   -i         Bind proxy to specific network interface (either by interface name or index)
-  -6         Enable IPv6 support for TCP and UDP
+  -4         Force IPv4 stack for TCP and UDP (Default: dual stack)
+  -6         Force IPv6 stack for TCP and UDP (Default: dual stack)
   -socks4    Use SOCKS4/SOCKS4a as the upstream proxy protocol (default: SOCKS5)
   -nohttp    Disable HTTP proxy server
   -nosocks   Disable SOCKS upstream proxy
@@ -94,6 +95,7 @@ func root(args []string) error {
 	flags.StringVar(&conf.CertFile, "c", "", "")
 	flags.StringVar(&conf.KeyFile, "k", "", "")
 	flags.StringVar(&conf.ServerConfPath, "f", "", "")
+	flags.BoolVar(&conf.IPv4Enabled, "4", false, "")
 	flags.BoolVar(&conf.IPv6Enabled, "6", false, "")
 	flags.BoolVar(&conf.SOCKS4Enabled, "socks4", false, "")
 	flags.BoolVar(&conf.NoHTTP, "nohttp", false, "")
@@ -191,11 +193,6 @@ func root(args []string) error {
 		if seen["wu"] {
 			if !seen["Tu"] {
 				return fmt.Errorf("-wu requires -Tu flag")
-			}
-		}
-		if seen["ndpspoof"] {
-			if !seen["6"] {
-				return fmt.Errorf("-ndpspoof requires -6 flag")
 			}
 		}
 		if seen["mark"] {

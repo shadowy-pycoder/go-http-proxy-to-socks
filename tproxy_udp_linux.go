@@ -1226,17 +1226,68 @@ func (tsu *tproxyServerUDP) ApplyRedirectRules(opts map[string]string) {
 	if tsu.p.debug {
 		setex = "set -ex"
 	}
+	if tsu.p.ipv4enabled {
+		_ = runSysctlOptCmd("net.ipv4.ip_nonlocal_bind", "1", setex, opts, tsu.p.debug, &tsu.p.dump)
+	}
+	if tsu.p.ipv6enabled {
+		_ = runSysctlOptCmd("net.ipv6.ip_nonlocal_bind", "1", setex, opts, tsu.p.debug, &tsu.p.dump)
+	}
 	switch tsu.p.tproxyMode {
 	case "redirect":
 		tsu.p.logger.Fatal().Msgf("Unsupported mode: %s", tsu.p.tproxyMode)
 
 	case "tlocal":
-		cmdClear0 := `
+
+		// ipv4
+		if tsu.p.ipv4enabled {
+			cmdClear0 := `
 iptables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
 iptables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
 iptables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
 `
-		tsu.p.runRuleCmd(cmdClear0)
+			tsu.p.runRuleCmd(cmdClear0)
+			cmdInit0 := `
+iptables -t mangle -N GOHPTS_OUT_UDP 2>/dev/null || true
+iptables -t mangle -F GOHPTS_OUT_UDP
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 127.0.0.0/8 -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 224.0.0.0/4 -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 255.255.255.255/32 -j RETURN
+`
+			tsu.p.runRuleCmd(cmdInit0)
+			if tsu.p.socksEnabled {
+				for _, pr := range tsu.p.proxylist {
+					_, port, _ := net.SplitHostPort(pr.Address)
+					cmd1 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp --dport %s -j RETURN
+`, port)
+					tsu.p.runRuleCmd(cmd1)
+					if tsu.p.proxychain.Type == "strict" {
+						break
+					}
+				}
+			}
+			if tsu.p.prefix != nil {
+				cmdInit00 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d %s -j RETURN
+`, tsu.p.prefix.Masked())
+				tsu.p.runRuleCmd(cmdInit00)
+			}
+			if tsu.p.ignoredPorts != "" {
+				cmdInit1 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --dports %s -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --sports %s -j RETURN
+`, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
+				tsu.p.runRuleCmd(cmdInit1)
+			}
+			cmdInit2 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m mark --mark %d -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -j MARK --set-mark 2
+iptables -t mangle -A OUTPUT -p udp -j GOHPTS_OUT_UDP
+`, tsu.p.mark)
+			tsu.p.runRuleCmd(cmdInit2)
+		}
+
+		// ipv6
 		if tsu.p.ipv6enabled {
 			cmdClear1 := `
 ip6tables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
@@ -1244,34 +1295,6 @@ ip6tables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
 ip6tables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
 `
 			tsu.p.runRuleCmd(cmdClear1)
-		}
-		cmdInit0 := `
-iptables -t mangle -N GOHPTS_OUT_UDP 2>/dev/null || true
-iptables -t mangle -F GOHPTS_OUT_UDP
-iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 127.0.0.0/8 -j RETURN
-iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 224.0.0.0/4 -j RETURN
-iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 255.255.255.255/32 -j RETURN
-`
-		tsu.p.runRuleCmd(cmdInit0)
-		if tsu.p.socksEnabled {
-			for _, pr := range tsu.p.proxylist {
-				_, port, _ := net.SplitHostPort(pr.Address)
-				cmd1 := fmt.Sprintf(`
-iptables -t mangle -A GOHPTS_OUT_UDP -p udp --dport %s -j RETURN
-`, port)
-				tsu.p.runRuleCmd(cmd1)
-				if tsu.p.proxychain.Type == "strict" {
-					break
-				}
-			}
-		}
-		if tsu.p.prefix != nil {
-			cmdInit00 := fmt.Sprintf(`
-iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d %s -j RETURN
-`, tsu.p.prefix.Masked())
-			tsu.p.runRuleCmd(cmdInit00)
-		}
-		if tsu.p.ipv6enabled {
 			cmdInit01 := `
 ip6tables -t mangle -N GOHPTS_OUT_UDP 2>/dev/null || true
 ip6tables -t mangle -F GOHPTS_OUT_UDP
@@ -1301,28 +1324,13 @@ ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -s %s -d %s -j RETURN
 `, tsu.p.prefix6.Masked(), tsu.p.prefix6.Masked())
 				tsu.p.runRuleCmd(cmdInit02)
 			}
-		}
-		if tsu.p.ignoredPorts != "" {
-			cmdInit1 := fmt.Sprintf(`
-iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --dports %s -j RETURN
-iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --sports %s -j RETURN
-`, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
-			tsu.p.runRuleCmd(cmdInit1)
-			if tsu.p.ipv6enabled {
+			if tsu.p.ignoredPorts != "" {
 				cmdInit11 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --dports %s -j RETURN
 ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --sports %s -j RETURN
 `, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
 				tsu.p.runRuleCmd(cmdInit11)
 			}
-		}
-		cmdInit2 := fmt.Sprintf(`
-iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m mark --mark %d -j RETURN
-iptables -t mangle -A GOHPTS_OUT_UDP -p udp -j MARK --set-mark 2
-iptables -t mangle -A OUTPUT -p udp -j GOHPTS_OUT_UDP
-`, tsu.p.mark)
-		tsu.p.runRuleCmd(cmdInit2)
-		if tsu.p.ipv6enabled {
 			cmdInit21 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m mark --mark %d -j RETURN
 ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -j MARK --set-mark 2
@@ -1334,13 +1342,69 @@ ip6tables -t mangle -A OUTPUT -p udp -j GOHPTS_OUT_UDP
 		fallthrough
 
 	case "tproxy":
-		cmdClear0 := `
+
+		// ipv4
+		if tsu.p.ipv4enabled {
+			cmdClear0 := `
 iptables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
 iptables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
 iptables -t mangle -F GOHPTS_UDP 2>/dev/null || true
 iptables -t mangle -X GOHPTS_UDP 2>/dev/null || true
 `
-		tsu.p.runRuleCmd(cmdClear0)
+			tsu.p.runRuleCmd(cmdClear0)
+			cmdInit0 := `
+iptables -t mangle -N GOHPTS_UDP 2>/dev/null || true
+iptables -t mangle -F GOHPTS_UDP
+
+iptables -t mangle -A GOHPTS_UDP -p udp -d 127.0.0.0/8 -j RETURN
+iptables -t mangle -A GOHPTS_UDP -p udp -d 224.0.0.0/4 -j RETURN
+iptables -t mangle -A GOHPTS_UDP -p udp -d 255.255.255.255/32 -j RETURN
+`
+			tsu.p.runRuleCmd(cmdInit0)
+			if tsu.p.prefix != nil {
+				cmdInit00 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_UDP -p udp -d %s -j RETURN
+`, tsu.p.prefix.Masked())
+				tsu.p.runRuleCmd(cmdInit00)
+			}
+			if tsu.p.ignoredPorts != "" {
+				cmdInit1 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_UDP -p udp -m multiport --dports %s -j RETURN
+iptables -t mangle -A GOHPTS_UDP -p udp -m multiport --sports %s -j RETURN
+`, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
+				tsu.p.runRuleCmd(cmdInit1)
+			}
+			cmdDocker4 := `
+if command -v docker >/dev/null 2>&1
+then
+for subnet in $(docker network inspect $(docker network ls -q)  --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'); do
+  if [[ "$subnet" == *:* ]]; then
+	continue
+  else
+	iptables -t mangle -A GOHPTS_UDP -p udp -d "$subnet" -j RETURN
+  fi
+done
+fi
+`
+			tsu.p.runRuleCmd(cmdDocker4)
+			cmdInit00 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
+`, tsu.p.mark)
+			tsu.p.runRuleCmd(cmdInit00)
+			if tsu.p.prefix != nil {
+				cmdInit01 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1
+`, tsu.p.prefix.Masked(), tproxyPortUDP)
+				tsu.p.runRuleCmd(cmdInit01)
+			}
+			cmdInit02 := `
+iptables -t mangle -A PREROUTING -p udp -m socket -j DIVERT
+iptables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
+`
+			tsu.p.runRuleCmd(cmdInit02)
+		}
+
+		// ipv6
 		if tsu.p.ipv6enabled {
 			cmdClear1 := `
 ip6tables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
@@ -1349,24 +1413,6 @@ ip6tables -t mangle -F GOHPTS_UDP 2>/dev/null || true
 ip6tables -t mangle -X GOHPTS_UDP 2>/dev/null || true
 `
 			tsu.p.runRuleCmd(cmdClear1)
-		}
-
-		cmdInit0 := `
-iptables -t mangle -N GOHPTS_UDP 2>/dev/null || true
-iptables -t mangle -F GOHPTS_UDP
-
-iptables -t mangle -A GOHPTS_UDP -p udp -d 127.0.0.0/8 -j RETURN
-iptables -t mangle -A GOHPTS_UDP -p udp -d 224.0.0.0/4 -j RETURN
-iptables -t mangle -A GOHPTS_UDP -p udp -d 255.255.255.255/32 -j RETURN
-`
-		tsu.p.runRuleCmd(cmdInit0)
-		if tsu.p.prefix != nil {
-			cmdInit00 := fmt.Sprintf(`
-iptables -t mangle -A GOHPTS_UDP -p udp -d %s -j RETURN
-`, tsu.p.prefix.Masked())
-			tsu.p.runRuleCmd(cmdInit00)
-		}
-		if tsu.p.ipv6enabled {
 			cmdInit01 := `
 ip6tables -t mangle -N GOHPTS_UDP 2>/dev/null || true
 ip6tables -t mangle -F GOHPTS_UDP
@@ -1384,66 +1430,24 @@ ip6tables -t mangle -A GOHPTS_UDP -p udp -s %s -d %s -j RETURN
 `, tsu.p.prefix6.Masked(), tsu.p.prefix6.Masked())
 				tsu.p.runRuleCmd(cmdInit02)
 			}
-		}
-		if tsu.p.ignoredPorts != "" {
-			cmdInit1 := fmt.Sprintf(`
-iptables -t mangle -A GOHPTS_UDP -p udp -m multiport --dports %s -j RETURN
-iptables -t mangle -A GOHPTS_UDP -p udp -m multiport --sports %s -j RETURN
-`, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
-			tsu.p.runRuleCmd(cmdInit1)
-			if tsu.p.ipv6enabled {
+			if tsu.p.ignoredPorts != "" {
 				cmdInit11 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS_UDP -p udp -m multiport --dports %s -j RETURN
 ip6tables -t mangle -A GOHPTS_UDP -p udp -m multiport --sports %s -j RETURN
 `, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
 				tsu.p.runRuleCmd(cmdInit11)
 			}
-		}
-		var cmdDocker string
-		if tsu.p.ipv6enabled {
-			cmdDocker = `
+			cmdDocker6 := `
 if command -v docker >/dev/null 2>&1
 then
 for subnet in $(docker network inspect $(docker network ls -q)  --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'); do
   if [[ "$subnet" == *:* ]]; then
 	ip6tables -t mangle -A GOHPTS_UDP -p udp -d "$subnet" -j RETURN
-  else
-	iptables -t mangle -A GOHPTS_UDP -p udp -d "$subnet" -j RETURN
   fi
 done
 fi
 `
-		} else {
-			cmdDocker = `
-if command -v docker >/dev/null 2>&1
-then
-for subnet in $(docker network inspect $(docker network ls -q)  --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'); do
-  if [[ "$subnet" == *:* ]]; then
-	continue
-  else
-	iptables -t mangle -A GOHPTS_UDP -p udp -d "$subnet" -j RETURN
-  fi
-done
-fi
-`
-		}
-		tsu.p.runRuleCmd(cmdDocker)
-		cmdInit00 := fmt.Sprintf(`
-iptables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
-`, tsu.p.mark)
-		tsu.p.runRuleCmd(cmdInit00)
-		if tsu.p.prefix != nil {
-			cmdInit01 := fmt.Sprintf(`
-iptables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1
-`, tsu.p.prefix.Masked(), tproxyPortUDP)
-			tsu.p.runRuleCmd(cmdInit01)
-		}
-		cmdInit02 := `
-iptables -t mangle -A PREROUTING -p udp -m socket -j DIVERT
-iptables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
-`
-		tsu.p.runRuleCmd(cmdInit02)
-		if tsu.p.ipv6enabled {
+			tsu.p.runRuleCmd(cmdDocker6)
 			cmdInit006 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
 `, tsu.p.mark)
@@ -1460,10 +1464,6 @@ ip6tables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
 `
 			tsu.p.runRuleCmd(cmdInit6)
 		}
-		_ = runSysctlOptCmd("net.ipv4.ip_nonlocal_bind", "1", setex, opts, tsu.p.debug, &tsu.p.dump)
-		if tsu.p.ipv6enabled {
-			_ = runSysctlOptCmd("net.ipv6.ip_nonlocal_bind", "1", setex, opts, tsu.p.debug, &tsu.p.dump)
-		}
 	default:
 		tsu.p.logger.Fatal().Msgf("Unreachable, unknown mode: %s", tsu.p.tproxyMode)
 	}
@@ -1472,12 +1472,14 @@ ip6tables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
 func (tsu *tproxyServerUDP) ClearRedirectRules() error {
 	switch tsu.p.tproxyMode {
 	case "tlocal":
-		cmd0 := `
+		if tsu.p.ipv4enabled {
+			cmd0 := `
 iptables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
 iptables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
 iptables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
 `
-		tsu.p.runRuleCmd(cmd0)
+			tsu.p.runRuleCmd(cmd0)
+		}
 		if tsu.p.ipv6enabled {
 			cmd1 := `
 ip6tables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
@@ -1488,13 +1490,15 @@ ip6tables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
 		}
 		fallthrough
 	case "tproxy":
-		cmd0 := `
+		if tsu.p.ipv4enabled {
+			cmd0 := `
 iptables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
 iptables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
 iptables -t mangle -F GOHPTS_UDP 2>/dev/null || true
 iptables -t mangle -X GOHPTS_UDP 2>/dev/null || true
 `
-		tsu.p.runRuleCmd(cmd0)
+			tsu.p.runRuleCmd(cmd0)
+		}
 		if tsu.p.ipv6enabled {
 			cmd1 := `
 ip6tables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true

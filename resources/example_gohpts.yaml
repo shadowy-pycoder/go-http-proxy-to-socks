@@ -2,6 +2,8 @@
 interface: "eth0" # if specified, overrides http server IP address
 disable_http: false # disable http proxy (default: false)
 disable_socks: false # disable upstream socks proxy (default: false)
+# if ipv4 and ipv6 are both false or both true, dual stack is assumed
+ipv4: false # this must be enabled for arpspoof (default: false)
 ipv6: false # this must be enabled for ndpspoof (default: false)
 socks4: false # use SOCKS4/SOCKS4a protocol (tcp only protocol, no udp tproxy or http3 possible) (default: false)
 dns: 8.8.8.8 # custom DNS server (used in direct dialer, namespaces, spoofing)

@@ -30,11 +30,11 @@ func newSOCKS5Dialer(
 	address string,
 	auth *auth,
 	forward contextDialer,
-	network string,
+	tcp string,
 	packetDial func(ctx context.Context, network string, address string) (net.PacketConn, error),
 ) (*socks5.Dialer, error) {
 	d := &socks5.Dialer{
-		ProxyNetwork: network,
+		ProxyNetwork: tcp,
 		IsResolve:    false,
 	}
 	host, port, err := splitHostPort(address)
@@ -55,9 +55,9 @@ func newSOCKS5Dialer(
 	return d, nil
 }
 
-func newSOCKS4Dialer(address string, auth *auth, forward contextDialer, network string) (*socks4.Dialer, error) {
+func newSOCKS4Dialer(address string, auth *auth, forward contextDialer, tcp string) (*socks4.Dialer, error) {
 	d := &socks4.Dialer{
-		ProxyNetwork: network,
+		ProxyNetwork: tcp,
 		IsResolve:    false,
 	}
 	host, port, err := splitHostPort(address)
@@ -76,13 +76,16 @@ func newSOCKS4Dialer(address string, auth *auth, forward contextDialer, network 
 	return d, nil
 }
 
-func getQUICDialer(dialer contextDialer) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+func getQUICDialer(
+	dialer contextDialer,
+	udp string,
+) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 	return func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
-		udpConn, err := dialer.DialContext(ctx, "udp", addr)
+		udpConn, err := dialer.DialContext(ctx, udp, addr)
 		if err != nil {
 			return nil, err
 		}
-		udpAddr, err := net.ResolveUDPAddr("udp", addr)
+		udpAddr, err := net.ResolveUDPAddr(udp, addr)
 		if err != nil {
 			udpConn.Close()
 			return nil, err

@@ -956,7 +956,6 @@ func (p *Proxy) Run() error {
 	}
 
 	// configure ndp spoofing
-
 	if p.ndpSpoofConf != "" && !p.ipv6enabled {
 		p.logger.Warn().Msg("ndp spoofer requires IPv6 enabled")
 	} else if p.ndpSpoofConf != "" {

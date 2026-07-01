@@ -80,7 +80,7 @@ Specify http server in proxy configuration of Postman
   Supports `redirect` (SO_ORIGINAL_DST) and `tproxy` (IP_TRANSPARENT) modes
 
 - **IPv4 and IPv6 support**\
-  Operates in IPv4-only, IPv6-only or dual stack modes
+  Operates in `IPv4-only`, `IPv6-only` or `dual stack` modes
 
 - **TCP and UDP Transparent proxy**\
   `tproxy` and `tlocal` (IP_TRANSPARENT) handle TCP and UDP traffic

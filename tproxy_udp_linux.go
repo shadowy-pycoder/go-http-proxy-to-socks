@@ -1257,14 +1257,14 @@ func (tsu *tproxyServerUDP) getOriginalDst(oob []byte) (*net.UDPAddr, error) {
 func (tsu *tproxyServerUDP) ApplyRedirectRules(opts map[string]string) {
 	_, tproxyPortUDP, _ := net.SplitHostPort(tsu.p.tproxyAddrUDP)
 	var setex string
-	if tsu.p.debug {
+	if tsu.p.dumpRules {
 		setex = "set -ex"
 	}
 	if tsu.p.ipv4enabled {
-		_ = runSysctlOptCmd("net.ipv4.ip_nonlocal_bind", "1", setex, opts, tsu.p.debug, &tsu.p.dump)
+		_ = runSysctlOptCmd("net.ipv4.ip_nonlocal_bind", "1", setex, opts, tsu.p.dumpRules, &tsu.p.dump)
 	}
 	if tsu.p.ipv6enabled {
-		_ = runSysctlOptCmd("net.ipv6.ip_nonlocal_bind", "1", setex, opts, tsu.p.debug, &tsu.p.dump)
+		_ = runSysctlOptCmd("net.ipv6.ip_nonlocal_bind", "1", setex, opts, tsu.p.dumpRules, &tsu.p.dump)
 	}
 	switch tsu.p.tproxyMode {
 	case "redirect":

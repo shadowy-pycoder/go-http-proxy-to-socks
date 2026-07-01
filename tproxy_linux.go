@@ -287,7 +287,7 @@ func (ts *tproxyServer) Shutdown() {
 func (ts *tproxyServer) ApplyRedirectRules(opts map[string]string) {
 	_, tproxyPort, _ := net.SplitHostPort(ts.p.tproxyAddr)
 	var setex string
-	if ts.p.debug {
+	if ts.p.dumpRules {
 		setex = "set -ex"
 	}
 	cmdCheckBBR := exec.Command("bash", "-c", fmt.Sprintf(`
@@ -299,19 +299,19 @@ func (ts *tproxyServer) ApplyRedirectRules(opts map[string]string) {
     `, setex))
 	cmdCheckBBR.Stdout = os.Stdout
 	cmdCheckBBR.Stderr = os.Stderr
-	if !ts.p.debug {
+	if !ts.p.dumpRules {
 		cmdCheckBBR.Stdout = nil
 	}
 	if err := cmdCheckBBR.Run(); err == nil {
-		_ = runSysctlOptCmd("net.ipv4.tcp_congestion_control", "bbr", setex, opts, ts.p.debug, &ts.p.dump)
+		_ = runSysctlOptCmd("net.ipv4.tcp_congestion_control", "bbr", setex, opts, ts.p.dumpRules, &ts.p.dump)
 	}
-	_ = runSysctlOptCmd("net.core.default_qdisc", "fq", setex, opts, ts.p.debug, &ts.p.dump)
-	_ = runSysctlOptCmd("net.ipv4.tcp_tw_reuse", "1", setex, opts, ts.p.debug, &ts.p.dump)
-	_ = runSysctlOptCmd("net.ipv4.tcp_fin_timeout", "15", setex, opts, ts.p.debug, &ts.p.dump)
-	_ = runSysctlOptCmd("net.ipv4.tcp_rmem", "4096 65536 4194304", setex, opts, ts.p.debug, &ts.p.dump)
-	_ = runSysctlOptCmd("net.ipv4.tcp_wmem", "4096 65536 4194304", setex, opts, ts.p.debug, &ts.p.dump)
-	_ = runSysctlOptCmd("net.ipv4.tcp_window_scaling", "1", setex, opts, ts.p.debug, &ts.p.dump)
-	_ = runSysctlOptCmd("net.core.somaxconn", "65535", setex, opts, ts.p.debug, &ts.p.dump)
+	_ = runSysctlOptCmd("net.core.default_qdisc", "fq", setex, opts, ts.p.dumpRules, &ts.p.dump)
+	_ = runSysctlOptCmd("net.ipv4.tcp_tw_reuse", "1", setex, opts, ts.p.dumpRules, &ts.p.dump)
+	_ = runSysctlOptCmd("net.ipv4.tcp_fin_timeout", "15", setex, opts, ts.p.dumpRules, &ts.p.dump)
+	_ = runSysctlOptCmd("net.ipv4.tcp_rmem", "4096 65536 4194304", setex, opts, ts.p.dumpRules, &ts.p.dump)
+	_ = runSysctlOptCmd("net.ipv4.tcp_wmem", "4096 65536 4194304", setex, opts, ts.p.dumpRules, &ts.p.dump)
+	_ = runSysctlOptCmd("net.ipv4.tcp_window_scaling", "1", setex, opts, ts.p.dumpRules, &ts.p.dump)
+	_ = runSysctlOptCmd("net.core.somaxconn", "65535", setex, opts, ts.p.dumpRules, &ts.p.dump)
 	switch ts.p.tproxyMode {
 	case "redirect":
 

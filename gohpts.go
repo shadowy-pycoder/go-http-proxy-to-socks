@@ -358,7 +358,9 @@ func New(conf *Config) (*Proxy, error) {
 	if p.dumpRules && !p.auto {
 		return nil, fmt.Errorf("dumping rules is only possible in auto configuration")
 	}
-	p.dump.WriteString("#!/usr/bin/env bash\n\nset -ex\n")
+	if p.dumpRules {
+		p.dump.WriteString("#!/usr/bin/env bash\n\nset -ex\n")
+	}
 
 	// setup loggers
 	p.sniff = conf.Sniff
@@ -2714,7 +2716,7 @@ func (p *Proxy) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (p *Proxy) runRuleCmd(rule string) {
 	var setex string
-	if p.debug {
+	if p.dumpRules {
 		setex = "set -ex"
 	}
 	cmd := exec.Command("bash", "-c", fmt.Sprintf(`
@@ -2723,13 +2725,15 @@ func (p *Proxy) runRuleCmd(rule string) {
     `, setex, rule))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if !p.debug {
+	if !p.dumpRules {
 		cmd.Stdout = nil
 	}
 	if err := cmd.Run(); err != nil {
 		p.logger.Error().Err(err).Msgf("[%s] Failed running rule command", p.tproxyMode)
 	}
-	p.dump.WriteString(rule)
+	if p.dumpRules {
+		p.dump.WriteString(rule)
+	}
 }
 
 func (p *Proxy) newSOCKSDialer(address string, auth *auth, forward contextDialer, tcp string) (contextDialer, error) {
@@ -2742,35 +2746,35 @@ func (p *Proxy) newSOCKSDialer(address string, auth *auth, forward contextDialer
 func (p *Proxy) applyCommonRedirectRules(opts map[string]string) {
 	// TODO: add support for nftables
 	var setex string
-	if p.debug {
+	if p.dumpRules {
 		setex = "set -ex"
 	}
 	if p.ipv4enabled {
-		_ = runSysctlOptCmd("net.ipv4.ip_forward", "1", setex, opts, p.debug, &p.dump)
+		_ = runSysctlOptCmd("net.ipv4.ip_forward", "1", setex, opts, p.dumpRules, &p.dump)
 		if p.arpspoofer != nil {
-			_ = runSysctlOptCmd("net.ipv4.conf.all.send_redirects", "0", setex, opts, p.debug, &p.dump)
-			_ = runSysctlOptCmd(fmt.Sprintf("net.ipv4.conf.%s.send_redirects", p.arpspoofer.Interface().Name), "0", setex, opts, p.debug, &p.dump)
-			_ = runSysctlOptCmd("net.ipv4.conf.all.accept_redirects", "0", setex, opts, p.debug, &p.dump)
-			_ = runSysctlOptCmd("net.ipv4.conf.default.accept_redirects", "0", setex, opts, p.debug, &p.dump)
+			_ = runSysctlOptCmd("net.ipv4.conf.all.send_redirects", "0", setex, opts, p.dumpRules, &p.dump)
+			_ = runSysctlOptCmd(fmt.Sprintf("net.ipv4.conf.%s.send_redirects", p.arpspoofer.Interface().Name), "0", setex, opts, p.dumpRules, &p.dump)
+			_ = runSysctlOptCmd("net.ipv4.conf.all.accept_redirects", "0", setex, opts, p.dumpRules, &p.dump)
+			_ = runSysctlOptCmd("net.ipv4.conf.default.accept_redirects", "0", setex, opts, p.dumpRules, &p.dump)
 		}
 	}
 	if p.ipv6enabled {
-		_ = runSysctlOptCmd("net.ipv6.conf.all.forwarding", "1", setex, opts, p.debug, &p.dump)
-		_ = runSysctlOptCmd("net.ipv6.conf.default.forwarding", "1", setex, opts, p.debug, &p.dump)
+		_ = runSysctlOptCmd("net.ipv6.conf.all.forwarding", "1", setex, opts, p.dumpRules, &p.dump)
+		_ = runSysctlOptCmd("net.ipv6.conf.default.forwarding", "1", setex, opts, p.dumpRules, &p.dump)
 		if p.ndpspoofer != nil {
-			_ = runSysctlOptCmd("net.ipv6.conf.all.accept_ra", "0", setex, opts, p.debug, &p.dump)
-			_ = runSysctlOptCmd("net.ipv6.conf.all.accept_redirects", "0", setex, opts, p.debug, &p.dump)
-			_ = runSysctlOptCmd("net.ipv6.conf.default.accept_redirects", "0", setex, opts, p.debug, &p.dump)
+			_ = runSysctlOptCmd("net.ipv6.conf.all.accept_ra", "0", setex, opts, p.dumpRules, &p.dump)
+			_ = runSysctlOptCmd("net.ipv6.conf.all.accept_redirects", "0", setex, opts, p.dumpRules, &p.dump)
+			_ = runSysctlOptCmd("net.ipv6.conf.default.accept_redirects", "0", setex, opts, p.dumpRules, &p.dump)
 		}
 	}
-	_ = runSysctlOptCmd("net.core.rmem_default", "4194304", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.wmem_default", "4194304", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.rmem_max", "4194304", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.wmem_max", "4194304", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.netdev_budget", "600", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.netdev_budget_usecs", "8000", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("net.core.netdev_max_backlog", "250000", setex, opts, p.debug, &p.dump)
-	_ = runSysctlOptCmd("fs.file-max", "2097152", setex, opts, p.debug, &p.dump)
+	_ = runSysctlOptCmd("net.core.rmem_default", "4194304", setex, opts, p.dumpRules, &p.dump)
+	_ = runSysctlOptCmd("net.core.wmem_default", "4194304", setex, opts, p.dumpRules, &p.dump)
+	_ = runSysctlOptCmd("net.core.rmem_max", "4194304", setex, opts, p.dumpRules, &p.dump)
+	_ = runSysctlOptCmd("net.core.wmem_max", "4194304", setex, opts, p.dumpRules, &p.dump)
+	_ = runSysctlOptCmd("net.core.netdev_budget", "600", setex, opts, p.dumpRules, &p.dump)
+	_ = runSysctlOptCmd("net.core.netdev_budget_usecs", "8000", setex, opts, p.dumpRules, &p.dump)
+	_ = runSysctlOptCmd("net.core.netdev_max_backlog", "250000", setex, opts, p.dumpRules, &p.dump)
+	_ = runSysctlOptCmd("fs.file-max", "2097152", setex, opts, p.dumpRules, &p.dump)
 	if p.tproxyMode == "tproxy" || p.tproxyMode == "tlocal" {
 		if p.ipv4enabled {
 			cmdClear0 := `

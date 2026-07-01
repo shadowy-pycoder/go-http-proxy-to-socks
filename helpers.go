@@ -132,7 +132,7 @@ func splitHostPort(address string) (string, int, error) {
 	return host, portnum, nil
 }
 
-func runSysctlOptCmd(opt, value, setex string, opts map[string]string, debug bool, dump *strings.Builder) error {
+func runSysctlOptCmd(opt, value, setex string, opts map[string]string, dumpRules bool, dump *strings.Builder) error {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/sys/%s", strings.ReplaceAll(opt, ".", "/")))
 	if err != nil {
 		return err
@@ -143,15 +143,17 @@ func runSysctlOptCmd(opt, value, setex string, opts map[string]string, debug boo
     %s`, setex, cmdOpt))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if !debug {
+	if !dumpRules {
 		cmd.Stdout = nil
 	}
 	if err := cmd.Run(); err != nil {
 		return err
 	}
 	opts[opt] = strings.ReplaceAll(strings.TrimRight(string(data), "\n"), "\t", " ")
-	dump.WriteString(cmdOpt)
-	dump.WriteString("\n")
+	if dumpRules {
+		dump.WriteString(cmdOpt)
+		dump.WriteString("\n")
+	}
 	return nil
 }
 

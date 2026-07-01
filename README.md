@@ -1285,7 +1285,7 @@ Or make it persistent for specific shell instance:
 ```shell
 sudo ip netns exec ns1 unshare --mount bash -c '
     mount --bind /dev/null /run/systemd/resolve/io.systemd.Resolve
-    exec bash --login
+    exec bash --login'
 ```
 
 ### Playground setup

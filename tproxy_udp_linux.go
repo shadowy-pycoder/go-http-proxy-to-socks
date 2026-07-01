@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -173,16 +174,24 @@ func newTproxyServerUDP(p *Proxy) (*tproxyServerUDP, error) {
 			var operr error
 			size := 2 * 1024 * 1024
 			if err := conn.Control(func(fd uintptr) {
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_RECVORIGDSTADDR, 1)
-				if tsu.p.ipv6enabled {
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_RECVORIGDSTADDR, 1)
+				setopt := func(level, opt, val int) {
+					if operr != nil {
+						return
+					}
+					if e := unix.SetsockoptInt(int(fd), level, opt, val); e != nil {
+						operr = fmt.Errorf("setsockopt(%d,%d): %w", level, opt, e)
+					}
 				}
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+				setopt(unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+				setopt(unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+				setopt(unix.SOL_SOCKET, unix.SO_SNDBUF, size)
+				setopt(unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+				setopt(unix.SOL_IP, unix.IP_RECVORIGDSTADDR, 1)
+				setopt(unix.SOL_IP, unix.IP_TRANSPARENT, 1)
+				if tsu.p.ipv6enabled {
+					setopt(unix.SOL_IPV6, unix.IPV6_RECVORIGDSTADDR, 1)
+					setopt(unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
+				}
 			}); err != nil {
 				return err
 			}
@@ -191,6 +200,9 @@ func newTproxyServerUDP(p *Proxy) (*tproxyServerUDP, error) {
 	}
 	pconn, err := lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.tproxyAddrUDP)
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return nil, fmt.Errorf("permission denied (try setting CAP_NET_ADMIN capability): %v", err)
+		}
 		return nil, err
 	}
 	tsu.conn = pconn.(*net.UDPConn)
@@ -201,12 +213,20 @@ func newTproxyServerUDP(p *Proxy) (*tproxyServerUDP, error) {
 				var operr error
 				size := 2 * 1024 * 1024
 				if err := conn.Control(func(fd uintptr) {
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_FREEBIND, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+					setopt := func(level, opt, val int) {
+						if operr != nil {
+							return
+						}
+						if e := unix.SetsockoptInt(int(fd), level, opt, val); e != nil {
+							operr = fmt.Errorf("setsockopt(%d,%d): %w", level, opt, e)
+						}
+					}
+					setopt(unix.SOL_IP, unix.IP_FREEBIND, 1)
+					setopt(unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+					setopt(unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+					setopt(unix.SOL_SOCKET, unix.SO_SNDBUF, size)
+					setopt(unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+					setopt(unix.SOL_IP, unix.IP_TRANSPARENT, 1)
 				}); err != nil {
 					return err
 				}
@@ -215,6 +235,9 @@ func newTproxyServerUDP(p *Proxy) (*tproxyServerUDP, error) {
 		}
 		pconn, err = lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.gwDNS.String())
 		if err != nil {
+			if errors.Is(err, os.ErrPermission) {
+				return nil, fmt.Errorf("permission denied (try setting CAP_NET_ADMIN capability): %v", err)
+			}
 			return nil, err
 		}
 		tsu.gwConn = pconn.(*net.UDPConn)
@@ -225,12 +248,20 @@ func newTproxyServerUDP(p *Proxy) (*tproxyServerUDP, error) {
 				var operr error
 				size := 2 * 1024 * 1024
 				if err := conn.Control(func(fd uintptr) {
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_FREEBIND, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+					setopt := func(level, opt, val int) {
+						if operr != nil {
+							return
+						}
+						if e := unix.SetsockoptInt(int(fd), level, opt, val); e != nil {
+							operr = fmt.Errorf("setsockopt(%d,%d): %w", level, opt, e)
+						}
+					}
+					setopt(unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+					setopt(unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+					setopt(unix.SOL_SOCKET, unix.SO_SNDBUF, size)
+					setopt(unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+					setopt(unix.SOL_IPV6, unix.IPV6_FREEBIND, 1)
+					setopt(unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
 				}); err != nil {
 					return err
 				}
@@ -239,6 +270,9 @@ func newTproxyServerUDP(p *Proxy) (*tproxyServerUDP, error) {
 		}
 		pconn, err = lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.hostDNS6.String())
 		if err != nil {
+			if errors.Is(err, os.ErrPermission) {
+				return nil, fmt.Errorf("permission denied (try setting CAP_NET_ADMIN capability): %v", err)
+			}
 			return nil, err
 		}
 		tsu.gwConn6 = pconn.(*net.UDPConn)

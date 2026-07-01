@@ -4,6 +4,7 @@ package gohpts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -40,15 +41,23 @@ func newTproxyServer(p *Proxy) (*tproxyServer, error) {
 			var operr error
 			size := 2 * 1024 * 1024
 			if err := conn.Control(func(fd uintptr) {
-				operr = unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT, int(timeout.Milliseconds()))
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+				setopt := func(level, opt, val int) {
+					if operr != nil {
+						return
+					}
+					if e := unix.SetsockoptInt(int(fd), level, opt, val); e != nil {
+						operr = fmt.Errorf("setsockopt(%d,%d): %w", level, opt, e)
+					}
+				}
+				setopt(unix.IPPROTO_TCP, unix.TCP_USER_TIMEOUT, int(timeout.Milliseconds()))
+				setopt(unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+				setopt(unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+				setopt(unix.SOL_SOCKET, unix.SO_SNDBUF, size)
+				setopt(unix.SOL_SOCKET, unix.SO_RCVBUF, size)
 				if ts.p.tproxyMode == "tproxy" || ts.p.tproxyMode == "tlocal" {
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
+					setopt(unix.SOL_IP, unix.IP_TRANSPARENT, 1)
 					if ts.p.ipv6enabled {
-						operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
+						setopt(unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
 					}
 				}
 			}); err != nil {
@@ -60,6 +69,9 @@ func newTproxyServer(p *Proxy) (*tproxyServer, error) {
 
 	ln, err := lc.Listen(context.Background(), ts.p.tcp, ts.p.tproxyAddr)
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return nil, fmt.Errorf("permission denied (try setting CAP_NET_ADMIN capability): %v", err)
+		}
 		return nil, err
 	}
 	ts.listener = ln

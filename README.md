@@ -33,7 +33,7 @@
   - [Example setup using self-signed certificate](#example-setup-using-self-signed-certificate)
   - [Test connection](#test-connection)
   - [Test connection in a browser](#test-connection-in-a-browser)
-- [IPv6 support](#ipv6-support)
+- [IPv4 and IPv6 support](#ipv4-and-ipv6-support)
 - [ARP spoofing](#arp-spoofing)
 - [NDP spoofing](#ndp-spoofing)
 - [DNS spoofing](#dns-spoofing)
@@ -78,6 +78,9 @@ Specify http server in proxy configuration of Postman
 
 - **Transparent proxy**\
   Supports `redirect` (SO_ORIGINAL_DST) and `tproxy` (IP_TRANSPARENT) modes
+
+- **IPv4 and IPv6 support**\
+  Operates in IPv4-only, IPv6-only or dual stack modes
 
 - **TCP and UDP Transparent proxy**\
   `tproxy` and `tlocal` (IP_TRANSPARENT) handle TCP and UDP traffic
@@ -991,11 +994,39 @@ gohpts -sniff -body -nocolor
   chromium --proxy-server="https://127.0.0.1:8080"
   ```
 
-## IPv6 support
+## IPv4 and IPv6 support
 
 [[Back]](#table-of-contents)
 
-To enable IPv6 handling just add `-6` flag, for example when using with transparent proxy:
+In terms of network layer handling, `GoHPTS` can operate in three modes: `dual stack`, `IPv4-only` and `IPv6-only`. User can control the mode by specifying `-4` and `-6` flags. When one of the flags is set, proxy starts in corresponding mode, when both flags are present or both omitted, `dual stack` is assumed. Please note that in "only" modes, only IP addresses of specific version are allowed, all domains get resolved to specific IP version (if possible), all listening addresses require using the same version, etc.
+
+To enable `IPv4-only` mode just add `-4` flag:
+
+```shell
+sudo ./gohpts -sniff -body -d -4
+```
+
+To test proxy in IPv4 mode you can use any Linux VM:
+
+1. On your virtual machine:
+
+```shell
+# add your host machine as gateway for VM
+export GATEWAY="<host IPv4 address>"
+ip route add 0.0.0.0/1 via "$GATEWAY"
+ip route add 128.0.0.0/1 via "$GATEWAY"
+```
+
+2. On your host:
+
+```shell
+# run proxy on your host
+sudo ./gohpts -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -d -4
+```
+
+3. Visit any website on your virtual machine and see traffic in proxy logs
+
+To enable `IPv6-only` mode just add `-6` flag, for example when using with transparent proxy:
 
 ```shell
 sudo ./gohpts -T 8888 -M redirect -sniff -body -auto -mark 100 -d -6
@@ -1007,11 +1038,6 @@ To test proxy in IPv6 mode you can use any Linux VM:
 1. On your virtual machine:
 
 ```shell
-# add your host machine as gateway for VM
-export GATEWAY="<host IPv4 address>"
-ip route add 0.0.0.0/1 via "$GATEWAY"
-ip route add 128.0.0.0/1 via "$GATEWAY"
-
 # add your host machine as gateway IPv6 for VM
 export GATEWAY6="<host IPv6 address>"
 ip -6 route add ::/1 via "$GATEWAY6" dev eth0
@@ -1112,9 +1138,7 @@ go build -o ./bin/socks5_server ./cmd/socks5/*.go
 5. Run `gohtps`:
 
 ```shell
-
-gohpts -s 203.0.113.10:3000 -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -mark 100 -arpspoof "fullduplex true;debug true" -ndpspoof "ra true;debug true
-" -6 -d
+gohpts -s 203.0.113.10:3000 -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -mark 100 -arpspoof "fullduplex true;debug true" -ndpspoof "ra true;debug true" -4 -6 -d
 ```
 
 6. Get another device (phone, tablet, etc) and connect it to the same network. Try to access Internet and check if some traffic appears on your host machine. Check public IP address with some online tools (it should match your VPS address `203.0.113.10` in this case or global IPv6 address)
@@ -1334,7 +1358,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
    Run proxy:
 
    ```shell
-   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -6 -d -sniff -body -in-netns ns1
+   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -4 -6 -d -sniff -body -in-netns ns1
    ```
 
    Make request via `ns1`
@@ -1350,7 +1374,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
    Run proxy:
 
    ```shell
-   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -6 -d -sniff -body -in-netns ns1 -c ./cert.pem -k ./key.pem
+   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -4 -6 -d -sniff -body -in-netns ns1 -c ./cert.pem -k ./key.pem
    ```
 
    Make request via `ns1`
@@ -1366,7 +1390,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
    Run proxy:
 
    ```shell
-   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -6 -d -sniff -body -in-netns ns1 -c ./cert.pem -k ./key.pem
+   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -4 -6 -d -sniff -body -in-netns ns1 -c ./cert.pem -k ./key.pem
    ```
 
    Make request via `ns1`
@@ -1382,7 +1406,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
    Run proxy:
 
    ```shell
-   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -6 -d -sniff -body -in-netns ns1 -nohttp -M redirect -T :8888 -auto
+   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -4 -6 -d -sniff -body -in-netns ns1 -nohttp -M redirect -T :8888 -auto
    ```
 
    Make request via `ns1`
@@ -1420,7 +1444,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
    Run proxy:
 
    ```
-   sudo ./bin/gohpts -s :1080 -l :8083 -6 -d -sniff -body -out-netns ns1 -i wlan0
+   sudo ./bin/gohpts -s :1080 -l :8083 -4 -6 -d -sniff -body -out-netns ns1 -i wlan0
    ```
 
    Make request via host
@@ -1436,7 +1460,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
    Run proxy:
 
    ```
-   sudo ./bin/gohpts -s :1080 -l :8083 -6 -d -sniff -body -out-netns ns1 -i wlan0 -c ./cert.pem -k ./key.pem
+   sudo ./bin/gohpts -s :1080 -l :8083 -4 -6 -d -sniff -body -out-netns ns1 -i wlan0 -c ./cert.pem -k ./key.pem
    ```
 
    Make request via host
@@ -1452,7 +1476,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
    Run proxy (`-auto` does not work with local socks5 server for me, so I use remote one):
 
    ```
-   sudo ./bin/gohpts -s <remote> -6 -d -sniff -body -out-netns ns1 -nohttp -M redirect -T :8888 -auto
+   sudo ./bin/gohpts -s <remote> -4 -6 -d -sniff -body -out-netns ns1 -nohttp -M redirect -T :8888 -auto
    ```
 
    Make request via host
@@ -1510,7 +1534,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
    Run proxy:
 
    ```
-   sudo ./bin/gohpts -s $WLAN_IP:1080 -l 0.0.0.0:8083 -6 -d -sniff -body -in-netns ns2 -out-netns ns1
+   sudo ./bin/gohpts -s $WLAN_IP:1080 -l 0.0.0.0:8083 -4 -6 -d -sniff -body -in-netns ns2 -out-netns ns1
    ```
 
    Make requests
@@ -1529,7 +1553,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
    Run proxy:
 
    ```
-   sudo ./bin/gohpts -s $WLAN_IP:1080 -l 0.0.0.0:8083 -6 -d -sniff -body -in-netns ns2 -out-netns ns1 -c ./cert.pem -k ./key.pem
+   sudo ./bin/gohpts -s $WLAN_IP:1080 -l 0.0.0.0:8083 -4 -6 -d -sniff -body -in-netns ns2 -out-netns ns1 -c ./cert.pem -k ./key.pem
    ```
 
    Make requests
@@ -1548,7 +1572,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
     Run proxy:
 
     ```shell
-    sudo ./bin/gohpts -s $WLAN_IP:1080 -6 -d -sniff -body -in-netns ns2 -out-netns ns1 -nohttp -M redirect -T :8888 -auto
+    sudo ./bin/gohpts -s $WLAN_IP:1080 -4 -6 -d -sniff -body -in-netns ns2 -out-netns ns1 -nohttp -M redirect -T :8888 -auto
     ```
 
     Make requests
@@ -1564,7 +1588,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
     Run proxy:
 
     ```shell
-    sudo ./bin/gohpts -s $WLAN_IP:1080 -6 -d -sniff -body -in-netns ns2 -out-netns ns1 -nohttp -M tproxy -T :8888 -auto -arpspoof "fullduplex 1;debug 1;interval 1s" -ndpspoof "ra true;interval 10s;debug 1"
+    sudo ./bin/gohpts -s $WLAN_IP:1080 -4 -6 -d -sniff -body -in-netns ns2 -out-netns ns1 -nohttp -M tproxy -T :8888 -auto -arpspoof "fullduplex 1;debug 1;interval 1s" -ndpspoof "ra true;interval 10s;debug 1"
     ```
 
     Now previous requests on `ns3` and `ns4` should work
@@ -1579,7 +1603,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
     Run proxy:
 
     ```shell
-    sudo ./bin/gohpts -l 0.0.0.0:8083 -6 -d -sniff -body -in-netns ns1 -c ./cert.pem -k ./key.pem -nosocks
+    sudo ./bin/gohpts -l 0.0.0.0:8083 -4 -6 -d -sniff -body -in-netns ns1 -c ./cert.pem -k ./key.pem -nosocks
     ```
 
     Make request
@@ -1595,7 +1619,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
     Run proxy:
 
     ```shell
-    sudo ./bin/gohpts -l 0.0.0.0:8083 -6 -d -sniff -body -out-netns ns1 -c ./cert.pem -k ./key.pem -nosocks
+    sudo ./bin/gohpts -l 0.0.0.0:8083 -4 -6 -d -sniff -body -out-netns ns1 -c ./cert.pem -k ./key.pem -nosocks
     ```
 
     Make request

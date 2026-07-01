@@ -1346,9 +1346,9 @@ func (p *Proxy) Run() error {
 				wg.Add(int(p.tproxyWorkers))
 				for i, tproxyServer := range tproxyServers {
 					go func() {
-						p.logger.Info().Msgf("[%s %s] Server %d is shutting down...", p.tcp, p.tproxyMode, i)
+						p.logger.Debug().Msgf("[%s %s] Server %d is shutting down...", p.tcp, p.tproxyMode, i)
 						tproxyServer.Shutdown()
-						p.logger.Info().Msgf("[%s %s] Server %d gracefully shutdown", p.tcp, p.tproxyMode, i)
+						p.logger.Debug().Msgf("[%s %s] Server %d gracefully shutdown", p.tcp, p.tproxyMode, i)
 						wg.Done()
 					}()
 				}
@@ -1358,9 +1358,9 @@ func (p *Proxy) Run() error {
 				wg.Add(int(p.tproxyUDPWorkers))
 				for i, tproxyServerUDP := range tproxyUDPServers {
 					go func() {
-						p.logger.Info().Msgf("[%s %s] Server %d is shutting down...", p.udp, p.tproxyMode, i)
+						p.logger.Debug().Msgf("[%s %s] Server %d is shutting down...", p.udp, p.tproxyMode, i)
 						tproxyServerUDP.Shutdown()
-						p.logger.Info().Msgf("[%s %s] Server %d gracefully shutdown", p.udp, p.tproxyMode, i)
+						p.logger.Debug().Msgf("[%s %s] Server %d gracefully shutdown", p.udp, p.tproxyMode, i)
 						wg.Done()
 					}()
 				}
@@ -1446,6 +1446,12 @@ func (p *Proxy) Run() error {
 				})
 			}
 			wg.Wait()
+			if tproxyEnabled {
+				p.logger.Info().Msgf("[%s %s] Server gracefully shutdown", p.tcp, p.tproxyMode)
+			}
+			if tproxyUDPEnabled {
+				p.logger.Info().Msgf("[%s %s] Server gracefully shutdown", p.udp, p.tproxyMode)
+			}
 			close(done)
 		}()
 		if tproxyEnabled {
@@ -1500,23 +1506,25 @@ func (p *Proxy) Run() error {
 				})
 			}
 			if tproxyEnabled {
+				p.logger.Info().Msgf("[%s %s] Server is shutting down...", p.tcp, p.tproxyMode)
 				wg.Add(int(p.tproxyWorkers))
 				for i, tproxyServer := range tproxyServers {
 					go func() {
-						p.logger.Info().Msgf("[%s %s] Server %d is shutting down...", p.tcp, p.tproxyMode, i)
+						p.logger.Debug().Msgf("[%s %s] Server %d is shutting down...", p.tcp, p.tproxyMode, i)
 						tproxyServer.Shutdown()
-						p.logger.Info().Msgf("[%s %s] Server %d gracefully shutdown", p.tcp, p.tproxyMode, i)
+						p.logger.Debug().Msgf("[%s %s] Server %d gracefully shutdown", p.tcp, p.tproxyMode, i)
 						wg.Done()
 					}()
 				}
 			}
 			if tproxyUDPEnabled {
+				p.logger.Info().Msgf("[%s %s] Server is shutting down...", p.udp, p.tproxyMode)
 				wg.Add(int(p.tproxyUDPWorkers))
 				for i, tproxyServerUDP := range tproxyUDPServers {
 					go func() {
-						p.logger.Info().Msgf("[%s %s] Server %d is shutting down...", p.udp, p.tproxyMode, i)
+						p.logger.Debug().Msgf("[%s %s] Server %d is shutting down...", p.udp, p.tproxyMode, i)
 						tproxyServerUDP.Shutdown()
-						p.logger.Info().Msgf("[%s %s] Server %d gracefully shutdown", p.udp, p.tproxyMode, i)
+						p.logger.Debug().Msgf("[%s %s] Server %d gracefully shutdown", p.udp, p.tproxyMode, i)
 						wg.Done()
 					}()
 				}
@@ -1572,6 +1580,12 @@ func (p *Proxy) Run() error {
 				})
 			}
 			wg.Wait()
+			if tproxyEnabled {
+				p.logger.Info().Msgf("[%s %s] Server gracefully shutdown", p.tcp, p.tproxyMode)
+			}
+			if tproxyUDPEnabled {
+				p.logger.Info().Msgf("[%s %s] Server gracefully shutdown", p.udp, p.tproxyMode)
+			}
 			close(done)
 		}()
 		if tproxyEnabled && tproxyUDPEnabled {
@@ -1609,6 +1623,7 @@ func (p *Proxy) Run() error {
 		p.outNS.Close()
 	}
 	if p.dumpRules {
+		// TODO: make filename configurable
 		err := os.WriteFile("rules.sh", []byte(p.dump.String()), 0o755)
 		if err != nil {
 			p.logger.Error().Err(err).Msg("Failed dumping rules")

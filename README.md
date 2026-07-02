@@ -870,7 +870,7 @@ gohpts -sniff -body -nocolor
   ```shell
   git clone https://github.com/wzshiming/socks5.git && cd socks5
   go build -o socks5_server ./cmd/socks5/main.go
-  ./bin/socks5_server -a 0.0.0.0:1080
+  ./socks5_server -a 0.0.0.0:1080
   ```
 
 - Open another terminal and install `GoHPTS` proxy:
@@ -1297,7 +1297,7 @@ sudo ip netns exec ns1 unshare --mount bash -c '
   ```shell
   git clone https://github.com/wzshiming/socks5.git && cd socks5
   go build -o socks5_server ./cmd/socks5/main.go
-  ./bin/socks5_server -a 0.0.0.0:1080
+  ./socks5_server -a 0.0.0.0:1080
   ```
 
 - Download and install [Simple HTTP3 to SOCKS5 proxy example](https://github.com/shadowy-pycoder/http3-socks-proxy):

@@ -21,7 +21,13 @@ func getBaseDialer(ipver string, timeout time.Duration, mark uint, nameserver *n
 			if nameserver != nil {
 				address = nameserver.String()
 			}
-			return dnsDialer.DialContext(ctx, ipver, address)
+			switch ipver {
+			case "ip4":
+				network += "4"
+			case "ip6":
+				network += "6"
+			}
+			return dnsDialer.DialContext(ctx, network, address)
 		},
 	}
 	return &net.Dialer{Timeout: timeout, Resolver: resolver}
@@ -43,7 +49,13 @@ func getNSDialer(ipver string, ns *netns.NsHandle, timeout time.Duration, mark u
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			return dnsDialer.DialContext(ctx, ipver, address)
+			switch ipver {
+			case "ip4":
+				network += "4"
+			case "ip6":
+				network += "6"
+			}
+			return dnsDialer.DialContext(ctx, network, address)
 		},
 	}
 	dialer := &net.Dialer{Timeout: timeout, Resolver: resolver}

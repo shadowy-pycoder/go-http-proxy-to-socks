@@ -11,15 +11,15 @@ type tproxyServer struct {
 	listener net.Listener
 	quit     chan struct{}
 	wg       sync.WaitGroup
-	p        *proxyapp
+	p        *Proxy
 }
 
-func newTproxyServer(p *proxyapp) *tproxyServer {
+func newTproxyServer(p *Proxy) (*tproxyServer, error) {
 	_ = p
-	return nil
+	return nil, nil
 }
 
-func (ts *tproxyServer) ListenAndServe() {
+func (ts *tproxyServer) Serve() {
 }
 
 func (ts *tproxyServer) Shutdown() {}

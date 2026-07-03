@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/shadowy-pycoder/mshark/layers"
 	"github.com/shadowy-pycoder/mshark/network"
+	"github.com/vishvananda/netns"
 	"github.com/wzshiming/socks5"
 	"golang.org/x/sys/unix"
 )
@@ -28,8 +31,18 @@ const (
 	udpBufferSize   int           = 4096
 )
 
-type udpConn struct {
-	*socks5.UDPConn
+var (
+	_ udpConn = &net.UDPConn{}
+	_ udpConn = &socks5.UDPConn{}
+)
+
+type udpConn interface {
+	net.PacketConn
+	net.Conn
+}
+
+type udpRelayConn struct {
+	udpConn
 	srcAddr  *net.UDPAddr
 	dstAddr  *net.UDPAddr
 	lastSeen time.Time
@@ -38,35 +51,35 @@ type udpConn struct {
 	respChan chan layers.Layer
 }
 
-func (uc *udpConn) SrcPort() *uint16 {
-	srcPort := uint16(uc.dstAddr.Port)
+func (uc *udpRelayConn) SrcPort() *uint16 {
+	srcPort := uint16(uc.srcAddr.Port)
 	return &srcPort
 }
 
-func (uc *udpConn) DstPort() *uint16 {
+func (uc *udpRelayConn) DstPort() *uint16 {
 	dstPort := uint16(uc.dstAddr.Port)
 	return &dstPort
 }
 
-func (uc *udpConn) close() error {
+func (uc *udpRelayConn) close() error {
 	close(uc.reqChan)
 	close(uc.respChan)
 	return uc.Close()
 }
 
-func newUDPConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, sockDialer contextDialer, network string) (*udpConn, error) {
+func newUDPRelayConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, dialer contextDialer, network string) (*udpRelayConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	conn, err := sockDialer.DialContext(ctx, network, dstAddr.String())
+	conn, err := dialer.DialContext(ctx, network, dstAddr.String())
 	if err != nil {
 		return nil, err
 	}
-	relayConn, ok := conn.(*socks5.UDPConn)
+	relayConn, ok := conn.(udpConn)
 	if !ok {
 		return nil, fmt.Errorf("failed obtaining relay connection")
 	}
-	return &udpConn{
-		UDPConn:  relayConn,
+	return &udpRelayConn{
+		udpConn:  relayConn,
 		srcAddr:  srcAddr,
 		dstAddr:  dstAddr,
 		lastSeen: time.Now(),
@@ -79,29 +92,29 @@ type udpConnections struct {
 	wg   sync.WaitGroup
 	quit chan struct{}
 	sync.RWMutex
-	clients map[string]*udpConn
+	clients map[string]*udpRelayConn
 }
 
-func (ucs *udpConnections) Add(conn *udpConn) {
+func (ucs *udpConnections) Add(conn *udpRelayConn) {
 	ucs.Lock()
 	ucs.clients[fmt.Sprintf("%s,%s", conn.srcAddr, conn.dstAddr)] = conn
 	ucs.Unlock()
 }
 
-func (ucs *udpConnections) Get(srcAddr, dstAddr *net.UDPAddr) (*udpConn, bool) {
+func (ucs *udpConnections) Get(srcAddr, dstAddr *net.UDPAddr) (*udpRelayConn, bool) {
 	ucs.RLock()
 	defer ucs.RUnlock()
 	conn, ok := ucs.clients[fmt.Sprintf("%s,%s", srcAddr, dstAddr)]
 	return conn, ok
 }
 
-func (ucs *udpConnections) Remove(conn *udpConn) {
+func (ucs *udpConnections) Remove(conn *udpRelayConn) {
 	ucs.Lock()
 	delete(ucs.clients, fmt.Sprintf("%s,%s", conn.srcAddr, conn.dstAddr))
 	ucs.Unlock()
 }
 
-func (ucs *udpConnections) UpdateLastSeen(conn *udpConn) {
+func (ucs *udpConnections) UpdateLastSeen(conn *udpRelayConn) {
 	ucs.Lock()
 	conn.lastSeen = time.Now()
 	ucs.Unlock()
@@ -143,7 +156,7 @@ type tproxyServerUDP struct {
 	conn         *net.UDPConn
 	quit         chan struct{}
 	wg           sync.WaitGroup
-	p            *proxyapp
+	p            *Proxy
 	clients      *udpConnections
 	gwConn       *net.UDPConn
 	gwConn6      *net.UDPConn
@@ -151,7 +164,7 @@ type tproxyServerUDP struct {
 	closingFlag  atomic.Bool
 }
 
-func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
+func newTproxyServerUDP(p *Proxy) (*tproxyServerUDP, error) {
 	tsu := &tproxyServerUDP{
 		quit: make(chan struct{}),
 		p:    p,
@@ -161,16 +174,24 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 			var operr error
 			size := 2 * 1024 * 1024
 			if err := conn.Control(func(fd uintptr) {
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_RECVORIGDSTADDR, 1)
-				if tsu.p.ipv6enabled {
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_RECVORIGDSTADDR, 1)
+				setopt := func(level, opt, val int) {
+					if operr != nil {
+						return
+					}
+					if e := unix.SetsockoptInt(int(fd), level, opt, val); e != nil {
+						operr = fmt.Errorf("setsockopt(%d,%d): %w", level, opt, e)
+					}
 				}
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
-				operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+				setopt(unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+				setopt(unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+				setopt(unix.SOL_SOCKET, unix.SO_SNDBUF, size)
+				setopt(unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+				setopt(unix.SOL_IP, unix.IP_RECVORIGDSTADDR, 1)
+				setopt(unix.SOL_IP, unix.IP_TRANSPARENT, 1)
+				if tsu.p.ipv6enabled {
+					setopt(unix.SOL_IPV6, unix.IPV6_RECVORIGDSTADDR, 1)
+					setopt(unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
+				}
 			}); err != nil {
 				return err
 			}
@@ -179,26 +200,33 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 	}
 	pconn, err := lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.tproxyAddrUDP)
 	if err != nil {
-		var msg string
-		if errors.Is(err, unix.EPERM) {
-			msg = "try `sudo setcap 'cap_net_admin+ep` for the binary or run with sudo:"
+		if errors.Is(err, os.ErrPermission) {
+			return nil, fmt.Errorf("permission denied (try setting CAP_NET_ADMIN capability): %v", err)
 		}
-		tsu.p.logger.Fatal().Err(err).Msg(msg)
+		return nil, err
 	}
 	tsu.conn = pconn.(*net.UDPConn)
-	tsu.clients = &udpConnections{quit: tsu.quit, clients: make(map[string]*udpConn)}
-	if tsu.p.arpspoofer != nil && tsu.p.gwDNS != nil {
+	tsu.clients = &udpConnections{quit: tsu.quit, clients: make(map[string]*udpRelayConn)}
+	if tsu.p.arpspoofer != nil && tsu.p.gwDNS != nil && tsu.p.afDNS != nil {
 		lc = net.ListenConfig{
 			Control: func(network, address string, conn syscall.RawConn) error {
 				var operr error
 				size := 2 * 1024 * 1024
 				if err := conn.Control(func(fd uintptr) {
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_FREEBIND, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+					setopt := func(level, opt, val int) {
+						if operr != nil {
+							return
+						}
+						if e := unix.SetsockoptInt(int(fd), level, opt, val); e != nil {
+							operr = fmt.Errorf("setsockopt(%d,%d): %w", level, opt, e)
+						}
+					}
+					setopt(unix.SOL_IP, unix.IP_FREEBIND, 1)
+					setopt(unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+					setopt(unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+					setopt(unix.SOL_SOCKET, unix.SO_SNDBUF, size)
+					setopt(unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+					setopt(unix.SOL_IP, unix.IP_TRANSPARENT, 1)
 				}); err != nil {
 					return err
 				}
@@ -207,7 +235,10 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 		}
 		pconn, err = lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.gwDNS.String())
 		if err != nil {
-			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed listening on gateway DNS", tsu.p.tproxyMode)
+			if errors.Is(err, os.ErrPermission) {
+				return nil, fmt.Errorf("permission denied (try setting CAP_NET_ADMIN capability): %v", err)
+			}
+			return nil, err
 		}
 		tsu.gwConn = pconn.(*net.UDPConn)
 	}
@@ -217,12 +248,20 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 				var operr error
 				size := 2 * 1024 * 1024
 				if err := conn.Control(func(fd uintptr) {
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_FREEBIND, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
-					operr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+					setopt := func(level, opt, val int) {
+						if operr != nil {
+							return
+						}
+						if e := unix.SetsockoptInt(int(fd), level, opt, val); e != nil {
+							operr = fmt.Errorf("setsockopt(%d,%d): %w", level, opt, e)
+						}
+					}
+					setopt(unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+					setopt(unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+					setopt(unix.SOL_SOCKET, unix.SO_SNDBUF, size)
+					setopt(unix.SOL_SOCKET, unix.SO_RCVBUF, size)
+					setopt(unix.SOL_IPV6, unix.IPV6_FREEBIND, 1)
+					setopt(unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
 				}); err != nil {
 					return err
 				}
@@ -231,28 +270,31 @@ func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
 		}
 		pconn, err = lc.ListenPacket(context.Background(), tsu.p.udp, tsu.p.hostDNS6.String())
 		if err != nil {
-			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] failed listening on gateway DNS", tsu.p.tproxyMode)
+			if errors.Is(err, os.ErrPermission) {
+				return nil, fmt.Errorf("permission denied (try setting CAP_NET_ADMIN capability): %v", err)
+			}
+			return nil, err
 		}
 		tsu.gwConn6 = pconn.(*net.UDPConn)
 	}
-	return tsu
+	return tsu, nil
 }
 
 // TODO: try to minimize code duplication here
 
-func (tsu *tproxyServerUDP) ListenAndServe() {
+func (tsu *tproxyServerUDP) Serve() {
 	tsu.startingFlag.Store(true)
 	tsu.wg.Add(1)
 	go tsu.clients.Cleanup()
 	if tsu.p.arpspoofer != nil {
 		go func() {
-			tsu.listenAndServeDNS(tsu.gwConn, tsu.p.gwDNS)
+			tsu.serveDNS(tsu.gwConn, tsu.p.afDNS)
 			tsu.wg.Done()
 		}()
 	}
 	if tsu.p.ndpspoofer != nil && tsu.p.raEnabled {
 		go func() {
-			tsu.listenAndServeDNS(tsu.gwConn6, tsu.p.gwDNS6)
+			tsu.serveDNS(tsu.gwConn6, tsu.p.gwDNS6)
 			tsu.wg.Done()
 		}()
 	}
@@ -274,34 +316,34 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 				if errors.Is(erd, net.ErrClosed) {
 					continue
 				}
-				tsu.p.logger.Error().Err(erd).Msgf("[udp %s] Failed setting read deadline", tsu.p.tproxyMode)
+				tsu.p.logger.Error().Err(erd).Msgf("[%s %s] Failed setting read deadline", tsu.p.udp, tsu.p.tproxyMode)
 				continue
 			}
 			n, oobn, _, srcAddr, er := tsu.conn.ReadMsgUDP(buf, oob)
 			if n > 0 {
 				dstAddr, err := tsu.getOriginalDst(oob[:oobn])
 				if err != nil {
-					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed getting original destination", tsu.p.tproxyMode)
+					tsu.p.logger.Error().Err(err).Msgf("[%s %s] Failed getting original destination", tsu.p.udp, tsu.p.tproxyMode)
 					continue
 				}
 				if dstAddr.Port == 53 {
-					conn, err := newDNSDirectConn(srcAddr, dstAddr, tsu.p.mark, tsu.p.udp)
+					conn, err := newDNSDirectConn(srcAddr, dstAddr, tsu.p.baseDialer, tsu.p.udp, tsu.p.mark, tsu.p.outNS)
 					if err != nil {
 						tsu.p.logger.Error().
 							Err(err).
-							Msgf("[udp %s] Failed creating UDP connection for %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
+							Msgf("[%s %s] Failed creating UDP connection for %s%s%s", tsu.p.udp, tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
 						continue
 					}
 					srcConnStr := fmt.Sprintf("%s%s%s", conn.srcAddr, arrow, conn.dstAddr)
 					dstConnStr := fmt.Sprintf("%s%s%s", conn.LocalAddr(), arrow, conn.dstAddr)
-					tsu.p.logger.Debug().Msgf("[udp %s] src: %s - dst: %s", tsu.p.tproxyMode, srcConnStr, dstConnStr)
+					tsu.p.logger.Debug().Msgf("[%s %s] src: %s - dst: %s", tsu.p.udp, tsu.p.tproxyMode, srcConnStr, dstConnStr)
 					ewd := conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 					if ewd != nil {
 						if errors.Is(ewd, net.ErrClosed) {
 							conn.close()
 							continue
 						}
-						tsu.p.logger.Error().Err(ewd).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
+						tsu.p.logger.Error().Err(ewd).Msgf("[%s %s] Failed setting write deadline", tsu.p.udp, tsu.p.tproxyMode)
 						conn.close()
 						continue
 					}
@@ -384,7 +426,7 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 									dnsReply, err = layers.NewDNSMessage(dnsQuery.TransactionID, flags, dnsQuery.Questions, answers, nil, nil)
 									if err != nil {
 										tsu.p.logger.Error().Err(err).
-											Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+											Msgf("[%s %s] Failed creating reply dns message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 										goto reply // reply normally
 									}
 								} else if tsu.p.filter.domainIsBlacklisted(domain) {
@@ -403,14 +445,14 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 									dnsReply, err = layers.NewDNSMessage(dnsQuery.TransactionID, flags, dnsQuery.Questions, nil, nil, nil)
 									if err != nil {
 										tsu.p.logger.Error().Err(err).
-											Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+											Msgf("[%s %s] Failed creating reply dns message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 										goto reply
 									}
 								}
 								if dnsReply != nil {
 									if err := conn.replyToClient(dnsReply.ToBytes()); err != nil {
 										tsu.p.logger.Error().Err(err).
-											Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+											Msgf("[%s %s] Failed creating reply dns message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 										goto reply
 									}
 									if tsu.p.sniff {
@@ -440,7 +482,7 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 						}
 						tsu.p.logger.Error().
 							Err(err).
-							Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.dstAddr)
+							Msgf("[%s %s] Failed sending message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.dstAddr)
 						conn.close()
 						continue
 					}
@@ -451,18 +493,23 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 				} else {
 					conn, found := tsu.clients.Get(srcAddr, dstAddr)
 					if !found {
-						sockDialer, err := tsu.p.getSockDialer()
-						if err != nil {
-							tsu.p.logger.Error().
-								Err(err).
-								Msgf("[udp %s] Failed getting %s client for %s%s%s", tsu.p.tproxyMode, tsu.p.socksProto, srcAddr, arrow, dstAddr)
-							continue
+						var dialer contextDialer
+						if tsu.p.socksEnabled {
+							dialer, err = tsu.p.getSockDialer()
+							if err != nil {
+								tsu.p.logger.Error().
+									Err(err).
+									Msgf("[%s %s] Failed getting %s client for %s%s%s", tsu.p.udp, tsu.p.tproxyMode, tsu.p.socksProto, srcAddr, arrow, dstAddr)
+								continue
+							}
+						} else {
+							dialer = tsu.p.baseDialer
 						}
-						conn, err = newUDPConn(srcAddr, dstAddr, sockDialer, tsu.p.udp)
+						conn, err = newUDPRelayConn(srcAddr, dstAddr, dialer, tsu.p.udp)
 						if err != nil {
 							tsu.p.logger.Error().
 								Err(err).
-								Msgf("[udp %s] Failed creating UDP connection for %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
+								Msgf("[%s %s] Failed creating UDP connection for %s%s%s", tsu.p.udp, tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
 							continue
 						}
 						tsu.clients.Add(conn)
@@ -473,13 +520,13 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 
 					srcConnStr := fmt.Sprintf("%s%s%s", srcAddr, arrow, dstAddr)
 					dstConnStr := fmt.Sprintf("%s%s%s%s%s", tsu.conn.LocalAddr(), arrow, conn.LocalAddr(), arrow, dstAddr)
-					tsu.p.logger.Debug().Msgf("[udp %s] src: %s - dst: %s", tsu.p.tproxyMode, srcConnStr, dstConnStr)
+					tsu.p.logger.Debug().Msgf("[%s %s] src: %s - dst: %s", tsu.p.udp, tsu.p.tproxyMode, srcConnStr, dstConnStr)
 					ewd := conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 					if ewd != nil {
 						if errors.Is(ewd, net.ErrClosed) {
 							continue
 						}
-						tsu.p.logger.Error().Err(ewd).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
+						tsu.p.logger.Error().Err(ewd).Msgf("[%s %s] Failed setting write deadline", tsu.p.udp, tsu.p.tproxyMode)
 						continue
 					}
 					if tsu.p.sniff {
@@ -519,7 +566,7 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 							conn.reqChan <- next
 						}
 					}
-					nw, err := conn.WriteToUDP(buf[:n], dstAddr)
+					nw, err := conn.Write(buf[:n])
 					if err != nil {
 						if ne, ok := err.(net.Error); ok && ne.Timeout() {
 							continue
@@ -527,7 +574,9 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 						if errors.Is(err, net.ErrClosed) {
 							continue
 						}
-						tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
+						tsu.p.logger.Error().
+							Err(err).
+							Msgf("[%s %s] Failed sending message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, srcAddr, arrow, dstAddr)
 						continue
 					}
 					conn.written.Add(uint64(nw))
@@ -544,14 +593,14 @@ func (tsu *tproxyServerUDP) ListenAndServe() {
 				if errors.Is(er, io.EOF) {
 					continue
 				}
-				tsu.p.logger.Error().Err(er).Msgf("[udp %s] Failed reading UDP message", tsu.p.tproxyMode)
+				tsu.p.logger.Error().Err(er).Msgf("[%s %s] Failed reading UDP message", tsu.p.udp, tsu.p.tproxyMode)
 				continue
 			}
 		}
 	}
 }
 
-func (tsu *tproxyServerUDP) handleConnection(conn *udpConn) {
+func (tsu *tproxyServerUDP) handleConnection(conn *udpRelayConn) {
 	if tsu.closingFlag.Load() {
 		return
 	}
@@ -578,14 +627,14 @@ readLoop:
 				if errors.Is(erd, net.ErrClosed) {
 					return
 				}
-				tsu.p.logger.Debug().Err(erd).Msgf("[udp %s] Failed setting read deadline %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, tsu.conn.LocalAddr())
+				tsu.p.logger.Debug().Err(erd).Msgf("[%s %s] Failed setting read deadline %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, tsu.conn.LocalAddr())
 				break readLoop
 			}
 			nr, er := conn.Read(buf)
 			if nr > 0 {
 				ewd := tsu.conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 				if ewd != nil {
-					tsu.p.logger.Debug().Err(ewd).Msgf("[udp %s] Failed setting write deadline %s%s%s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), arrow, conn.srcAddr)
+					tsu.p.logger.Debug().Err(ewd).Msgf("[%s %s] Failed setting write deadline %s%s%s", tsu.p.udp, tsu.p.tproxyMode, tsu.conn.LocalAddr(), arrow, conn.srcAddr)
 					break readLoop
 				}
 				if tsu.p.sniff {
@@ -610,7 +659,7 @@ readLoop:
 					}
 				}
 				if nr != nw {
-					tsu.p.logger.Debug().Err(io.ErrShortWrite).Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, tsu.conn.LocalAddr(), arrow, conn.srcAddr)
+					tsu.p.logger.Debug().Err(io.ErrShortWrite).Msgf("[%s %s] Failed sending message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, tsu.conn.LocalAddr(), arrow, conn.srcAddr)
 					break readLoop
 				}
 			}
@@ -647,8 +696,7 @@ func (dc *dnsConn) close() error {
 	return dc.Close()
 }
 
-func newDNSConn(srcAddr, dstAddr *net.UDPAddr, mark uint, network string) (*dnsConn, error) {
-	dialer := getBaseDialer(timeout, mark)
+func newDNSConn(srcAddr, dstAddr *net.UDPAddr, dialer contextDialer, network string) (*dnsConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	conn, err := dialer.DialContext(ctx, network, dstAddr.String())
@@ -668,7 +716,7 @@ func newDNSConn(srcAddr, dstAddr *net.UDPAddr, mark uint, network string) (*dnsC
 	}, nil
 }
 
-func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UDPAddr) {
+func (tsu *tproxyServerUDP) serveDNS(gwConn *net.UDPConn, gwDNS *net.UDPAddr) {
 	if tsu.closingFlag.Load() {
 		return
 	}
@@ -688,26 +736,28 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 				if errors.Is(erd, net.ErrClosed) {
 					continue
 				}
-				tsu.p.logger.Error().Err(erd).Msgf("[udp %s] Failed setting read deadline", tsu.p.tproxyMode)
+				tsu.p.logger.Error().Err(erd).Msgf("[%s %s] Failed setting read deadline", tsu.p.udp, tsu.p.tproxyMode)
 				continue
 			}
 			n, srcAddr, er := gwConn.ReadFromUDP(buf)
 			if n > 0 {
-				conn, err := newDNSConn(srcAddr, gwDNS, tsu.p.mark, tsu.p.udp)
+				conn, err := newDNSConn(srcAddr, gwDNS, tsu.p.baseDialer, tsu.p.udp)
 				if err != nil {
-					tsu.p.logger.Error().Err(err).Msgf("[udp %s] Failed creating UDP connection %s%s%s", tsu.p.tproxyMode, srcAddr, arrow, gwDNS)
+					tsu.p.logger.Error().
+						Err(err).
+						Msgf("[%s %s] Failed creating UDP connection %s%s%s", tsu.p.udp, tsu.p.tproxyMode, srcAddr, arrow, gwDNS)
 					continue
 				}
 				srcConnStr := fmt.Sprintf("%s%s%s", srcAddr, arrow, gwConn.LocalAddr())
 				dstConnStr := fmt.Sprintf("%s%s%s", conn.LocalAddr(), arrow, conn.dstAddr)
-				tsu.p.logger.Debug().Msgf("[udp %s] src: %s - dst: %s", tsu.p.tproxyMode, srcConnStr, dstConnStr)
+				tsu.p.logger.Debug().Msgf("[%s %s] src: %s - dst: %s", tsu.p.udp, tsu.p.tproxyMode, srcConnStr, dstConnStr)
 				ewd := conn.SetWriteDeadline(time.Now().Add(writeTimeoutUDP))
 				if ewd != nil {
 					if errors.Is(ewd, net.ErrClosed) {
 						conn.close()
 						continue
 					}
-					tsu.p.logger.Error().Err(ewd).Msgf("[udp %s] Failed setting write deadline", tsu.p.tproxyMode)
+					tsu.p.logger.Error().Err(ewd).Msgf("[%s %s] Failed setting write deadline", tsu.p.udp, tsu.p.tproxyMode)
 					conn.close()
 					continue
 				}
@@ -790,7 +840,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 								dnsReply, err = layers.NewDNSMessage(dnsQuery.TransactionID, flags, dnsQuery.Questions, answers, nil, nil)
 								if err != nil {
 									tsu.p.logger.Error().Err(err).
-										Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+										Msgf("[%s %s] Failed creating reply dns message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 									goto gwReply
 								}
 							} else if tsu.p.filter.domainIsBlacklisted(domain) {
@@ -809,7 +859,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 								dnsReply, err = layers.NewDNSMessage(dnsQuery.TransactionID, flags, dnsQuery.Questions, nil, nil, nil)
 								if err != nil {
 									tsu.p.logger.Error().Err(err).
-										Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+										Msgf("[%s %s] Failed creating reply dns message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 									goto gwReply
 								}
 							}
@@ -817,7 +867,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 								nw, err := gwConn.WriteToUDP(dnsReply.ToBytes(), conn.srcAddr)
 								if err != nil {
 									tsu.p.logger.Error().Err(err).
-										Msgf("[udp %s] Failed creating reply dns message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+										Msgf("[%s %s] Failed creating reply dns message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 									goto gwReply
 								}
 								if tsu.p.sniff {
@@ -847,7 +897,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 					}
 					tsu.p.logger.Error().
 						Err(err).
-						Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.dstAddr)
+						Msgf("[%s %s] Failed sending message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.dstAddr)
 					conn.close()
 					continue
 				}
@@ -865,7 +915,7 @@ func (tsu *tproxyServerUDP) listenAndServeDNS(gwConn *net.UDPConn, gwDNS *net.UD
 				if errors.Is(er, io.EOF) {
 					continue
 				}
-				tsu.p.logger.Error().Err(er).Msgf("[udp %s] Failed reading UDP message", tsu.p.tproxyMode)
+				tsu.p.logger.Error().Err(er).Msgf("[%s %s] Failed reading UDP message", tsu.p.udp, tsu.p.tproxyMode)
 				continue
 			}
 		}
@@ -894,7 +944,9 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn, gwConn *net.UDPCo
 		if errors.Is(erd, net.ErrClosed) {
 			return
 		}
-		tsu.p.logger.Debug().Err(erd).Msgf("[udp %s] Failed setting read deadline %s%s%s", tsu.p.tproxyMode, conn.dstAddr, arrow, conn.LocalAddr())
+		tsu.p.logger.Debug().
+			Err(erd).
+			Msgf("[%s %s] Failed setting read deadline %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.dstAddr, arrow, conn.LocalAddr())
 		return
 	}
 	nr, er := conn.Read(buf)
@@ -906,7 +958,7 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn, gwConn *net.UDPCo
 			}
 			tsu.p.logger.Debug().
 				Err(ewd).
-				Msgf("[udp %s] Failed setting write deadline %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+				Msgf("[%s %s] Failed setting write deadline %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 			return
 		}
 		if tsu.p.sniff {
@@ -936,7 +988,7 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn, gwConn *net.UDPCo
 		if nr != nw {
 			tsu.p.logger.Debug().
 				Err(io.ErrShortWrite).
-				Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+				Msgf("[%s %s] Failed sending message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 			return
 		}
 	}
@@ -952,6 +1004,8 @@ type dnsDirectConn struct {
 	written  atomic.Uint64
 	reqChan  chan layers.Layer
 	respChan chan layers.Layer
+	mark     int
+	ns       *netns.NsHandle
 }
 
 func (ddc *dnsDirectConn) close() error {
@@ -962,12 +1016,25 @@ func (ddc *dnsDirectConn) close() error {
 
 func (ddc *dnsDirectConn) replyToClient(data []byte) error {
 	if ddc.dstAddr.IP.To4() != nil {
-		return replyToClient4(ddc.srcAddr, ddc.dstAddr, data)
+		return replyToClient4(ddc.srcAddr, ddc.dstAddr, data, ddc.mark, ddc.ns)
 	}
-	return replyToClient6(ddc.srcAddr, ddc.dstAddr, data)
+	return replyToClient6(ddc.srcAddr, ddc.dstAddr, data, ddc.mark, ddc.ns)
 }
 
-func replyToClient4(clientAddr, originalDst *net.UDPAddr, data []byte) error {
+func replyToClient4(clientAddr, originalDst *net.UDPAddr, data []byte, mark int, ns *netns.NsHandle) error {
+	if ns != nil {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		currentNs, err := netns.Get()
+		if err != nil {
+			return err
+		}
+		defer currentNs.Close()
+		defer netns.Set(currentNs)
+		if err := netns.Set(*ns); err != nil {
+			return err
+		}
+	}
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
 	if err != nil {
 		return err
@@ -979,6 +1046,9 @@ func replyToClient4(clientAddr, originalDst *net.UDPAddr, data []byte) error {
 	}
 
 	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
+		return err
+	}
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, mark); err != nil {
 		return err
 	}
 	bindAddr := &unix.SockaddrInet4{
@@ -998,7 +1068,20 @@ func replyToClient4(clientAddr, originalDst *net.UDPAddr, data []byte) error {
 	return nil
 }
 
-func replyToClient6(clientAddr, originalDst *net.UDPAddr, data []byte) error {
+func replyToClient6(clientAddr, originalDst *net.UDPAddr, data []byte, mark int, ns *netns.NsHandle) error {
+	if ns != nil {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		currentNs, err := netns.Get()
+		if err != nil {
+			return err
+		}
+		defer currentNs.Close()
+		defer netns.Set(currentNs)
+		if err := netns.Set(*ns); err != nil {
+			return err
+		}
+	}
 	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM, 0)
 	if err != nil {
 		return err
@@ -1010,6 +1093,9 @@ func replyToClient6(clientAddr, originalDst *net.UDPAddr, data []byte) error {
 	}
 
 	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
+		return err
+	}
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, mark); err != nil {
 		return err
 	}
 	bindAddr := &unix.SockaddrInet6{
@@ -1029,8 +1115,7 @@ func replyToClient6(clientAddr, originalDst *net.UDPAddr, data []byte) error {
 	return nil
 }
 
-func newDNSDirectConn(srcAddr, dstAddr *net.UDPAddr, mark uint, network string) (*dnsDirectConn, error) {
-	dialer := getBaseDialer(timeout, mark)
+func newDNSDirectConn(srcAddr, dstAddr *net.UDPAddr, dialer contextDialer, network string, mark uint, ns *netns.NsHandle) (*dnsDirectConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	conn, err := dialer.DialContext(ctx, network, dstAddr.String())
@@ -1047,6 +1132,8 @@ func newDNSDirectConn(srcAddr, dstAddr *net.UDPAddr, mark uint, network string) 
 		dstAddr:  dstAddr,
 		reqChan:  make(chan layers.Layer),
 		respChan: make(chan layers.Layer),
+		mark:     int(mark),
+		ns:       ns,
 	}, nil
 }
 
@@ -1072,7 +1159,9 @@ func (tsu *tproxyServerUDP) handleDNSDirectConnection(conn *dnsDirectConn) {
 		if errors.Is(erd, net.ErrClosed) {
 			return
 		}
-		tsu.p.logger.Debug().Err(erd).Msgf("[udp %s] Failed setting read deadline %s%s%s", tsu.p.tproxyMode, conn.dstAddr, arrow, conn.LocalAddr())
+		tsu.p.logger.Debug().
+			Err(erd).
+			Msgf("[%s %s] Failed setting read deadline %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.dstAddr, arrow, conn.LocalAddr())
 		return
 	}
 	nr, er := conn.Read(buf)
@@ -1084,7 +1173,7 @@ func (tsu *tproxyServerUDP) handleDNSDirectConnection(conn *dnsDirectConn) {
 			}
 			tsu.p.logger.Debug().
 				Err(ewd).
-				Msgf("[udp %s] Failed setting write deadline %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+				Msgf("[%s %s] Failed setting write deadline %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 			return
 		}
 		if tsu.p.sniff {
@@ -1099,7 +1188,7 @@ func (tsu *tproxyServerUDP) handleDNSDirectConnection(conn *dnsDirectConn) {
 		if err != nil {
 			tsu.p.logger.Debug().
 				Err(io.ErrShortWrite).
-				Msgf("[udp %s] Failed sending message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+				Msgf("[%s %s] Failed sending message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 			return
 		}
 		conn.written.Add(uint64(nr)) // NOTE: do not have access to written bytes
@@ -1107,7 +1196,7 @@ func (tsu *tproxyServerUDP) handleDNSDirectConnection(conn *dnsDirectConn) {
 	if er != nil {
 		tsu.p.logger.Debug().
 			Err(er).
-			Msgf("[udp %s] Failed reading message %s%s%s", tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
+			Msgf("[%s %s] Failed reading message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, conn.LocalAddr(), arrow, conn.srcAddr)
 		return
 	}
 }
@@ -1127,7 +1216,7 @@ func (tsu *tproxyServerUDP) Shutdown() {
 	case <-done:
 		return
 	case <-time.After(shutdownTimeout):
-		tsu.p.logger.Error().Msgf("[udp %s] Server timed out waiting for connections to finish", tsu.p.tproxyMode)
+		tsu.p.logger.Error().Msgf("[%s %s] Server timed out waiting for connections to finish", tsu.p.udp, tsu.p.tproxyMode)
 		return
 	}
 }
@@ -1139,25 +1228,26 @@ func (tsu *tproxyServerUDP) getOriginalDst(oob []byte) (*net.UDPAddr, error) {
 	}
 	for _, cmsg := range cmsgs {
 		if cmsg.Header.Level == unix.SOL_IP && cmsg.Header.Type == unix.IP_RECVORIGDSTADDR {
-			originalDst := &syscall.RawSockaddrInet4{}
+			originalDst := &unix.RawSockaddrInet4{}
 			copy((*[unsafe.Sizeof(*originalDst)]byte)(unsafe.Pointer(originalDst))[:], cmsg.Data)
 			dstHost := netip.AddrFrom4(originalDst.Addr)
 			dstPort := uint16(originalDst.Port<<8) | originalDst.Port>>8
-			dstAddr, err := net.ResolveUDPAddr(tsu.p.udp /* NOTE: does not matter */, netip.AddrPortFrom(dstHost, dstPort).String())
-			if err != nil {
-				return nil, err
-			}
+			dstAddr := &net.UDPAddr{IP: net.ParseIP(dstHost.String()), Port: int(dstPort)}
 			return dstAddr, nil
 		}
 		if cmsg.Header.Level == unix.SOL_IPV6 && cmsg.Header.Type == unix.IPV6_RECVORIGDSTADDR {
-			originalDst := &syscall.RawSockaddrInet6{}
+			originalDst := &unix.RawSockaddrInet6{}
 			copy((*[unsafe.Sizeof(*originalDst)]byte)(unsafe.Pointer(originalDst))[:], cmsg.Data)
 			dstHost := netip.AddrFrom16(originalDst.Addr)
 			dstPort := uint16(originalDst.Port<<8) | originalDst.Port>>8
-			dstAddr, err := net.ResolveUDPAddr(tsu.p.udp, netip.AddrPortFrom(dstHost, dstPort).String())
-			if err != nil {
-				return nil, err
+			var zone string
+			if originalDst.Scope_id != 0 {
+				iface, err := net.InterfaceByIndex(int(originalDst.Scope_id))
+				if err == nil {
+					zone = iface.Name
+				}
 			}
+			dstAddr := &net.UDPAddr{IP: net.ParseIP(dstHost.String()), Port: int(dstPort), Zone: zone}
 			return dstAddr, nil
 		}
 	}
@@ -1167,92 +1257,158 @@ func (tsu *tproxyServerUDP) getOriginalDst(oob []byte) (*net.UDPAddr, error) {
 func (tsu *tproxyServerUDP) ApplyRedirectRules(opts map[string]string) {
 	_, tproxyPortUDP, _ := net.SplitHostPort(tsu.p.tproxyAddrUDP)
 	var setex string
-	if tsu.p.debug {
+	if tsu.p.dumpRules {
 		setex = "set -ex"
+	}
+	if tsu.p.ipv4enabled {
+		_ = runSysctlOptCmd("net.ipv4.ip_nonlocal_bind", "1", setex, opts, tsu.p.dumpRules, &tsu.p.dump)
+	}
+	if tsu.p.ipv6enabled {
+		_ = runSysctlOptCmd("net.ipv6.ip_nonlocal_bind", "1", setex, opts, tsu.p.dumpRules, &tsu.p.dump)
 	}
 	switch tsu.p.tproxyMode {
 	case "redirect":
 		tsu.p.logger.Fatal().Msgf("Unsupported mode: %s", tsu.p.tproxyMode)
+
+	case "tlocal":
+
+		// ipv4
+		if tsu.p.ipv4enabled {
+			cmdClear0 := `
+iptables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
+iptables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
+iptables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
+`
+			tsu.p.runRuleCmd(cmdClear0)
+			cmdInit0 := `
+iptables -t mangle -N GOHPTS_OUT_UDP 2>/dev/null || true
+iptables -t mangle -F GOHPTS_OUT_UDP
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 127.0.0.0/8 -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 224.0.0.0/4 -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d 255.255.255.255/32 -j RETURN
+`
+			tsu.p.runRuleCmd(cmdInit0)
+			if tsu.p.socksEnabled {
+				for _, pr := range tsu.p.proxylist {
+					_, port, _ := net.SplitHostPort(pr.Address)
+					cmd1 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp --dport %s -j RETURN
+`, port)
+					tsu.p.runRuleCmd(cmd1)
+					if tsu.p.proxychain.Type == "strict" {
+						break
+					}
+				}
+			}
+			if tsu.p.prefix != nil {
+				cmdInit00 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d %s -j RETURN
+`, tsu.p.prefix.Masked())
+				tsu.p.runRuleCmd(cmdInit00)
+			}
+			if tsu.p.ignoredPorts != "" {
+				cmdInit1 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --dports %s -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --sports %s -j RETURN
+`, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
+				tsu.p.runRuleCmd(cmdInit1)
+			}
+			cmdInit2 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m mark --mark %d -j RETURN
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -j MARK --set-mark 2
+iptables -t mangle -A OUTPUT -p udp -j GOHPTS_OUT_UDP
+`, tsu.p.mark)
+			tsu.p.runRuleCmd(cmdInit2)
+		}
+
+		// ipv6
+		if tsu.p.ipv6enabled {
+			cmdClear1 := `
+ip6tables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
+ip6tables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
+ip6tables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
+`
+			tsu.p.runRuleCmd(cmdClear1)
+			cmdInit01 := `
+ip6tables -t mangle -N GOHPTS_OUT_UDP 2>/dev/null || true
+ip6tables -t mangle -F GOHPTS_OUT_UDP
+
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -d ::/128 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -d ::1/128 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -d ff00::/8 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -d fe80::/10 -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -d fc00::/7 -j RETURN
+`
+			tsu.p.runRuleCmd(cmdInit01)
+			if tsu.p.socksEnabled {
+				for _, pr := range tsu.p.proxylist {
+					_, port, _ := net.SplitHostPort(pr.Address)
+					cmd11 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp --dport %s -j RETURN
+`, port)
+					tsu.p.runRuleCmd(cmd11)
+					if tsu.p.proxychain.Type == "strict" {
+						break
+					}
+				}
+			}
+			if tsu.p.prefix6 != nil {
+				cmdInit02 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -s %s -d %s -j RETURN
+`, tsu.p.prefix6.Masked(), tsu.p.prefix6.Masked())
+				tsu.p.runRuleCmd(cmdInit02)
+			}
+			if tsu.p.ignoredPorts != "" {
+				cmdInit11 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --dports %s -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --sports %s -j RETURN
+`, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
+				tsu.p.runRuleCmd(cmdInit11)
+			}
+			cmdInit21 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m mark --mark %d -j RETURN
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -j MARK --set-mark 2
+ip6tables -t mangle -A OUTPUT -p udp -j GOHPTS_OUT_UDP
+`, tsu.p.mark)
+			tsu.p.runRuleCmd(cmdInit21)
+		}
+
+		fallthrough
+
 	case "tproxy":
-		cmdClear0 := `
+
+		// ipv4
+		if tsu.p.ipv4enabled {
+			cmdClear0 := `
 iptables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
 iptables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
 iptables -t mangle -F GOHPTS_UDP 2>/dev/null || true
 iptables -t mangle -X GOHPTS_UDP 2>/dev/null || true
 `
-		tsu.p.runRuleCmd(cmdClear0)
-		if tsu.p.ipv6enabled {
-			cmdClear1 := `
-ip6tables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
-ip6tables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
-ip6tables -t mangle -F GOHPTS_UDP 2>/dev/null || true
-ip6tables -t mangle -X GOHPTS_UDP 2>/dev/null || true
-`
-			tsu.p.runRuleCmd(cmdClear1)
-		}
-		prefix, err := network.GetIPv4PrefixFromInterface(tsu.p.iface)
-		if err != nil {
-			tsu.p.logger.Fatal().Err(err).Msgf("[udp %s] Failed getting host from %s", tsu.p.tproxyMode, tsu.p.iface.Name)
-		}
-		cmdInit0 := fmt.Sprintf(`
+			tsu.p.runRuleCmd(cmdClear0)
+			cmdInit0 := `
 iptables -t mangle -N GOHPTS_UDP 2>/dev/null || true
 iptables -t mangle -F GOHPTS_UDP
 
 iptables -t mangle -A GOHPTS_UDP -p udp -d 127.0.0.0/8 -j RETURN
 iptables -t mangle -A GOHPTS_UDP -p udp -d 224.0.0.0/4 -j RETURN
 iptables -t mangle -A GOHPTS_UDP -p udp -d 255.255.255.255/32 -j RETURN
-iptables -t mangle -A GOHPTS_UDP -p udp -d %s -j RETURN
-`, prefix.Masked())
-		tsu.p.runRuleCmd(cmdInit0)
-		if tsu.p.ipv6enabled {
-			cmdInit01 := `
-ip6tables -t mangle -N GOHPTS_UDP 2>/dev/null || true
-ip6tables -t mangle -F GOHPTS_UDP
-
-ip6tables -t mangle -A GOHPTS_UDP -p udp -d ::/128 -j RETURN
-ip6tables -t mangle -A GOHPTS_UDP -p udp -d ::1/128 -j RETURN
-ip6tables -t mangle -A GOHPTS_UDP -p udp -d ff00::/8 -j RETURN
-ip6tables -t mangle -A GOHPTS_UDP -p udp -d fe80::/10 -j RETURN
-ip6tables -t mangle -A GOHPTS_UDP -p udp -d fc00::/7 -j RETURN
 `
-			tsu.p.runRuleCmd(cmdInit01)
-			if prefix6, err := network.GetIPv6GlobalUnicastPrefixFromInterface(tsu.p.iface); err == nil {
-				cmdInit02 := fmt.Sprintf(`
-ip6tables -t mangle -A GOHPTS_UDP -p udp -s %s -d %s -j RETURN
-`, prefix6.Masked(), prefix6.Masked())
-				tsu.p.runRuleCmd(cmdInit02)
+			tsu.p.runRuleCmd(cmdInit0)
+			if tsu.p.prefix != nil {
+				cmdInit00 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_UDP -p udp -d %s -j RETURN
+`, tsu.p.prefix.Masked())
+				tsu.p.runRuleCmd(cmdInit00)
 			}
-		}
-		if tsu.p.ignoredPorts != "" {
-			cmdInit1 := fmt.Sprintf(`
+			if tsu.p.ignoredPorts != "" {
+				cmdInit1 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS_UDP -p udp -m multiport --dports %s -j RETURN
 iptables -t mangle -A GOHPTS_UDP -p udp -m multiport --sports %s -j RETURN
 `, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
-			tsu.p.runRuleCmd(cmdInit1)
-			if tsu.p.ipv6enabled {
-				cmdInit11 := fmt.Sprintf(`
-ip6tables -t mangle -A GOHPTS_UDP -p udp -m multiport --dports %s -j RETURN
-ip6tables -t mangle -A GOHPTS_UDP -p udp -m multiport --sports %s -j RETURN
-`, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
-				tsu.p.runRuleCmd(cmdInit11)
+				tsu.p.runRuleCmd(cmdInit1)
 			}
-		}
-		var cmdDocker string
-		if tsu.p.ipv6enabled {
-			cmdDocker = `
-if command -v docker >/dev/null 2>&1
-then
-for subnet in $(docker network inspect $(docker network ls -q)  --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'); do
-  if [[ "$subnet" == *:* ]]; then
-	ip6tables -t mangle -A GOHPTS_UDP -p udp -d "$subnet" -j RETURN
-  else
-	iptables -t mangle -A GOHPTS_UDP -p udp -d "$subnet" -j RETURN
-  fi
-done
-fi
-`
-		} else {
-			cmdDocker = `
+			cmdDocker4 := `
 if command -v docker >/dev/null 2>&1
 then
 for subnet in $(docker network inspect $(docker network ls -q)  --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'); do
@@ -1264,29 +1420,83 @@ for subnet in $(docker network inspect $(docker network ls -q)  --format '{{rang
 done
 fi
 `
-		}
-		tsu.p.runRuleCmd(cmdDocker)
-		cmdInit := fmt.Sprintf(`
+			tsu.p.runRuleCmd(cmdDocker4)
+			cmdInit00 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
-iptables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 1
-
+`, tsu.p.mark)
+			tsu.p.runRuleCmd(cmdInit00)
+			if tsu.p.prefix != nil {
+				cmdInit01 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1
+`, tsu.p.prefix.Masked(), tproxyPortUDP)
+				tsu.p.runRuleCmd(cmdInit01)
+			}
+			cmdInit02 := `
 iptables -t mangle -A PREROUTING -p udp -m socket -j DIVERT
 iptables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
-`, tsu.p.mark, prefix.Masked(), tproxyPortUDP)
-		tsu.p.runRuleCmd(cmdInit)
-		if tsu.p.ipv6enabled {
-			cmdInit6 := fmt.Sprintf(`
-ip6tables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
-ip6tables -t mangle -A GOHPTS_UDP -p udp -j TPROXY --on-port %s --tproxy-mark 1
+`
+			tsu.p.runRuleCmd(cmdInit02)
+		}
 
+		// ipv6
+		if tsu.p.ipv6enabled {
+			cmdClear1 := `
+ip6tables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
+ip6tables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
+ip6tables -t mangle -F GOHPTS_UDP 2>/dev/null || true
+ip6tables -t mangle -X GOHPTS_UDP 2>/dev/null || true
+`
+			tsu.p.runRuleCmd(cmdClear1)
+			cmdInit01 := `
+ip6tables -t mangle -N GOHPTS_UDP 2>/dev/null || true
+ip6tables -t mangle -F GOHPTS_UDP
+
+ip6tables -t mangle -A GOHPTS_UDP -p udp -d ::/128 -j RETURN
+ip6tables -t mangle -A GOHPTS_UDP -p udp -d ::1/128 -j RETURN
+ip6tables -t mangle -A GOHPTS_UDP -p udp -d ff00::/8 -j RETURN
+ip6tables -t mangle -A GOHPTS_UDP -p udp -d fe80::/10 -j RETURN
+ip6tables -t mangle -A GOHPTS_UDP -p udp -d fc00::/7 -j RETURN
+`
+			tsu.p.runRuleCmd(cmdInit01)
+			if tsu.p.prefix6 != nil {
+				cmdInit02 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_UDP -p udp -s %s -d %s -j RETURN
+`, tsu.p.prefix6.Masked(), tsu.p.prefix6.Masked())
+				tsu.p.runRuleCmd(cmdInit02)
+			}
+			if tsu.p.ignoredPorts != "" {
+				cmdInit11 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_UDP -p udp -m multiport --dports %s -j RETURN
+ip6tables -t mangle -A GOHPTS_UDP -p udp -m multiport --sports %s -j RETURN
+`, tsu.p.ignoredPorts, tsu.p.ignoredPorts)
+				tsu.p.runRuleCmd(cmdInit11)
+			}
+			cmdDocker6 := `
+if command -v docker >/dev/null 2>&1
+then
+for subnet in $(docker network inspect $(docker network ls -q)  --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'); do
+  if [[ "$subnet" == *:* ]]; then
+	ip6tables -t mangle -A GOHPTS_UDP -p udp -d "$subnet" -j RETURN
+  fi
+done
+fi
+`
+			tsu.p.runRuleCmd(cmdDocker6)
+			cmdInit006 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
+`, tsu.p.mark)
+			tsu.p.runRuleCmd(cmdInit006)
+			if tsu.p.prefix6 != nil {
+				cmdInit016 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1
+`, tsu.p.prefix6.Masked(), tproxyPortUDP)
+				tsu.p.runRuleCmd(cmdInit016)
+			}
+			cmdInit6 := `
 ip6tables -t mangle -A PREROUTING -p udp -m socket -j DIVERT
 ip6tables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
-`, tsu.p.mark, tproxyPortUDP)
+`
 			tsu.p.runRuleCmd(cmdInit6)
-		}
-		_ = runSysctlOptCmd("net.ipv4.ip_nonlocal_bind", "1", setex, opts, tsu.p.debug, &tsu.p.dump)
-		if tsu.p.ipv6enabled {
-			_ = runSysctlOptCmd("net.ipv6.ip_nonlocal_bind", "1", setex, opts, tsu.p.debug, &tsu.p.dump)
 		}
 	default:
 		tsu.p.logger.Fatal().Msgf("Unreachable, unknown mode: %s", tsu.p.tproxyMode)
@@ -1294,14 +1504,35 @@ ip6tables -t mangle -A PREROUTING -p udp -j GOHPTS_UDP
 }
 
 func (tsu *tproxyServerUDP) ClearRedirectRules() error {
-	if tsu.p.tproxyMode == "tproxy" {
-		cmd0 := `
+	switch tsu.p.tproxyMode {
+	case "tlocal":
+		if tsu.p.ipv4enabled {
+			cmd0 := `
+iptables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
+iptables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
+iptables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
+`
+			tsu.p.runRuleCmd(cmd0)
+		}
+		if tsu.p.ipv6enabled {
+			cmd1 := `
+ip6tables -t mangle -D OUTPUT -p udp -j GOHPTS_OUT_UDP 2>/dev/null || true
+ip6tables -t mangle -F GOHPTS_OUT_UDP 2>/dev/null || true
+ip6tables -t mangle -X GOHPTS_OUT_UDP 2>/dev/null || true
+`
+			tsu.p.runRuleCmd(cmd1)
+		}
+		fallthrough
+	case "tproxy":
+		if tsu.p.ipv4enabled {
+			cmd0 := `
 iptables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true
 iptables -t mangle -D PREROUTING -p udp -j GOHPTS_UDP 2>/dev/null || true
 iptables -t mangle -F GOHPTS_UDP 2>/dev/null || true
 iptables -t mangle -X GOHPTS_UDP 2>/dev/null || true
 `
-		tsu.p.runRuleCmd(cmd0)
+			tsu.p.runRuleCmd(cmd0)
+		}
 		if tsu.p.ipv6enabled {
 			cmd1 := `
 ip6tables -t mangle -D PREROUTING -p udp -m socket -j DIVERT 2>/dev/null || true

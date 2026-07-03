@@ -4,12 +4,12 @@ package gohpts
 
 type tproxyServerUDP struct{}
 
-func newTproxyServerUDP(p *proxyapp) *tproxyServerUDP {
+func newTproxyServerUDP(p *Proxy) (*tproxyServerUDP, error) {
 	_ = p
-	return nil
+	return nil, nil
 }
 
-func (tsu *tproxyServerUDP) ListenAndServe() {
+func (tsu *tproxyServerUDP) Serve() {
 }
 
 func (tsu *tproxyServerUDP) Shutdown() {

@@ -25,8 +25,12 @@ type Config struct {
 	// misc
 	Interface      string
 	ServerConfPath string
+	IPv4Enabled    bool
 	IPv6Enabled    bool
 	SOCKS4Enabled  bool
+	NoHTTP         bool
+	NoSOCKS        bool
+	DNS            string
 
 	// transparent proxy
 	TProxyMode       string
@@ -34,7 +38,6 @@ type Config struct {
 	TProxyWorkers    uint
 	TProxyUDP        string
 	TProxyUDPWorkers uint
-	NoHTTP           bool
 	Auto             bool
 	Dump             bool
 	Mark             uint
@@ -61,6 +64,10 @@ type Config struct {
 
 	// packet capture
 	Pcap string
+
+	// network namespaces
+	InNetNS  string
+	OutNetNS string
 }
 
 type ProxyEntry struct {
@@ -88,10 +95,13 @@ type DNSFilterLists struct {
 
 type yamlConfig struct {
 	Interface     string `yaml:"interface"`
-	IPv6Enabled   bool   `yaml:"ipv6_enabled"`
-	SOCKS4Enabled bool   `yaml:"socks4_enabled"`
+	IPv4Enabled   bool   `yaml:"ipv4"`
+	IPv6Enabled   bool   `yaml:"ipv6"`
+	NoHTTP        bool   `yaml:"disable_http"`
+	NoSOCKS       bool   `yaml:"disable_socks"`
+	SOCKS4Enabled bool   `yaml:"socks4"`
+	DNS           string `yaml:"dns"`
 	HTTPServer    struct {
-		Enabled  bool   `yaml:"enabled"`
 		Address  string `yaml:"address"`
 		Username string `yaml:"username"`
 		Password string `yaml:"password"`
@@ -124,7 +134,6 @@ type yamlConfig struct {
 			Workers int    `yaml:"workers"`
 		} `yaml:"udp"`
 		Mode         string `yaml:"mode"`
-		DisableHTTP  bool   `yaml:"disable_http"`
 		Auto         bool   `yaml:"auto"`
 		DumpRules    bool   `yaml:"dump_rules"`
 		IgnoredPorts []int  `yaml:"ignored_ports"`
@@ -143,6 +152,11 @@ type yamlConfig struct {
 		Enabled  bool   `yaml:"enabled"`
 		Settings string `yaml:"settings"`
 	} `yaml:"pcap"`
+	Netns struct {
+		Enabled bool   `yaml:"enabled"`
+		In      string `yaml:"in"`
+		Out     string `yaml:"out"`
+	} `yaml:"netns"`
 }
 
 func createConfigFromPath(path string) (*Config, error) {
@@ -157,7 +171,9 @@ func createConfigFromPath(path string) (*Config, error) {
 	}
 	conf := Config{}
 
-	if sconf.HTTPServer.Enabled {
+	conf.NoHTTP = sconf.NoHTTP
+	conf.NoSOCKS = sconf.NoSOCKS
+	if !conf.NoHTTP {
 		conf.AddrHTTP = sconf.HTTPServer.Address
 		conf.ServerUser = sconf.HTTPServer.Username
 		conf.ServerPass = sconf.HTTPServer.Password
@@ -169,8 +185,10 @@ func createConfigFromPath(path string) (*Config, error) {
 	conf.SocksProxyChain = sconf.ProxyChain
 
 	conf.Interface = sconf.Interface
+	conf.IPv4Enabled = sconf.IPv4Enabled
 	conf.IPv6Enabled = sconf.IPv6Enabled
 	conf.SOCKS4Enabled = sconf.SOCKS4Enabled
+	conf.DNS = sconf.DNS
 
 	if sconf.TransparentProxy.TCP.Enabled || sconf.TransparentProxy.UDP.Enabled {
 		if sconf.TransparentProxy.TCP.Enabled {
@@ -182,7 +200,6 @@ func createConfigFromPath(path string) (*Config, error) {
 			conf.TProxyUDPWorkers = uint(sconf.TransparentProxy.UDP.Workers)
 		}
 		conf.TProxyMode = sconf.TransparentProxy.Mode
-		conf.NoHTTP = sconf.TransparentProxy.DisableHTTP
 		conf.Auto = sconf.TransparentProxy.Auto
 		conf.Mark = uint(sconf.TransparentProxy.Mark)
 		if conf.Auto {
@@ -214,6 +231,10 @@ func createConfigFromPath(path string) (*Config, error) {
 	if sconf.Pcap.Enabled {
 		conf.Pcap = sconf.Pcap.Settings
 	}
+	if sconf.Netns.Enabled {
+		conf.InNetNS = sconf.Netns.In
+		conf.OutNetNS = sconf.Netns.Out
+	}
 	return &conf, nil
 }
 
@@ -227,10 +248,31 @@ func parseConfig(conf *Config) error {
 			return err
 		}
 		conf.ServerConfPath = ""
+		if !conf.NoHTTP {
+			conf.NoHTTP = yamlConf.NoHTTP
+		}
+		if !conf.NoSOCKS {
+			conf.NoSOCKS = yamlConf.NoSOCKS
+		}
+		if !conf.IPv4Enabled {
+			conf.IPv4Enabled = yamlConf.IPv4Enabled
+		}
+
+		if !conf.IPv6Enabled {
+			conf.IPv6Enabled = yamlConf.IPv6Enabled
+		}
+		var ipv6only bool
+		if conf.IPv6Enabled && !conf.IPv4Enabled {
+			ipv6only = true
+		}
 		// if user did not specify http address (from CLI), use address from config or default
 		if conf.AddrHTTP == "" {
 			if yamlConf.AddrHTTP == "" {
-				conf.AddrHTTP = addrHTTP
+				if ipv6only {
+					conf.AddrHTTP = addr6HTTP
+				} else {
+					conf.AddrHTTP = addrHTTP
+				}
 			} else {
 				conf.AddrHTTP = yamlConf.AddrHTTP
 			}
@@ -260,7 +302,11 @@ func parseConfig(conf *Config) error {
 				conf.SocksProxy = yamlConf.SocksProxy
 			} else {
 				// fallback to default address
-				conf.SocksProxy[0].Address = addrSOCKS
+				if ipv6only {
+					conf.SocksProxy[0].Address = addr6SOCKS
+				} else {
+					conf.SocksProxy[0].Address = addrSOCKS
+				}
 			}
 		}
 
@@ -268,12 +314,12 @@ func parseConfig(conf *Config) error {
 			conf.Interface = yamlConf.Interface
 		}
 
-		if !conf.IPv6Enabled {
-			conf.IPv6Enabled = yamlConf.IPv6Enabled
-		}
-
 		if !conf.SOCKS4Enabled {
 			conf.SOCKS4Enabled = yamlConf.SOCKS4Enabled
+		}
+
+		if conf.DNS == "" {
+			conf.DNS = yamlConf.DNS
 		}
 
 		if !conf.Debug {
@@ -328,10 +374,6 @@ func parseConfig(conf *Config) error {
 			conf.TProxyUDPWorkers = yamlConf.TProxyUDPWorkers
 		}
 
-		if !conf.NoHTTP {
-			conf.NoHTTP = yamlConf.NoHTTP
-		}
-
 		if !conf.Auto {
 			conf.Auto = yamlConf.Auto
 		}
@@ -356,17 +398,37 @@ func parseConfig(conf *Config) error {
 			conf.Pcap = yamlConf.Pcap
 		}
 
+		if conf.InNetNS == "" {
+			conf.InNetNS = yamlConf.InNetNS
+		}
+
+		if conf.OutNetNS == "" {
+			conf.OutNetNS = yamlConf.OutNetNS
+		}
+
 		if conf.IgnoredPorts == "" {
 			conf.IgnoredPorts = yamlConf.IgnoredPorts
 		}
 		conf.DNSFilter = yamlConf.DNSFilter
 	} else {
+		var ipv6only bool
+		if conf.IPv6Enabled && !conf.IPv4Enabled {
+			ipv6only = true
+		}
 		// only set defaults for http and socks
 		if conf.AddrHTTP == "" {
-			conf.AddrHTTP = addrHTTP
+			if ipv6only {
+				conf.AddrHTTP = addr6HTTP
+			} else {
+				conf.AddrHTTP = addrHTTP
+			}
 		}
 		if conf.SocksProxy[0].Address == "" {
-			conf.SocksProxy[0].Address = addrSOCKS
+			if ipv6only {
+				conf.SocksProxy[0].Address = addr6SOCKS
+			} else {
+				conf.SocksProxy[0].Address = addrSOCKS
+			}
 		}
 	}
 	if !slices.Contains(SupportedTProxyOS, runtime.GOOS) {
@@ -394,9 +456,6 @@ func parseConfig(conf *Config) error {
 		if conf.Mark > 0 {
 			return fmt.Errorf("option `Mark` is available only on linux/android systems")
 		}
-		if conf.NoHTTP {
-			return fmt.Errorf("option `NoHTTP` is available only on linux/android systems")
-		}
 		if conf.ARPSpoof != "" {
 			return fmt.Errorf("option `ARPSpoof` is available only on linux/android systems")
 		}
@@ -405,6 +464,12 @@ func parseConfig(conf *Config) error {
 		}
 		if conf.Pcap != "" {
 			return fmt.Errorf("option `Pcap` is available only on linux/android systems")
+		}
+		if conf.InNetNS != "" {
+			return fmt.Errorf("option `InNetNS` is available only on linux/android systems")
+		}
+		if conf.OutNetNS != "" {
+			return fmt.Errorf("option `OutNetNS` is available only on linux/android systems")
 		}
 		if conf.IgnoredPorts != "" {
 			return fmt.Errorf("option `IgnoredPorts` is available only on linux/android systems")

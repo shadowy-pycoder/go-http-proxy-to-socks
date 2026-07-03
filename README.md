@@ -3,7 +3,10 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-yellow.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Go Reference](https://pkg.go.dev/badge/github.com/shadowy-pycoder/go-http-proxy-to-socks.svg)](https://pkg.go.dev/github.com/shadowy-pycoder/go-http-proxy-to-socks)
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/shadowy-pycoder/go-http-proxy-to-socks)
-[![Go Report Card](https://goreportcard.com/badge/github.com/shadowy-pycoder/go-http-proxy-to-socks)](https://goreportcard.com/report/github.com/shadowy-pycoder/go-http-proxy-to-socks)
+![AUR Version](https://img.shields.io/aur/version/gohpts)
+![AUR Last Modified](https://img.shields.io/aur/last-modified/gohpts)
+![AUR Maintainer](https://img.shields.io/aur/maintainer/gohpts)
+![Docker Pulls](https://img.shields.io/docker/pulls/shadowypycoder/gohpts)
 ![GitHub Release](https://img.shields.io/github/v/release/shadowy-pycoder/go-http-proxy-to-socks)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/shadowy-pycoder/go-http-proxy-to-socks/total)
 ![GitHub Downloads (all assets, latest release)](https://img.shields.io/github/downloads/shadowy-pycoder/go-http-proxy-to-socks/latest/total)
@@ -20,7 +23,9 @@
   - [Configuration via YAML file](#configuration-via-yaml-file)
 - [Transparent proxy](#transparent-proxy)
   - [redirect (via NAT and SO_ORIGINAL_DST)](#redirect-via-nat-and-so_original_dst)
+  - [Auto configuration for redirect mode](#auto-configuration-for-redirect-mode)
   - [tproxy (via MANGLE and IP_TRANSPARENT)](#tproxy-via-mangle-and-ip_transparent)
+  - [Auto configuration for tproxy mode](#auto-configuration-for-tproxy-mode)
   - [UDP support](#udp-support)
   - [Android support](#android-support)
   - [YAML configuration](#yaml-configuration)
@@ -28,11 +33,17 @@
   - [JSON format](#json-format)
   - [Colored format](#colored-format)
 - [HTTP2 and HTTP3 support](#http2-and-http3-support)
-- [IPv6 support](#ipv6-support)
+  - [Example setup using self-signed certificate](#example-setup-using-self-signed-certificate)
+  - [Test connection](#test-connection)
+  - [Test connection in a browser](#test-connection-in-a-browser)
+- [IPv4 and IPv6 support](#ipv4-and-ipv6-support)
 - [ARP spoofing](#arp-spoofing)
 - [NDP spoofing](#ndp-spoofing)
 - [DNS spoofing](#dns-spoofing)
 - [Packet Capture](#packet-capture)
+- [Network Namespaces](#network-namespaces)
+  - [Playground setup](#playground-setup)
+  - [Usage examples](#usage-examples)
 - [Links](#links)
 - [Contributing](#contributing)
 - [License](#license)
@@ -71,8 +82,11 @@ Specify http server in proxy configuration of Postman
 - **Transparent proxy**\
   Supports `redirect` (SO_ORIGINAL_DST) and `tproxy` (IP_TRANSPARENT) modes
 
+- **IPv4 and IPv6 support**\
+  Operates in `IPv4-only`, `IPv6-only` or `dual stack` modes
+
 - **TCP and UDP Transparent proxy**\
-  `tproxy` (IP_TRANSPARENT) handles TCP and UDP traffic
+  `tproxy` and `tlocal` (IP_TRANSPARENT) handle TCP and UDP traffic
 
 - **Traffic sniffing**\
   Proxy is able to parse HTTP headers, TLS handshake, DNS messages and more
@@ -97,6 +111,9 @@ Specify http server in proxy configuration of Postman
 
 - **HTTP2/HTTP3 Support**\
   Supports modern HTTP/2 and HTTP/3 transport, enabling efficient multiplexed connections over TLS 1.3
+
+- **Network Namespaces support**\
+  Supports custom Linux network namespaces for listening sockets and outbound connections
 
 - **Trailer Headers Support**\
   Handles HTTP trailer headers
@@ -135,7 +152,7 @@ Specify http server in proxy configuration of Postman
 - Download the binary for your platform from [Releases](https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases) page:
 
   ```shell
-  GOHPTS_RELEASE=v1.14.3; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
+  GOHPTS_RELEASE=v1.15.0; wget -v https://github.com/shadowy-pycoder/go-http-proxy-to-socks/releases/download/$GOHPTS_RELEASE/gohpts-$GOHPTS_RELEASE-linux-amd64.tar.gz -O gohpts && tar xvzf gohpts && mv -f gohpts-$GOHPTS_RELEASE-linux-amd64 gohpts && ./gohpts -h
   ```
 
 - Install using `go install` command (requires Go [1.26](https://go.dev/doc/install) or later):
@@ -181,53 +198,60 @@ Codeberg: https://codeberg.org/shadowy-pycoder/go-http-proxy-to-socks
 Usage: gohpts [OPTIONS]
 OPTIONS:
   General:
-  -h        Show this help message and exit
-  -v        Show version and build information
-  -D        Run as a daemon (provide -logfile to see logs)
-  -I        Display list of network interfaces and exit
-  -f        Path to proxy configuration file in YAML format
+  -h         Show this help message and exit
+  -v         Show version and build information
+  -D         Run as a daemon (provide -logfile to see logs)
+  -I         Display list of network interfaces and exit
+  -f         Path to proxy configuration file in YAML format
 
   Proxy:
-  -l        Address of HTTP proxy server (Default: "127.0.0.1:8080")
-  -s        Address of SOCKS5 proxy server (Default: "127.0.0.1:1080")
-  -c        Path to certificate PEM encoded file
-  -k        Path to private key PEM encoded file
-  -U        User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
-  -u        User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
-  -i        Bind proxy to specific network interface (either by interface name or index)
-  -6        Enable IPv6 support for TCP and UDP
-  -socks4   Use SOCKS4/SOCKS4a as the upstream proxy protocol (default: SOCKS5)
+  -l         Address of HTTP proxy server (Default: "127.0.0.1:8080" for IPv4, "[::1]:8080" for IPv6)
+  -s         Address of SOCKS5 proxy server (Default: "127.0.0.1:1080" for IPv4 "[::1]:1080" for IPv6)
+  -c         Path to certificate PEM encoded file
+  -k         Path to private key PEM encoded file
+  -U         User for HTTP proxy (basic auth). This flag invokes prompt for password (not echoed to terminal)
+  -u         User for SOCKS5 proxy authentication. This flag invokes prompt for password (not echoed to terminal)
+  -i         Bind proxy to specific network interface (either by interface name or index)
+  -4         Force IPv4 stack for TCP and UDP (Default: dual stack)
+  -6         Force IPv6 stack for TCP and UDP (Default: dual stack)
+  -socks4    Use SOCKS4/SOCKS4a as the upstream proxy protocol (default: SOCKS5)
+  -nohttp    Disable HTTP proxy server
+  -nosocks   Disable SOCKS upstream proxy
+  -dns       Use custom DNS server (Example: "8.8.8.8" or "2001:4860:4860::8888")
 
   Logs:
-  -d        Show logs in DEBUG mode
-  -j        Show logs in JSON format
-  -logfile  Log file path (Default: stdout)
-  -nocolor  Disable colored output for logs (no effect if -j flag specified)
-  -pprof    Address of pprof server with profiling data
+  -d         Show logs in DEBUG mode
+  -j         Show logs in JSON format
+  -logfile   Log file path (Default: stdout)
+  -nocolor   Disable colored output for logs (no effect if -j flag specified)
+  -pprof     Address of pprof server with profiling data
 
   Sniffing:
-  -sniff    Enable traffic sniffing for HTTP and TLS
-  -snifflog Sniffed traffic log file path (Default: the same as -logfile)
-  -body     Collect request and response body for HTTP traffic (credentials, tokens, etc)
+  -sniff     Enable traffic sniffing for HTTP and TLS
+  -snifflog  Sniffed traffic log file path (Default: the same as -logfile)
+  -body      Collect request and response body for HTTP traffic (credentials, tokens, etc)
 
   TProxy:
-  -T        Address of transparent proxy server
-  -Tu       Address of transparent UDP proxy server
-  -M        Transparent proxy mode: (redirect, tproxy)
-  -nohttp   Disable HTTP server
-  -w        Number of instances of transparent proxy server (Default: number of CPU cores)
-  -wu       Number of instances of transparent UDP proxy server (Default: number of CPU cores)
-  -auto     Automatically setup iptables and kernel parameters for transparent proxy (requires elevated privileges)
-  -mark     Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
-  -P        Comma separated list of ports to ignore when proxying traffic (Example: "22,80,443,9092")
-  -dump     Dump iptables rules and other system settings generated by -auto flag
+  -T         Address of transparent proxy server
+  -Tu        Address of transparent UDP proxy server
+  -M         Transparent proxy mode: (redirect, tproxy, tlocal)
+  -w         Number of instances of transparent proxy server (Default: number of CPU cores)
+  -wu        Number of instances of transparent UDP proxy server (Default: number of CPU cores)
+  -auto      Automatically setup iptables and kernel parameters for transparent proxy (requires elevated privileges)
+  -mark      Set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100, tlocal 100)
+  -P         Comma separated list of ports to ignore when proxying traffic (Example: "22,80,443,9092")
+  -dump      Dump iptables rules and other system settings generated by -auto flag
 
   Spoofing:
-  -arpspoof Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true;interval 10s")
-  -ndpspoof Enable NDP spoof proxy for selected targets (Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4;fullduplex false;debug true;interval 10s")
+  -arpspoof  Enable ARP spoof proxy for selected targets (Example: "targets 10.0.0.1,10.0.0.5-10,192.168.1.*,192.168.10.0/24;fullduplex false;debug true;interval 10s")
+  -ndpspoof  Enable NDP spoof proxy for selected targets (Example: "ra true;na true;targets fe80::3a1c:7bff:fe22:91a4;fullduplex false;debug true;interval 10s")
 
   Packet Capture:
-  -pcap     Enable packet capture (Example: "promisc true;expr ip proto tcp;snaplen 65535;timeout 10s;packet_count 100;packet_buffer 8192;exts txt,pcap,pcapng")
+  -pcap      Enable packet capture (Example: "promisc true;expr ip proto tcp;snaplen 65535;timeout 10s;packet_count 100;packet_buffer 8192;exts txt,pcap,pcapng")
+
+  Namespaces:
+  -in-netns  Name or path of network namespace for inbound listeners (Default: default namespace)
+  -out-netns Name or path of network namespace for outbound connections (Default: default namespace)
 ```
 
 ### Configuration via CLI flags
@@ -305,11 +329,19 @@ Config example:
 ```yaml
 # bind proxy to specific network interface (either by interface name or index)
 interface: "eth0" # if specified, overrides http server IP address
-ipv6_enabled: false # this must be enabled for ndpspoof
+disable_http: false # disable http proxy (default: false)
+disable_socks: false # disable upstream socks proxy (default: false)
+# if ipv4 and ipv6 are both false or both true, dual stack is assumed
+ipv4: false # this must be enabled for arpspoof (default: false)
+ipv6: false # this must be enabled for ndpspoof (default: false)
+socks4: false # use SOCKS4/SOCKS4a protocol (tcp only protocol, no udp tproxy or http3 possible) (default: false)
+dns: 8.8.8.8 # custom DNS server (used in direct dialer, namespaces, spoofing)
 
 http_server:
-  enabled: true
   address: 127.0.0.1:8080
+  # username and password for adding basic authentication (comment out to disable auth)
+  username: username
+  password: password
 
 # list of socks5 proxy
 # if proxy_chain is disabled, uses first server in a list as upstream
@@ -385,9 +417,9 @@ This functionality available only on Linux systems and Android (arm64) and requi
 
 `-T address` flag specifies the address of transparent proxy server
 
-There are two modes `redirect` and `tproxy` that can be specified with `-M` flag
+There are three modes `redirect`, `tproxy` and `tlocal` (same as `tproxy` but also intercepts local traffic) that can be specified with `-M` flag
 
-## `redirect` (via _NAT_ and _SO_ORIGINAL_DST_)
+### `redirect` (via _NAT_ and _SO_ORIGINAL_DST_)
 
 [[Back]](#table-of-contents)
 
@@ -396,6 +428,8 @@ In this mode proxying happens with `iptables` `nat` table and `REDIRECT` target.
 To run `GoHPTS` in this mode you use `-T` flag with `-M redirect`
 
 ### Example
+
+[[Back]](#table-of-contents)
 
 ```shell
 # run the proxy
@@ -474,7 +508,7 @@ You can optionally specify `-mark <value>` to prevent possible proxy loops
 sudo env PATH=$PATH gohpts -d -T 8888 -M redirect -auto -mark 100
 ```
 
-## `tproxy` (via _MANGLE_ and _IP_TRANSPARENT_)
+### `tproxy` (via _MANGLE_ and _IP_TRANSPARENT_)
 
 [[Back]](#table-of-contents)
 
@@ -490,6 +524,8 @@ To run `GoHPTS` in this mode you use `-T` flag with `-M tproxy`
 
 ### Example
 
+[[Back]](#table-of-contents)
+
 ```shell
 # run the proxy
 gohpts -s 1080 -T 0.0.0.0:1090 -M tproxy -d
@@ -503,10 +539,17 @@ ssh remote -D 1080 -Nf
 Setup your operating system:
 
 ```shell
+ip netns add ns-client
+ip link add dev veth0 type veth peer name veth1 netns ns-client
+ip addr add 10.0.0.1/24 dev veth0
+ip link set dev veth0 up
+ip netns exec ns-client ip addr add 10.0.0.2/24 dev veth1
+ip netns exec ns-client ip link set dev lo up
+ip netns exec ns-client ip link set dev veth1 up
 ip netns exec ns-client ip route add default via 10.0.0.1
 sysctl -w net.ipv4.ip_forward=1
 
-iptables -t mangle -A PREROUTING -i veth1 -p tcp -j TPROXY --on-port 1090 --tproxy-mark 0x1/0x1
+iptables -t mangle -A PREROUTING -i veth0 -p tcp -j TPROXY --on-port 1090 --tproxy-mark 0x1/0x1
 
 ip rule add fwmark 1 lookup 100
 ip route add local 0.0.0.0/0 dev lo table 100
@@ -526,7 +569,6 @@ iptables -t mangle -F
 ip rule del fwmark 1 lookup 100
 ip route flush table 100
 ip netns del ns-client
-ip link del veth1
 ```
 
 ### Auto configuration for `tproxy` mode
@@ -573,7 +615,7 @@ fi
 
 [[Back]](#table-of-contents)
 
-`GoHPTS` has UDP support that can be enabled in `tproxy` mode. For this setup to work you need to connect to a socks5 server capable of serving UDP connections (`UDP ASSOCIATE`). For example, you can use [https://github.com/wzshiming/socks5](https://github.com/wzshiming/socks5) to deploy UDP capable socks5 server on some remote or local machine. Once you have the server to connect to, run the following command:
+`GoHPTS` has UDP support that can be enabled in `tproxy` and `tlocal` modes. For this setup to work you need to connect to a socks5 server capable of serving UDP connections (`UDP ASSOCIATE`). For example, you can use [https://github.com/wzshiming/socks5](https://github.com/wzshiming/socks5) to deploy UDP capable socks5 server on some remote or local machine. Once you have the server to connect to, run the following command:
 
 ```shell
 sudo env PATH=$PATH gohpts -s remote -Tu :8989 -M tproxy -auto -mark 100 -d
@@ -626,15 +668,14 @@ transparent_proxy:
     address: 0.0.0.0:8889
     # number of instances of transparent UDP proxy server (Default: number of CPU cores)
     workers: 1
-  mode: "tproxy" # available modes are "redirect", "tproxy" (udp requires tproxy mode)
-  disable_http: false
+  mode: "tproxy" # available modes are "redirect", "tproxy" and "tlocal" (udp requires tproxy or tlocal mode)
   # automatically setup iptables and kernel parameters for transparent proxy (requires elevated privileges)
   auto: true
   # dump iptables rules and other system settings generated by auto setting
   dump_rules: false
   # list of ports to ignore when proxying traffic (Example: [22,80,443,9092])
   ignored_ports: []
-  # set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100)
+  # set mark for each packet sent through transparent proxy (Default: redirect 0, tproxy 100, tlocal 100)
   mark: 100
 ```
 
@@ -810,7 +851,9 @@ gohpts -sniff -body -nocolor
 
 `GoHPTS` proxy handles HTTP/1.1, HTTP/2, and HTTP/3 requests using the same server address and TLS certificate. This allows clients to automatically choose the best available protocol without changing configuration. TLS certificate can be obtained in several ways: cloud providers (Google, AWS, Cloudflare), free certificate from Let's Encrypt, or you can create self-signed certificate using `openssl` (Linux/macOS) or `New-SelfSignedCertificate` (Windows).
 
-### Example setup using self-signed certificate:
+### Example setup using self-signed certificate
+
+[[Back]](#table-of-contents)
 
 - Create `key.pem` and `cert.pem` files:
 
@@ -830,7 +873,7 @@ gohpts -sniff -body -nocolor
   ```shell
   git clone https://github.com/wzshiming/socks5.git && cd socks5
   go build -o socks5_server ./cmd/socks5/main.go
-  ./bin/socks5_server -a 0.0.0.0:1080
+  ./socks5_server -a 0.0.0.0:1080
   ```
 
 - Open another terminal and install `GoHPTS` proxy:
@@ -847,7 +890,6 @@ gohpts -sniff -body -nocolor
   ```yaml
   # gohpts_config.yaml
   http_server:
-    enabled: true
     address: 127.0.0.1:8080
     cert_file: ./cert.pem
     key_file: ./key.pem
@@ -885,6 +927,8 @@ gohpts -sniff -body -nocolor
 
 ### Test connection
 
+[[Back]](#table-of-contents)
+
 - For HTTP/2 proxy server you can use `curl`:
 
   ```shell
@@ -913,6 +957,8 @@ gohpts -sniff -body -nocolor
   Go to terminal tab with `GoHPTS` proxy and check logs, you should see all your requests there.
 
 ### Test connection in a browser
+
+[[Back]](#table-of-contents)
 
 - Create proper self-signed ceritificate for browser:
 
@@ -951,11 +997,39 @@ gohpts -sniff -body -nocolor
   chromium --proxy-server="https://127.0.0.1:8080"
   ```
 
-## IPv6 support
+## IPv4 and IPv6 support
 
 [[Back]](#table-of-contents)
 
-To enable IPv6 handling just add `-6` flag, for example when using with transparent proxy:
+In terms of network layer handling, `GoHPTS` can operate in three modes: `dual stack`, `IPv4-only` and `IPv6-only`. User can control the mode by specifying `-4` and `-6` flags. When one of the flags is set, proxy starts in corresponding mode, when both flags are present or both omitted, `dual stack` is assumed. Please note that in "only" modes, only IP addresses of specific version are allowed, all domains get resolved to specific IP version (if possible), all listening addresses require using the same version, etc.
+
+To enable `IPv4-only` mode just add `-4` flag:
+
+```shell
+sudo ./gohpts -sniff -body -d -4
+```
+
+To test proxy in IPv4 mode you can use any Linux VM:
+
+1. On your virtual machine:
+
+```shell
+# add your host machine as gateway for VM
+export GATEWAY="<host IPv4 address>"
+ip route add 0.0.0.0/1 via "$GATEWAY"
+ip route add 128.0.0.0/1 via "$GATEWAY"
+```
+
+2. On your host:
+
+```shell
+# run proxy on your host
+sudo ./gohpts -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -d -4
+```
+
+3. Visit any website on your virtual machine and see traffic in proxy logs
+
+To enable `IPv6-only` mode just add `-6` flag, for example when using with transparent proxy:
 
 ```shell
 sudo ./gohpts -T 8888 -M redirect -sniff -body -auto -mark 100 -d -6
@@ -967,11 +1041,6 @@ To test proxy in IPv6 mode you can use any Linux VM:
 1. On your virtual machine:
 
 ```shell
-# add your host machine as gateway for VM
-export GATEWAY="<host IPv4 address>"
-ip route add 0.0.0.0/1 via "$GATEWAY"
-ip route add 128.0.0.0/1 via "$GATEWAY"
-
 # add your host machine as gateway IPv6 for VM
 export GATEWAY6="<host IPv6 address>"
 ip -6 route add ::/1 via "$GATEWAY6" dev eth0
@@ -1025,7 +1094,7 @@ Check proxy logs for traffic from other devices from your LAN
 
 For more information about arpspoof options see `gohpts -h` and [https://github.com/shadowy-pycoder/arpspoof](https://github.com/shadowy-pycoder/arpspoof)
 
-### NDP spoofing
+## NDP spoofing
 
 [[Back]](#table-of-contents)
 
@@ -1072,9 +1141,7 @@ go build -o ./bin/socks5_server ./cmd/socks5/*.go
 5. Run `gohtps`:
 
 ```shell
-
-gohpts -s 203.0.113.10:3000 -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -mark 100 -arpspoof "fullduplex true;debug true" -ndpspoof "ra true;debug true
-" -6 -d
+gohpts -s 203.0.113.10:3000 -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -mark 100 -arpspoof "fullduplex true;debug true" -ndpspoof "ra true;debug true" -4 -6 -d
 ```
 
 6. Get another device (phone, tablet, etc) and connect it to the same network. Try to access Internet and check if some traffic appears on your host machine. Check public IP address with some online tools (it should match your VPS address `203.0.113.10` in this case or global IPv6 address)
@@ -1083,7 +1150,7 @@ gohpts -s 203.0.113.10:3000 -T 8888 -Tu 8889 -M tproxy -sniff -body -auto -mark 
 
 8. Profit!
 
-### DNS spoofing
+## DNS spoofing
 
 [[Back]](#table-of-contents)
 
@@ -1136,7 +1203,6 @@ transparent_proxy:
     enabled: true
     address: 0.0.0.0:8889
   mode: "tproxy"
-  disable_http: true
   auto: true
 
 arpspoof:
@@ -1162,7 +1228,7 @@ sudo ./gohpts -f ./gohpts_dns_spoof.yaml
 
 More information can be found here: [https://en.wikipedia.org/wiki/DNS_spoofing](https://en.wikipedia.org/wiki/DNS_spoofing)
 
-### Packet Capture
+## Packet Capture
 
 [[Back]](#table-of-contents)
 
@@ -1190,6 +1256,400 @@ pcap:
 These commands produce three packet capture files with corresponding formats that later can be analyzed by various tools.
 
 For more information about pcap options see `gohpts -h` and [https://github.com/shadowy-pycoder/mshark](https://github.com/shadowy-pycoder/mshark)
+
+## Network Namespaces
+
+[[Back]](#table-of-contents)
+
+By default `GoHPTS` proxy is running within single network namespace but this can be overriden. Listening sockets (e.g. http server or transparent proxy server) and outbound sockets (socks proxy or direct dialer) created by `GoHPTS` can be isolated with Linux/Android [network_namespaces (7)](https://man7.org/linux/man-pages/man7/network_namespaces.7.html). When starting proxy process, users can specify `-in-netns` (listeners) and `-out-netns` (dialers) flags with name or path to network namespace to control in which isolated environment to create sockets. If you want to create either listeners or dialers in the current (default) namespace, just omit the flag. To specify host namespace explicitly you can use path `/proc/1/ns/net` - this allows proxy to correctly identify system nameservers.
+
+`GoHPTS` supports [ip-netns (8)](https://man7.org/linux/man-pages/man8/ip-netns.8.html) convention for providing network configuration via files located in `/etc/netns/NAME/` directory. So, to specify custom nameservers for `ns1` network namespace you do the following:
+
+```shell
+sudo mkdir -p /etc/netns/ns1
+sudo tee /etc/netns/ns1/resolv.conf << EOF
+nameserver 8.8.8.8
+nameserver 2001:4860:4860:0:0:0:0:8888
+EOF
+```
+
+If no config is found, Google DNS servers will be used to resolve domain names.
+
+If your system have [systemd-resolved.service (8)](https://man7.org/linux/man-pages/man8/systemd-resolved.service.8.html) enabled you may want to disable it temporarily when doing queries via custom network namespaces:
+
+```shell
+sudo ip netns exec ns1 unshare --mount bash -c '
+    mount --bind /dev/null /run/systemd/resolve/io.systemd.Resolve
+    curl -Nvk https://example.com'
+```
+
+Or make it persistent for specific shell instance:
+
+```shell
+sudo ip netns exec ns1 unshare --mount bash -c '
+    mount --bind /dev/null /run/systemd/resolve/io.systemd.Resolve
+    exec bash --login'
+```
+
+### Playground setup
+
+[[Back]](#table-of-contents)
+
+- Run socks5 server with UDP ASSOCIATE support
+
+  ```shell
+  git clone https://github.com/wzshiming/socks5.git && cd socks5
+  go build -o socks5_server ./cmd/socks5/main.go
+  ./socks5_server -a 0.0.0.0:1080
+  ```
+
+- Download and install [Simple HTTP3 to SOCKS5 proxy example](https://github.com/shadowy-pycoder/http3-socks-proxy):
+
+  ```shell
+  git clone https://github.com/shadowy-pycoder/http3-socks-proxy.git
+  cd http3-socks-proxy
+  make
+  ```
+
+- Clone the repo and compile
+
+  ```shell
+  git clone https://github.com/shadowy-pycoder/go-http-proxy-to-socks.git
+  cd go-http-proxy-to-socks
+  make
+  ```
+
+- Create `key.pem` and `cert.pem` files:
+
+  ```shell
+  openssl req -x509 -newkey rsa:2048 \
+  -keyout key.pem \
+  -out cert.pem \
+  -sha256 \
+  -days 365 \
+  -nodes \
+  -subj "/C=XX/ST=StateName/L=CityName/O=CompanyName/OU=CompanySectionName/CN=127.0.0.1" \
+  -addext "subjectAltName=IP:127.0.0.1"
+  ```
+
+- Create a network namespace `ns1` and configure veth network
+
+  ```shell
+  sudo ip netns add ns1
+  sudo ip link add dev veth0 type veth peer name veth1 netns ns1
+  sudo ip addr add 10.0.0.1/24 dev veth0
+  sudo ip -6 addr add fd12:3456:789a::1/64 dev veth0
+  sudo ip link set dev veth0 up
+  sudo ip netns exec ns1 ip addr add 10.0.0.2/24 dev veth1
+  sudo ip netns exec ns1 ip -6 addr add fd12:3456:789a::2/64 dev veth1
+  sudo ip netns exec ns1 ip link set dev lo up
+  sudo ip netns exec ns1 ip link set dev veth1 up
+  ```
+
+- Determine `wlan0` ip address to be able connect to local socks5
+
+  ```shell
+  WLAN_IP=$(ip -4 -c=never route get 8.8.8.8 | awk '{print $7}' | tr -d '\n')
+  ```
+
+### Usage examples
+
+[[Back]](#table-of-contents)
+
+1. **HTTP proxy - proxy listeners in `ns1` (no default route, no internet access), outbound sockets on host**
+
+   Run proxy:
+
+   ```shell
+   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -4 -6 -d -sniff -body -in-netns ns1
+   ```
+
+   Make request via `ns1`
+
+   ```shell
+   sudo ip netns exec ns1 curl -Nv --proxy http://127.0.0.1:8083 https://example.com
+   ```
+
+   Request should succeed
+
+2. **HTTP2 proxy - proxy listeners in `ns1` (no default route, no internet access), outbound sockets on host**
+
+   Run proxy:
+
+   ```shell
+   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -4 -6 -d -sniff -body -in-netns ns1 -c ./cert.pem -k ./key.pem
+   ```
+
+   Make request via `ns1`
+
+   ```shell
+   sudo ip netns exec ns1 curl -Nvk --http2 --proxy-insecure --proxy-http2 --proxy https://127.0.0.1:8083 https://example.com
+   ```
+
+   Request should succeed
+
+3. **HTTP3 proxy - proxy listeners in `ns1` (no default route, no internet access), outbound sockets on host**
+
+   Run proxy:
+
+   ```shell
+   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -4 -6 -d -sniff -body -in-netns ns1 -c ./cert.pem -k ./key.pem
+   ```
+
+   Make request via `ns1`
+
+   ```shell
+   sudo ip netns exec ns1 ./http3-socks-proxy/bin/client -a 127.0.0.1:8083 www.google.com
+   ```
+
+   Request should succeed
+
+4. **Redirect transparent proxy (`-M redirect`) - proxy listeners in `ns1` (default route, no internet access), outbound sockets on host**
+
+   Run proxy:
+
+   ```shell
+   sudo ./bin/gohpts -s 0.0.0.0:1080 -l :8083 -4 -6 -d -sniff -body -in-netns ns1 -nohttp -M redirect -T :8888 -auto
+   ```
+
+   Make request via `ns1`
+
+   ```shell
+   sudo ip netns exec ns1 curl -Nv https://example.com
+   ```
+
+   Request should fail
+
+   Add default route to `ns1`
+
+   ```shell
+   sudo ip netns exec ns1 ip route add default via 10.0.0.1
+   sudo ip netns exec ns1 ip -6 route add default via fd12:3456:789a::1
+   ```
+
+   Try again
+
+   ```shell
+   sudo ip netns exec ns1 curl -Nv https://example.com
+   ```
+
+   Now request should succeed
+
+5. **HTTP proxy - proxy listeners on host, outbound sockets in `ns1` (default route, internet access)**
+
+   Add NAT rules to allow `ns1` connect to internet via `wlan0`
+
+   ```shell
+   sudo iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o wlan0 -j MASQUERADE
+   sudo ip6tables -t nat -A POSTROUTING -s fd12:3456:789a::/64 -o wlan0 -j MASQUERADE
+   ```
+
+   Run proxy:
+
+   ```
+   sudo ./bin/gohpts -s :1080 -l :8083 -4 -6 -d -sniff -body -out-netns ns1 -i wlan0
+   ```
+
+   Make request via host
+
+   ```shell
+   curl -Nv --proxy http://$WLAN_IP:8083 https://example.com
+   ```
+
+   Request should succeed
+
+6. **HTTP3 proxy - proxy listeners on host, outbound sockets in `ns1` (default route, internet access)**
+
+   Run proxy:
+
+   ```
+   sudo ./bin/gohpts -s :1080 -l :8083 -4 -6 -d -sniff -body -out-netns ns1 -i wlan0 -c ./cert.pem -k ./key.pem
+   ```
+
+   Make request via host
+
+   ```shell
+   ./http3-socks-proxy/bin/client -a $WLAN_IP:8083 www.google.com
+   ```
+
+   Request should succeed
+
+7. **Redirect transparent proxy - proxy listeners on host, outbound sockets in `ns1` (default route, internet access)**
+
+   Run proxy (`-auto` does not work with local socks5 server for me, so I use remote one):
+
+   ```
+   sudo ./bin/gohpts -s <remote> -4 -6 -d -sniff -body -out-netns ns1 -nohttp -M redirect -T :8888 -auto
+   ```
+
+   Make request via host
+
+   ```shell
+   curl -Nv https://example.com
+   ```
+
+   Request should succeed
+
+8. **HTTP proxy - LAN (`ns2` (proxy listeners), `ns3`, `ns4`), outbound sockets in `ns1` (default route, internet access)**
+
+   Create LAN
+
+   ```shell
+   sudo ip link add br0 type bridge
+   sudo ip addr add 10.0.1.1/24 dev br0
+   sudo ip -6 addr add fd12:3456:789b::1/64 dev br0
+   sudo ip link set br0 up
+
+   sudo ip netns add ns2
+   sudo ip link add veth2 type veth peer name veth3 netns ns2
+   sudo ip link set veth2 master br0
+   sudo ip link set veth2 up
+   sudo ip netns exec ns2 ip addr add 10.0.1.2/24 dev veth3
+   sudo ip netns exec ns2 ip -6 addr add fd12:3456:789b::2/64 dev veth3
+   sudo ip netns exec ns2 ip link set lo up
+   sudo ip netns exec ns2 ip link set veth3 up
+   sudo ip netns exec ns2 ip route add default via 10.0.1.1
+   sudo ip netns exec ns2 ip -6 route add default via fd12:3456:789b::1
+
+   sudo ip netns add ns3
+   sudo ip link add veth4 type veth peer name veth5 netns ns3
+   sudo ip link set veth4 master br0
+   sudo ip link set veth4 up
+   sudo ip netns exec ns3 ip addr add 10.0.1.3/24 dev veth5
+   sudo ip netns exec ns3 ip -6 addr add fd12:3456:789b::3/64 dev veth5
+   sudo ip netns exec ns3 ip link set lo up
+   sudo ip netns exec ns3 ip link set veth5 up
+   sudo ip netns exec ns3 ip route add default via 10.0.1.1
+   sudo ip netns exec ns3 ip -6 route add default via fd12:3456:789b::1
+
+   sudo ip netns add ns4
+   sudo ip link add veth6 type veth peer name veth7 netns ns4
+   sudo ip link set veth6 master br0
+   sudo ip link set veth6 up
+   sudo ip netns exec ns4 ip addr add 10.0.1.4/24 dev veth7
+   sudo ip netns exec ns4 ip -6 addr add fd12:3456:789b::4/64 dev veth7
+   sudo ip netns exec ns4 ip link set lo up
+   sudo ip netns exec ns4 ip link set veth7 up
+   sudo ip netns exec ns4 ip route add default via 10.0.1.1
+   sudo ip netns exec ns4 ip -6 route add default via fd12:3456:789b::1
+   ```
+
+   Run proxy:
+
+   ```
+   sudo ./bin/gohpts -s $WLAN_IP:1080 -l 0.0.0.0:8083 -4 -6 -d -sniff -body -in-netns ns2 -out-netns ns1
+   ```
+
+   Make requests
+
+   ```shell
+   curl -Nv --proxy http://10.0.1.2:8083 http://example.com
+   sudo ip netns exec ns2 curl -Nv --proxy http://10.0.1.2:8083 https://example.com
+   sudo ip netns exec ns3 curl -Nv --proxy http://10.0.1.2:8083 https://example.com
+   sudo ip netns exec ns4 curl -Nv --proxy http://10.0.1.2:8083 https://example.com
+   ```
+
+   All requests should succeed
+
+9. **HTTP3 proxy - LAN (`ns2` (proxy listeners), `ns3`, `ns4`), outbound sockets in `ns1` (default route, internet access)**
+
+   Run proxy:
+
+   ```
+   sudo ./bin/gohpts -s $WLAN_IP:1080 -l 0.0.0.0:8083 -4 -6 -d -sniff -body -in-netns ns2 -out-netns ns1 -c ./cert.pem -k ./key.pem
+   ```
+
+   Make requests
+
+   ```shell
+   ./http3-socks-proxy/bin/client -a 10.0.1.2:8083 www.google.com
+   sudo ip netns exec ns2 ./http3-socks-proxy/bin/client -a 10.0.1.2:8083 www.google.com
+   sudo ip netns exec ns3 ./http3-socks-proxy/bin/client -a 10.0.1.2:8083 www.google.com
+   sudo ip netns exec ns4 ./http3-socks-proxy/bin/client -a 10.0.1.2:8083 www.google.com
+   ```
+
+   All requests should succeed
+
+10. **Redirect transparent proxy - LAN (`ns2` (proxy listeners), `ns3`, `ns4`), outbound sockets in `ns1` (default route, internet access)**
+
+    Run proxy:
+
+    ```shell
+    sudo ./bin/gohpts -s $WLAN_IP:1080 -4 -6 -d -sniff -body -in-netns ns2 -out-netns ns1 -nohttp -M redirect -T :8888 -auto
+    ```
+
+    Make requests
+
+    ```shell
+    sudo ip netns exec ns2 curl -Nv https://example.com
+    ```
+
+    For `ns3` and `ns4` request fails
+
+11. **Transparent proxy with `IP_TRANSPARENT` (arp/ndp spoofing enabled) LAN (`ns2` (proxy listeners), `ns3`, `ns4`), outbound sockets in `ns1` (default route, internet access)**
+
+    Run proxy:
+
+    ```shell
+    sudo ./bin/gohpts -s $WLAN_IP:1080 -4 -6 -d -sniff -body -in-netns ns2 -out-netns ns1 -nohttp -M tproxy -T :8888 -auto -arpspoof "fullduplex 1;debug 1;interval 1s" -ndpspoof "ra true;interval 10s;debug 1"
+    ```
+
+    Now previous requests on `ns3` and `ns4` should work
+
+    ```
+    sudo ip netns exec ns3 curl -Nv https://example.com
+    sudo ip netns exec ns4 curl -Nv https://example.com
+    ```
+
+12. **HTTP3 proxy - proxy listeners in `ns1`, outbound sockets on host, `-nosocks` flag**
+
+    Run proxy:
+
+    ```shell
+    sudo ./bin/gohpts -l 0.0.0.0:8083 -4 -6 -d -sniff -body -in-netns ns1 -c ./cert.pem -k ./key.pem -nosocks
+    ```
+
+    Make request
+
+    ```shell
+    ./http3-socks-proxy/bin/client -a 10.0.0.2:8083 www.google.com
+    ```
+
+    Request should succeed
+
+13. **HTTP3 proxy - proxy listeners on host, outbound sockets in `ns1`, `-nosocks` flag**
+
+    Run proxy:
+
+    ```shell
+    sudo ./bin/gohpts -l 0.0.0.0:8083 -4 -6 -d -sniff -body -out-netns ns1 -c ./cert.pem -k ./key.pem -nosocks
+    ```
+
+    Make request
+
+    ```shell
+    ./http3-socks-proxy/bin/client -a 127.0.0.1:8083 www.google.com
+    ```
+
+    Request should fail
+
+    Add rules to `FORWARD` chain
+
+    ```shell
+    sudo iptables -A FORWARD -i wlan0 -o veth0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    sudo iptables -A FORWARD -i veth0 -o wlan0 -j ACCEPT
+
+    sudo ip6tables -A FORWARD -i veth0 -j ACCEPT
+    sudo ip6tables -A FORWARD -o veth0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    ```
+
+    Make request
+
+    ```shell
+    ./http3-socks-proxy/bin/client -a 127.0.0.1:8083 www.google.com
+    ```
+
+    Request should succeed
 
 ## Links
 

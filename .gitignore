@@ -28,7 +28,7 @@ tls/
 *.prof
 
 *.yaml
-rules.sh
+*.sh
 *.txt
 *.pcap*
 *.pem

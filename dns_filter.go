@@ -28,14 +28,14 @@ type dnsFilter struct {
 	spooflist    []dnsSpoofRecord
 }
 
-func newDNSFilter(lists *DNSFilterLists, logger *zerolog.Logger) *dnsFilter {
+func newDNSFilter(lists *DNSFilterLists, dialer contextDialer, logger *zerolog.Logger) *dnsFilter {
 	// TODO: make it async, add refresh
 	df := new(dnsFilter)
 	df.blacklistAll = lists.BlacklistAll
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			DialContext:     getBaseDialer(dnsFilterTimeout, 0).DialContext,
+			DialContext:     dialer.DialContext,
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse

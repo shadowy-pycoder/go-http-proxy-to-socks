@@ -1,14 +1,11 @@
 package gohpts
 
 import (
-	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,10 +13,7 @@ import (
 	"strings"
 	"time"
 
-	quic "github.com/quic-go/quic-go"
 	"github.com/shadowy-pycoder/mshark/network"
-	"github.com/wzshiming/socks4"
-	"github.com/wzshiming/socks5"
 )
 
 // Hop-by-hop headers
@@ -79,20 +73,28 @@ func expandPath(p string) string {
 	return p
 }
 
-func getAddressFromInterface(iface *net.Interface, ipv6 bool) (string, error) {
-	if iface == nil {
+func getAddressFromInterface(iface *net.Interface, ipv6only, bindToLocalhost bool) (string, error) {
+	if bindToLocalhost {
+		if ipv6only {
+			return "::1", nil
+		}
 		return "127.0.0.1", nil
 	}
-	var prefix netip.Prefix
-	var err error
-	prefix, err = network.GetIPv4PrefixFromInterface(iface)
-	if err != nil && ipv6 {
-		prefix, err = network.GetIPv6LinkLocalUnicastPrefixFromInterface(iface)
+	var addr string
+	if ipv6only {
+		prefix, err := network.GetIPv6LinkLocalUnicastPrefixFromInterface(iface)
 		if err != nil {
 			return "", err
 		}
+		addr = prefix.Addr().WithZone(iface.Name).String()
+	} else {
+		prefix, err := network.GetIPv4PrefixFromInterface(iface)
+		if err != nil {
+			return "", err
+		}
+		addr = prefix.Addr().String()
 	}
-	return prefix.Addr().String(), nil
+	return addr, nil
 }
 
 func parseProxyAuth(auth string) (username, password string, ok bool) {
@@ -130,83 +132,7 @@ func splitHostPort(address string) (string, int, error) {
 	return host, portnum, nil
 }
 
-type auth struct {
-	User, Password string
-}
-
-type contextDialer interface {
-	DialContext(ctx context.Context, network, address string) (net.Conn, error)
-}
-
-var (
-	_ contextDialer = &socks4.Dialer{}
-	_ contextDialer = &socks5.Dialer{}
-	_ contextDialer = &net.Dialer{}
-)
-
-func newSOCKS5Dialer(address string, auth *auth, forward contextDialer, network string) (*socks5.Dialer, error) {
-	d := &socks5.Dialer{
-		ProxyNetwork: network,
-		IsResolve:    false,
-	}
-	host, port, err := splitHostPort(address)
-	if err != nil {
-		return nil, err
-	}
-	ip, err := netip.ParseAddr(host)
-	if err == nil {
-		host = ip.String()
-	}
-	d.ProxyAddress = net.JoinHostPort(host, strconv.Itoa(port))
-	if auth != nil {
-		d.Username = auth.User
-		d.Password = auth.Password
-	}
-	if forward != nil {
-		d.ProxyDial = forward.DialContext
-	}
-	return d, nil
-}
-
-func newSOCKS4Dialer(address string, auth *auth, forward contextDialer, network string) (*socks4.Dialer, error) {
-	d := &socks4.Dialer{
-		ProxyNetwork: network,
-		IsResolve:    false,
-	}
-	host, port, err := splitHostPort(address)
-	if err != nil {
-		return nil, err
-	}
-	ip, err := netip.ParseAddr(host)
-	if err == nil {
-		host = ip.String()
-	}
-	d.ProxyAddress = net.JoinHostPort(host, strconv.Itoa(port))
-	if auth != nil {
-		d.Username = auth.User
-	}
-	if forward != nil {
-		d.ProxyDial = forward.DialContext
-	}
-	return d, nil
-}
-
-func getQUICDialer(dialer contextDialer) func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
-	return func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
-		udpConn, err := dialer.DialContext(ctx, "udp", addr)
-		if err != nil {
-			return nil, err
-		}
-		udpAddr, err := net.ResolveUDPAddr("udp", addr)
-		if err != nil {
-			udpConn.Close()
-			return nil, err
-		}
-		return quic.DialEarly(ctx, udpConn.(net.PacketConn), udpAddr, tlsCfg, cfg)
-	}
-}
-
-func runSysctlOptCmd(opt, value, setex string, opts map[string]string, debug bool, dump *strings.Builder) error {
+func runSysctlOptCmd(opt, value, setex string, opts map[string]string, dumpRules bool, dump *strings.Builder) error {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/sys/%s", strings.ReplaceAll(opt, ".", "/")))
 	if err != nil {
 		return err
@@ -217,15 +143,17 @@ func runSysctlOptCmd(opt, value, setex string, opts map[string]string, debug boo
     %s`, setex, cmdOpt))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if !debug {
+	if !dumpRules {
 		cmd.Stdout = nil
 	}
 	if err := cmd.Run(); err != nil {
 		return err
 	}
 	opts[opt] = strings.ReplaceAll(strings.TrimRight(string(data), "\n"), "\t", " ")
-	dump.WriteString(cmdOpt)
-	dump.WriteString("\n")
+	if dumpRules {
+		dump.WriteString(cmdOpt)
+		dump.WriteString("\n")
+	}
 	return nil
 }
 

@@ -121,14 +121,13 @@ func (ucs *udpConnections) UpdateLastSeen(conn *udpRelayConn) {
 }
 
 func (ucs *udpConnections) RemoveByAddr(addr string) {
-	ucs.Lock()
 	delete(ucs.clients, addr)
-	ucs.Unlock()
 }
 
 func (ucs *udpConnections) Cleanup() {
 	ucs.wg.Add(1)
 	t := time.NewTicker(idleTimeoutUDP)
+	defer t.Stop()
 	for {
 		select {
 		case <-ucs.quit:
@@ -136,6 +135,7 @@ func (ucs *udpConnections) Cleanup() {
 			for _, conn := range ucs.clients {
 				conn.close()
 			}
+			clear(ucs.clients)
 			ucs.Unlock()
 			ucs.wg.Done()
 			return
@@ -662,6 +662,7 @@ readLoop:
 					tsu.p.logger.Debug().Err(io.ErrShortWrite).Msgf("[%s %s] Failed sending message %s%s%s", tsu.p.udp, tsu.p.tproxyMode, tsu.conn.LocalAddr(), arrow, conn.srcAddr)
 					break readLoop
 				}
+				tsu.clients.UpdateLastSeen(conn)
 			}
 			if er != nil {
 				if ne, ok := er.(net.Error); ok && ne.Timeout() {
@@ -1397,8 +1398,9 @@ iptables -t mangle -A GOHPTS_UDP -p udp -d 255.255.255.255/32 -j RETURN
 			tsu.p.runRuleCmd(cmdInit0)
 			if tsu.p.prefix != nil {
 				cmdInit00 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_UDP -p udp -s %s -j RETURN
 iptables -t mangle -A GOHPTS_UDP -p udp -d %s -j RETURN
-`, tsu.p.prefix.Masked())
+`, tsu.p.prefix.Addr(), tsu.p.prefix.Masked())
 				tsu.p.runRuleCmd(cmdInit00)
 			}
 			if tsu.p.ignoredPorts != "" {
@@ -1460,8 +1462,9 @@ ip6tables -t mangle -A GOHPTS_UDP -p udp -d fc00::/7 -j RETURN
 			tsu.p.runRuleCmd(cmdInit01)
 			if tsu.p.prefix6 != nil {
 				cmdInit02 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_UDP -p udp -s %s -j RETURN
 ip6tables -t mangle -A GOHPTS_UDP -p udp -s %s -d %s -j RETURN
-`, tsu.p.prefix6.Masked(), tsu.p.prefix6.Masked())
+`, tsu.p.prefix6.Addr(), tsu.p.prefix6.Masked(), tsu.p.prefix6.Masked())
 				tsu.p.runRuleCmd(cmdInit02)
 			}
 			if tsu.p.ignoredPorts != "" {

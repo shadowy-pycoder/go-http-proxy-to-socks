@@ -1,6 +1,7 @@
 package gohpts
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -870,6 +871,12 @@ func (p *Proxy) Run() error {
 			WriteTimeout:   writeTimeout,
 			MaxHeaderBytes: 1 << 20,
 			Protocols:      new(http.Protocols),
+			ConnState: func(c net.Conn, cs http.ConnState) {
+				if cs == http.StateNew {
+					b, _ := bufio.NewReader(c).Peek(1)
+					fmt.Println(b)
+				}
+			},
 			TLSConfig: &tls.Config{
 				MinVersion:       tls.VersionTLS12,
 				CurvePreferences: []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},

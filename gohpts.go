@@ -61,7 +61,6 @@ const (
 	maxIncomingUniStreams    int64         = 100
 	handshakeIdleTimeout     time.Duration = 10 * time.Second
 	rrIndexMax               uint32        = 1_000_000
-	maxBodySize              int64         = 2 << 15
 )
 
 var (

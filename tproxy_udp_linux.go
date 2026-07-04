@@ -28,7 +28,6 @@ const (
 	readTimeoutUDP  time.Duration = 5 * time.Second
 	writeTimeoutUDP time.Duration = 5 * time.Second
 	idleTimeoutUDP  time.Duration = 30 * time.Second
-	udpBufferSize   int           = 4096
 )
 
 var (

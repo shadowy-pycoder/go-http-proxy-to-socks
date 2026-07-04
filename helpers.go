@@ -17,6 +17,13 @@ import (
 	"github.com/shadowy-pycoder/mshark/network"
 )
 
+const (
+	bufSize       int   = 32 * 1024
+	maxBodySize   int64 = 2 << 15
+	oobSize       int   = 1500
+	udpBufferSize int   = 4096
+)
+
 // Hop-by-hop headers
 // https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1
 var hopHeaders = []string{
@@ -169,7 +176,7 @@ func createPcapFile(app, ext string) (*os.File, error) {
 
 var bufPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 32*1024)
+		b := make([]byte, bufSize)
 		return &b
 	},
 }
@@ -214,7 +221,7 @@ func putUDPBufferToPool(buf *[]byte) {
 
 var oobPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 1500)
+		b := make([]byte, oobSize)
 		return &b
 	},
 }

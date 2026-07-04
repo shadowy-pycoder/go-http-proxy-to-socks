@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shadowy-pycoder/mshark/network"
@@ -164,4 +165,64 @@ func createPcapFile(app, ext string) (*os.File, error) {
 		return nil, fmt.Errorf("failed to open file: %v", err)
 	}
 	return f, nil
+}
+
+var bufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
+
+func getBufferFromPool() *[]byte {
+	return bufPool.Get().(*[]byte)
+}
+
+func putBufferToPool(buf *[]byte) {
+	bufPool.Put(buf)
+}
+
+var bodyPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, maxBodySize)
+		return &b
+	},
+}
+
+func getBodyBufferFromPool() *[]byte {
+	return bodyPool.Get().(*[]byte)
+}
+
+func putBodyBufferToPool(buf *[]byte) {
+	bodyPool.Put(buf)
+}
+
+var udpPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, udpBufferSize)
+		return &b
+	},
+}
+
+func getUDPBufferFromPool() *[]byte {
+	return udpPool.Get().(*[]byte)
+}
+
+func putUDPBufferToPool(buf *[]byte) {
+	udpPool.Put(buf)
+}
+
+var oobPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 1500)
+		return &b
+	},
+}
+
+func getOOBBufferFromPool() *[]byte {
+	return oobPool.Get().(*[]byte)
+}
+
+func putOOBBufferToPool(buf *[]byte) {
+	oobPool.Put(buf)
 }

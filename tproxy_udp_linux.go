@@ -298,8 +298,12 @@ func (tsu *tproxyServerUDP) Serve() {
 			tsu.wg.Done()
 		}()
 	}
-	buf := make([]byte, udpBufferSize)
-	oob := make([]byte, 1500)
+	bp := getUDPBufferFromPool()
+	defer putUDPBufferToPool(bp)
+	buf := *bp
+	oobp := getOOBBufferFromPool()
+	defer putOOBBufferToPool(oobp)
+	oob := *oobp
 	tsu.startingFlag.Store(false)
 	arrow := "→ "
 	if tsu.p.nocolor {
@@ -605,7 +609,9 @@ func (tsu *tproxyServerUDP) handleConnection(conn *udpRelayConn) {
 		return
 	}
 	tsu.wg.Add(1)
-	buf := make([]byte, udpBufferSize)
+	bp := getUDPBufferFromPool()
+	defer putUDPBufferToPool(bp)
+	buf := *bp
 	arrow := "→ "
 	if tsu.p.nocolor {
 		arrow = "->"
@@ -722,7 +728,9 @@ func (tsu *tproxyServerUDP) serveDNS(gwConn *net.UDPConn, gwDNS *net.UDPAddr) {
 		return
 	}
 	tsu.wg.Add(1)
-	buf := make([]byte, udpBufferSize)
+	bp := getUDPBufferFromPool()
+	defer putUDPBufferToPool(bp)
+	buf := *bp
 	arrow := "→ "
 	if tsu.p.nocolor {
 		arrow = "->"
@@ -939,7 +947,9 @@ func (tsu *tproxyServerUDP) handleDNSConnection(conn *dnsConn, gwConn *net.UDPCo
 		conn.close()
 		tsu.wg.Done()
 	}()
-	buf := make([]byte, udpBufferSize)
+	bp := getUDPBufferFromPool()
+	defer putUDPBufferToPool(bp)
+	buf := *bp
 	erd := conn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
 	if erd != nil {
 		if errors.Is(erd, net.ErrClosed) {
@@ -1154,7 +1164,9 @@ func (tsu *tproxyServerUDP) handleDNSDirectConnection(conn *dnsDirectConn) {
 		conn.close()
 		tsu.wg.Done()
 	}()
-	buf := make([]byte, udpBufferSize)
+	bp := getUDPBufferFromPool()
+	defer putUDPBufferToPool(bp)
+	buf := *bp
 	erd := conn.SetReadDeadline(time.Now().Add(readTimeoutUDP))
 	if erd != nil {
 		if errors.Is(erd, net.ErrClosed) {

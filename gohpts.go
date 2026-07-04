@@ -1729,7 +1729,9 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	if p.sniff {
 		if p.body {
 			if chunked {
-				buf := make([]byte, maxBodySize)
+				bp := getBodyBufferFromPool()
+				defer putBodyBufferToPool(bp)
+				buf := *bp
 				n, _ := resp.Body.Read(buf)
 				respBodySaved = buf[:n]
 				resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf[:n]), resp.Body))
@@ -1785,7 +1787,9 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	rc := http.NewResponseController(w)
 	wg.Go(func() {
-		buf := make([]byte, 32*1024)
+		bp := getBufferFromPool()
+		defer putBufferToPool(bp)
+		buf := *bp
 		ticker := time.NewTicker(flushTimeout)
 		defer ticker.Stop()
 		for {
@@ -2483,7 +2487,9 @@ func (p *Proxy) transferHTTP2(
 	go func() {
 		defer wg.Done()
 		defer dst.Close()
-		buf := make([]byte, 32*1024)
+		bp := getBufferFromPool()
+		defer putBufferToPool(bp)
+		buf := *bp
 		for {
 			nr, er := r.Body.Read(buf)
 			if nr > 0 {
@@ -2551,7 +2557,9 @@ func (p *Proxy) transferHTTP2(
 
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 32*1024)
+		bp := getBufferFromPool()
+		defer putBufferToPool(bp)
+		buf := *bp
 		for {
 			erd := dst.SetReadDeadline(time.Now().Add(readTimeout))
 			if erd != nil {
@@ -2621,7 +2629,11 @@ func (p *Proxy) transferHTTP2(
 }
 
 func (p *Proxy) copyWithTimeout(dst net.Conn, src net.Conn, msgChan chan<- layers.Layer) (written int64, err error) {
-	buf := make([]byte, 32*1024)
+	defer dst.Close()
+	bp := getBufferFromPool()
+	defer putBufferToPool(bp)
+	buf := *bp
+
 readLoop:
 	for {
 		select {

@@ -16,6 +16,7 @@ http_server:
   # comment out these to use HTTP instead of HTTPS
   cert_file: ~/local.crt
   key_file: ~/local.key
+  mixed: false # accept SOCKS5 connections on the same address (SOCKS4 if socks4 flag is true)
 
 # list of socks5 proxy
 # if proxy_chain is disabled, uses first server in a list as upstream

@@ -1,9 +1,11 @@
 package gohpts
 
 import (
+	"bufio"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -233,3 +235,37 @@ func getOOBBufferFromPool() *[]byte {
 func putOOBBufferToPool(buf *[]byte) {
 	oobPool.Put(buf)
 }
+
+var bufReaderPool sync.Pool
+
+func getBufReaderFromPool(r io.Reader) *bufio.Reader {
+	if v := bufReaderPool.Get(); v != nil {
+		br := v.(*bufio.Reader)
+		br.Reset(r)
+		return br
+	}
+	return bufio.NewReader(r)
+}
+
+func putBufReaderToPool(br *bufio.Reader) {
+	bufReaderPool.Put(br)
+}
+
+var bpool = sync.Pool{
+	New: func() any {
+		b := make([]byte, bufSize)
+		return b
+	},
+}
+
+type bPool struct{}
+
+func (bPool) Get() []byte {
+	return bpool.Get().([]byte)
+}
+
+func (bPool) Put(b []byte) {
+	bpool.Put(b)
+}
+
+var bytesPool = &bPool{}

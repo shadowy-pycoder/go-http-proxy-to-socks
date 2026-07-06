@@ -1117,10 +1117,11 @@ func (p *Proxy) Run() error {
 		} else {
 			md = getSimpleMixedDialer(p.baseDialer, p.sockDialer)
 		}
+		logger := sockLogger{nocolor: p.nocolor, json: p.json}
 		if p.socks4enabled {
-			p.sockServer = newSOCKS4Server(md, p.nocolor)
+			p.sockServer = newSOCKS4Server(md, logger)
 		} else {
-			p.sockServer = newSOCKS5Server(md, p.packetDial, p.nocolor)
+			p.sockServer = newSOCKS5Server(md, p.packetDial, logger)
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/wzshiming/socks5"
@@ -22,6 +23,9 @@ type sockLogger struct {
 func (l sockLogger) Println(a ...any) {
 	ts := colorizeTimestamp(time.Now(), l.nocolor)
 	msg := colorizeErrMessage(fmt.Sprint(a...), l.nocolor)
+	if strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset") {
+		return
+	}
 	fmt.Printf("%s %s %s\n", ts, colorizeErr(l.nocolor), msg)
 }
 

@@ -77,17 +77,14 @@ func newMixedConn(c net.Conn) *mixedConn {
 	if conn, ok := c.(*mixedConn); ok {
 		return conn
 	}
-	return &mixedConn{getBufReaderFromPool(c), c}
+	return &mixedConn{bufio.NewReader(c), c}
 }
 
 func (c *mixedConn) Reader() *bufio.Reader                    { return c.r }
 func (c *mixedConn) Read(p []byte) (int, error)               { return c.r.Read(p) }
 func (c *mixedConn) Peek(n int) ([]byte, error)               { return c.r.Peek(n) }
 func (c *mixedConn) WriteTo(w io.Writer) (n int64, err error) { return c.r.WriteTo(w) }
-func (c *mixedConn) Close() error {
-	putBufReaderToPool(c.r)
-	return c.Conn.Close()
-}
+func (c *mixedConn) Close() error                             { return c.Conn.Close() }
 
 func getSimpleMixedDialer(
 	dialer contextDialer,

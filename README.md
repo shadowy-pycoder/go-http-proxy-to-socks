@@ -1657,6 +1657,45 @@ sudo ip netns exec ns1 unshare --mount bash -c '
 
 [[Back]](#table-of-contents)
 
+`GoHPTS` can be configured to listen for SOCKS connections on the same address as HTTP server, just add `-mixed` flag to spin up additional SOCKS server. This allows `GoHPTS` to act not only like `HTTP-to-SOCKS` proxy but also `SOCKS-to-SOCKS` proxy. Local SOCKS5 server supports `UDP ASSOCIATE` command, so technically users can send UDP datagrams with this mixed server.
+
+Run proxy:
+
+```shell
+gohpts -s :1080 -l :8080 -mixed
+```
+
+Test connection:
+
+```shell
+curl -Nv --proxy socks5://127.0.0.1:8080 "https://example.com"
+```
+
+Or disable upstream SOCKS proxy and connect directly by adding `-nosocks`:
+
+```shell
+gohpts -l :8080 -mixed -nosocks
+```
+
+Test connection:
+
+```shell
+curl -Nv --proxy socks5://127.0.0.1:8080 "https://example.com"
+```
+
+Add `-socks4` flag to use SOCKS4 protocol instead:
+
+```shell
+# :1080 should be a socks4 server
+gohpts -s :1080 -l :8080 -mixed -socks4
+```
+
+Test connection:
+
+```shell
+curl -Nv --proxy socks4://127.0.0.1:8080 "https://example.com"
+```
+
 ## Links
 
 [[Back]](#table-of-contents)

@@ -17,6 +17,7 @@ type Config struct {
 	ServerPass string
 	CertFile   string
 	KeyFile    string
+	Mixed      bool
 
 	// socks5
 	SocksProxy      []ProxyEntry
@@ -107,6 +108,7 @@ type yamlConfig struct {
 		Password string `yaml:"password"`
 		CertFile string `yaml:"cert_file"`
 		KeyFile  string `yaml:"key_file"`
+		Mixed    bool   `yaml:"mixed"`
 	} `yaml:"http_server"`
 	ProxyList  []ProxyEntry `yaml:"proxy_list"`
 	ProxyChain ProxyChain   `yaml:"proxy_chain"`
@@ -179,6 +181,7 @@ func createConfigFromPath(path string) (*Config, error) {
 		conf.ServerPass = sconf.HTTPServer.Password
 		conf.CertFile = sconf.HTTPServer.CertFile
 		conf.KeyFile = sconf.HTTPServer.KeyFile
+		conf.Mixed = sconf.HTTPServer.Mixed
 	}
 
 	conf.SocksProxy = sconf.ProxyList
@@ -289,6 +292,9 @@ func parseConfig(conf *Config) error {
 		}
 		if conf.KeyFile == "" {
 			conf.KeyFile = yamlConf.KeyFile
+		}
+		if !conf.Mixed {
+			conf.Mixed = yamlConf.Mixed
 		}
 
 		// proxy chain can only be enabled via yaml config (providing socks5 address via cli disables it)

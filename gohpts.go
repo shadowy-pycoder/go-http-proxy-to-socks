@@ -190,6 +190,12 @@ type Proxy struct {
 	baseDialer contextDialer
 	// credetials used in HTTP BasicAuth
 	user, pass string
+	// enable mixed server
+	mixedEnabled bool
+	// used in proxychain
+	mixDialer   *mixedDialer
+	sockServer  socksServer
+	sockVersion byte
 
 	// custom dns server
 	dns *net.UDPAddr
@@ -477,8 +483,10 @@ func New(conf *Config) (*Proxy, error) {
 	p.socks4enabled = conf.SOCKS4Enabled
 	if p.socks4enabled {
 		p.socksProto = "socks4"
+		p.sockVersion = 0x04
 	} else {
 		p.socksProto = "socks5"
+		p.sockVersion = 0x05
 	}
 
 	// parse custom dns server
@@ -580,6 +588,7 @@ func New(conf *Config) (*Proxy, error) {
 	// set http address and certificates
 	p.httpEnabled = !conf.NoHTTP
 	if p.httpEnabled {
+		p.mixedEnabled = conf.Mixed // set mixed only when http enabled
 		p.httpServerAddr = conf.AddrHTTP
 		if conf.CertFile != "" {
 			p.certFile = expandPath(conf.CertFile)
@@ -806,7 +815,6 @@ func (p *Proxy) Run() error {
 					return fmt.Errorf("proxy list duplicate entry `%s`", addr)
 				}
 			}
-			sockAddr = p.printProxyChain(p.proxylist)
 		} else {
 			p.logger.Debug().Msgf("Configuring %s proxy client...", p.socksProto)
 			socksProxy := p.proxylist[0]
@@ -1087,9 +1095,38 @@ func (p *Proxy) Run() error {
 			pcapW = append(pcapW, w)
 		}
 	}
+	if p.mixedEnabled {
+		p.logger.Debug().Msg("Configuring mixed server...")
+		var md func(ctx context.Context, network string, address string) (net.Conn, error)
+		if !p.socksEnabled {
+			md = p.baseDialer.DialContext
+		} else if p.proxychain.Enabled {
+			// create temporary socks proxy from chain to bootstrap server
+			tempSocks := p.proxylist[0]
+			auth := auth{
+				User:     tempSocks.Username,
+				Password: tempSocks.Password,
+			}
+			sockDialer, err := p.newSOCKSDialer(tempSocks.Address, &auth, p.baseDialer, p.tcp)
+			if err != nil {
+				return fmt.Errorf("unable to create %s dialer: %v", p.socksProto, err)
+			}
+			// save mixDialer to later update socks proxy
+			p.mixDialer = newMixedDialer(p.baseDialer, sockDialer)
+			md = p.mixDialer.DialContext
+		} else {
+			md = getSimpleMixedDialer(p.baseDialer, p.sockDialer)
+		}
+		logger := sockLogger{nocolor: p.nocolor, json: p.json}
+		if p.socks4enabled {
+			p.sockServer = newSOCKS4Server(md, logger)
+		} else {
+			p.sockServer = newSOCKS5Server(md, p.packetDial, logger)
+		}
+	}
 
 	// configure listeners
-	var lnPprof, lnHTTP net.Listener
+	var lnPprof, ln, lnHTTP net.Listener
 	var lnHTTP3 *quic.EarlyListener
 	var pcapConn net.PacketConn
 	if p.pprofServer != nil {
@@ -1099,9 +1136,14 @@ func (p *Proxy) Run() error {
 		}
 	}
 	if p.httpServer != nil {
-		lnHTTP, err = net.Listen(p.tcp, p.httpServerAddr)
+		ln, err = net.Listen(p.tcp, p.httpServerAddr)
 		if err != nil {
 			return err
+		}
+		if p.mixedEnabled {
+			lnHTTP = newMixedListener(ln.Addr())
+		} else {
+			lnHTTP = ln
 		}
 	}
 	if p.http3Server != nil {
@@ -1232,7 +1274,7 @@ func (p *Proxy) Run() error {
 	// logging which servers are enabled
 	if p.socksEnabled {
 		if p.proxychain.Enabled {
-			p.logger.Info().Msgf("%s Proxy [%s] chain: %s", strings.ToUpper(p.socksProto), p.proxychain.Type, sockAddr)
+			p.logger.Info().Msgf("%s Proxy [%s] chain: %s", strings.ToUpper(p.socksProto), p.proxychain.Type, p.printProxyChain(p.proxylist))
 		} else {
 			p.logger.Info().Msgf("%s Proxy: %s", strings.ToUpper(p.socksProto), sockAddr)
 		}
@@ -1240,12 +1282,20 @@ func (p *Proxy) Run() error {
 
 	if p.httpEnabled {
 		if p.certFile != "" && p.keyFile != "" {
-			p.logger.Info().Msgf("HTTPS Proxy: %s", p.httpServerAddr)
+			if p.mixedEnabled {
+				p.logger.Info().Msgf("HTTPS/%s Proxy: %s", strings.ToUpper(p.socksProto), p.httpServerAddr)
+			} else {
+				p.logger.Info().Msgf("HTTPS Proxy: %s", p.httpServerAddr)
+			}
 			if !p.socks4enabled {
 				p.logger.Info().Msgf("HTTP3 Proxy (QUIC): %s", p.httpServerAddr)
 			}
 		} else {
-			p.logger.Info().Msgf("HTTP Proxy: %s", p.httpServerAddr)
+			if p.mixedEnabled {
+				p.logger.Info().Msgf("HTTP/%s Proxy: %s", strings.ToUpper(p.socksProto), p.httpServerAddr)
+			} else {
+				p.logger.Info().Msgf("HTTP Proxy: %s", p.httpServerAddr)
+			}
 		}
 	}
 
@@ -1319,10 +1369,28 @@ func (p *Proxy) Run() error {
 	}
 
 	if p.httpServer != nil {
+		mixedAcceptDone := make(chan struct{})
+		if p.mixedEnabled {
+			go func() {
+				defer close(mixedAcceptDone)
+
+				for {
+					conn, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					go p.dispatchMixed(conn, lnHTTP.(*mixedListener))
+				}
+			}()
+		}
 		go func() {
 			<-quit
 			signal.Ignore(os.Interrupt)
 			close(p.closeConn)
+			if p.mixedEnabled {
+				ln.Close()
+				<-mixedAcceptDone
+			}
 			var wg sync.WaitGroup
 			if p.arpspoofer != nil {
 				wg.Go(func() {
@@ -1630,6 +1698,20 @@ func (p *Proxy) Run() error {
 	}
 	p.logger.Info().Msg("Proxy stopped")
 	return nil
+}
+
+func (p *Proxy) dispatchMixed(conn net.Conn, ln *mixedListener) {
+	bconn := newMixedConn(conn)
+	if b, err := bconn.Peek(1); err == nil {
+		if b[0] == p.sockVersion {
+			p.sockServer.ServeConn(bconn)
+			return
+		}
+	} else {
+		bconn.Close()
+		return
+	}
+	ln.ServeConn(bconn)
 }
 
 func (p *Proxy) handler() http.HandlerFunc {
@@ -2002,14 +2084,26 @@ func (p *Proxy) printProxyChain(pc []ProxyEntry) string {
 	sb.WriteString("client")
 	sb.WriteString(arrow)
 	if p.httpServerAddr != "" {
-		if p.certFile != "" && p.keyFile != "" {
-			if p.socks4enabled {
-				fmt.Fprintf(&sb, "%s (https)", p.httpServerAddr)
+		if p.mixedEnabled {
+			if p.certFile != "" && p.keyFile != "" {
+				if p.socks4enabled {
+					fmt.Fprintf(&sb, "%s (https/%s)", p.httpServerAddr, p.socksProto)
+				} else {
+					fmt.Fprintf(&sb, "%s (https/http3/%s)", p.httpServerAddr, p.socksProto)
+				}
 			} else {
-				fmt.Fprintf(&sb, "%s (https/http3)", p.httpServerAddr)
+				fmt.Fprintf(&sb, "%s (http/%s)", p.httpServerAddr, p.socksProto)
 			}
 		} else {
-			fmt.Fprintf(&sb, "%s (http)", p.httpServerAddr)
+			if p.certFile != "" && p.keyFile != "" {
+				if p.socks4enabled {
+					fmt.Fprintf(&sb, "%s (https)", p.httpServerAddr)
+				} else {
+					fmt.Fprintf(&sb, "%s (https/http3)", p.httpServerAddr)
+				}
+			} else {
+				fmt.Fprintf(&sb, "%s (http)", p.httpServerAddr)
+			}
 		}
 		if p.tproxyAddr != "" {
 			sb.WriteString(" | ")
@@ -2184,6 +2278,9 @@ func (p *Proxy) updateSocksList() {
 	}
 	p.chDialer.dialer = dialer
 	p.chDialer.err = nil
+	if p.mixedEnabled {
+		p.mixDialer.SetProxy(dialer)
+	}
 	p.logger.Debug().Msgf("%s Request chain: %s", ctl, p.printProxyChain(copyProxyList))
 }
 
@@ -2475,11 +2572,6 @@ func (p *Proxy) transferHTTP2(
 	reqChan, respChan chan<- layers.Layer,
 ) {
 	var writtenSrcDst, writtenDstSrc atomic.Int64
-	defer func() {
-		p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenSrcDst.Load()), srcName, destName)
-		p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenDstSrc.Load()), destName, srcName)
-	}()
-
 	ctx := r.Context()
 	flusher := w.(http.Flusher)
 
@@ -2488,6 +2580,9 @@ func (p *Proxy) transferHTTP2(
 		defer dst.Close()
 		bp := getBufferFromPool()
 		defer putBufferToPool(bp)
+		defer func() {
+			p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenSrcDst.Load()), srcName, destName)
+		}()
 		buf := *bp
 		for {
 			nr, er := r.Body.Read(buf)
@@ -2558,6 +2653,9 @@ func (p *Proxy) transferHTTP2(
 		defer wg.Done()
 		bp := getBufferFromPool()
 		defer putBufferToPool(bp)
+		defer func() {
+			p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenDstSrc.Load()), destName, srcName)
+		}()
 		buf := *bp
 		for {
 			erd := dst.SetReadDeadline(time.Now().Add(readTimeout))

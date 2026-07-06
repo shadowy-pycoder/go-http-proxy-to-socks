@@ -233,3 +233,22 @@ func getOOBBufferFromPool() *[]byte {
 func putOOBBufferToPool(buf *[]byte) {
 	oobPool.Put(buf)
 }
+
+var bpool = sync.Pool{
+	New: func() any {
+		b := make([]byte, bufSize)
+		return b
+	},
+}
+
+type bPool struct{}
+
+func (bPool) Get() []byte {
+	return bpool.Get().([]byte)
+}
+
+func (bPool) Put(b []byte) {
+	bpool.Put(b)
+}
+
+var bytesPool = &bPool{}

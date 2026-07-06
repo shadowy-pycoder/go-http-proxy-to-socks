@@ -44,7 +44,7 @@ type udpRelayConn struct {
 	udpConn
 	srcAddr  *net.UDPAddr
 	dstAddr  *net.UDPAddr
-	lastSeen time.Time
+	lastSeen atomic.Value
 	written  atomic.Uint64
 	reqChan  chan layers.Layer
 	respChan chan layers.Layer
@@ -77,14 +77,15 @@ func newUDPRelayConn(srcAddr *net.UDPAddr, dstAddr *net.UDPAddr, dialer contextD
 	if !ok {
 		return nil, fmt.Errorf("failed obtaining relay connection")
 	}
-	return &udpRelayConn{
+	c := &udpRelayConn{
 		udpConn:  relayConn,
 		srcAddr:  srcAddr,
 		dstAddr:  dstAddr,
-		lastSeen: time.Now(),
 		reqChan:  make(chan layers.Layer),
 		respChan: make(chan layers.Layer),
-	}, nil
+	}
+	c.lastSeen.Store(time.Now())
+	return c, nil
 }
 
 type udpConnections struct {
@@ -114,9 +115,7 @@ func (ucs *udpConnections) Remove(conn *udpRelayConn) {
 }
 
 func (ucs *udpConnections) UpdateLastSeen(conn *udpRelayConn) {
-	ucs.Lock()
-	conn.lastSeen = time.Now()
-	ucs.Unlock()
+	conn.lastSeen.Store(time.Now())
 }
 
 func (ucs *udpConnections) RemoveByAddr(addr string) {
@@ -141,7 +140,7 @@ func (ucs *udpConnections) Cleanup() {
 		case <-t.C:
 			ucs.Lock()
 			for k, conn := range ucs.clients {
-				if time.Since(conn.lastSeen) > idleTimeoutUDP {
+				if time.Since(conn.lastSeen.Load().(time.Time)) > idleTimeoutUDP {
 					conn.close()
 					ucs.RemoveByAddr(k)
 				}

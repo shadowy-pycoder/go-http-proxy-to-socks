@@ -1096,6 +1096,7 @@ func (p *Proxy) Run() error {
 		}
 	}
 	if p.mixedEnabled {
+		p.logger.Debug().Msg("Configuring mixed server...")
 		var md func(ctx context.Context, network string, address string) (net.Conn, error)
 		if !p.socksEnabled {
 			md = p.baseDialer.DialContext
@@ -2570,11 +2571,6 @@ func (p *Proxy) transferHTTP2(
 	reqChan, respChan chan<- layers.Layer,
 ) {
 	var writtenSrcDst, writtenDstSrc atomic.Int64
-	defer func() {
-		p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenSrcDst.Load()), srcName, destName)
-		p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenDstSrc.Load()), destName, srcName)
-	}()
-
 	ctx := r.Context()
 	flusher := w.(http.Flusher)
 
@@ -2583,6 +2579,9 @@ func (p *Proxy) transferHTTP2(
 		defer dst.Close()
 		bp := getBufferFromPool()
 		defer putBufferToPool(bp)
+		defer func() {
+			p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenSrcDst.Load()), srcName, destName)
+		}()
 		buf := *bp
 		for {
 			nr, er := r.Body.Read(buf)
@@ -2653,6 +2652,9 @@ func (p *Proxy) transferHTTP2(
 		defer wg.Done()
 		bp := getBufferFromPool()
 		defer putBufferToPool(bp)
+		defer func() {
+			p.logger.Debug().Msgf("Copied %s from %s to %s", network.PrettifyBytes(writtenDstSrc.Load()), destName, srcName)
+		}()
 		buf := *bp
 		for {
 			erd := dst.SetReadDeadline(time.Now().Add(readTimeout))

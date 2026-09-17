@@ -390,6 +390,14 @@ done
 fi
 `
 			ts.p.runRuleCmd(cmdDocker4)
+			if ts.p.allowedIPv4 != "" {
+				cmdInit2 := fmt.Sprintf(`
+iptables -t nat -A GOHPTS -p tcp -s %s -j MARK --set-mark 3
+iptables -t nat -A GOHPTS -p tcp -d %s -j MARK --set-mark 3
+iptables -t nat -A GOHPTS -p tcp -m mark ! --mark 3 -j RETURN
+`, ts.p.allowedIPv4, ts.p.allowedIPv4)
+				ts.p.runRuleCmd(cmdInit2)
+			}
 			cmdNat0 := fmt.Sprintf(`
 iptables -t nat -A GOHPTS -p tcp -j REDIRECT --to-ports %s
 
@@ -477,6 +485,14 @@ done
 fi
 `
 			ts.p.runRuleCmd(cmdDocker6)
+			if ts.p.allowedIPv6 != "" {
+				cmdInit3 := fmt.Sprintf(`
+ip6tables -t nat -A GOHPTS -p tcp -s %s -j MARK --set-mark 3
+ip6tables -t nat -A GOHPTS -p tcp -d %s -j MARK --set-mark 3
+ip6tables -t nat -A GOHPTS -p tcp -m mark ! --mark 3 -j RETURN
+`, ts.p.allowedIPv6, ts.p.allowedIPv6)
+				ts.p.runRuleCmd(cmdInit3)
+			}
 			cmdNat1 := fmt.Sprintf(`
 ip6tables -t nat -A GOHPTS -p tcp -j REDIRECT --to-ports %s
 
@@ -533,10 +549,21 @@ iptables -t mangle -A GOHPTS_OUT -p tcp -m multiport --sports %s -j RETURN
 			}
 			cmdInit2 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS_OUT -p tcp -m mark --mark %d -j RETURN
-iptables -t mangle -A GOHPTS_OUT -p tcp -j MARK --set-mark 2
-iptables -t mangle -A OUTPUT -p tcp -j GOHPTS_OUT
 `, ts.p.mark)
 			ts.p.runRuleCmd(cmdInit2)
+			if ts.p.allowedIPv4 != "" {
+				cmdInit3 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT -p tcp -s %s -j MARK --set-mark 3
+iptables -t mangle -A GOHPTS_OUT -p tcp -d %s -j MARK --set-mark 3
+iptables -t mangle -A GOHPTS_OUT -p tcp -m mark ! --mark 3 -j RETURN
+`, ts.p.allowedIPv4, ts.p.allowedIPv4)
+				ts.p.runRuleCmd(cmdInit3)
+			}
+			cmdInit4 := fmt.Sprint(`
+iptables -t mangle -A GOHPTS_OUT -p tcp -j MARK --set-mark 2
+iptables -t mangle -A OUTPUT -p tcp -j GOHPTS_OUT
+`)
+			ts.p.runRuleCmd(cmdInit4)
 		}
 
 		// ipv6
@@ -589,6 +616,19 @@ ip6tables -t mangle -A GOHPTS_OUT -p tcp -j MARK --set-mark 2
 ip6tables -t mangle -A OUTPUT -p tcp -j GOHPTS_OUT
 `, ts.p.mark)
 			ts.p.runRuleCmd(cmdInit21)
+			if ts.p.allowedIPv6 != "" {
+				cmdInit22 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -s %s -j MARK --set-mark 3
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -d %s -j MARK --set-mark 3
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -m mark ! --mark 3 -j RETURN
+`, ts.p.allowedIPv6, ts.p.allowedIPv6)
+				ts.p.runRuleCmd(cmdInit22)
+			}
+			cmdInit23 := fmt.Sprint(`
+ip6tables -t mangle -A GOHPTS_OUT -p tcp -j MARK --set-mark 2
+ip6tables -t mangle -A OUTPUT -p tcp -j GOHPTS_OUT
+`)
+			ts.p.runRuleCmd(cmdInit23)
 		}
 
 		fallthrough
@@ -653,12 +693,23 @@ fi
 			ts.p.runRuleCmd(cmdDocker4)
 			cmdInit2 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS -p tcp -m mark --mark %d -j RETURN
+`, ts.p.mark)
+			ts.p.runRuleCmd(cmdInit2)
+			if ts.p.allowedIPv4 != "" {
+				cmdInit3 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS -p tcp -s %s -j MARK --set-mark 3
+iptables -t mangle -A GOHPTS -p tcp -d %s -j MARK --set-mark 3
+iptables -t mangle -A GOHPTS -p tcp -m mark ! --mark 3 -j RETURN
+`, ts.p.allowedIPv4, ts.p.allowedIPv4)
+				ts.p.runRuleCmd(cmdInit3)
+			}
+			cmdInit4 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS -p tcp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1
 
 iptables -t mangle -A PREROUTING -p tcp -m socket -j DIVERT
 iptables -t mangle -A PREROUTING -p tcp -j GOHPTS
-`, ts.p.mark, tproxyPort)
-			ts.p.runRuleCmd(cmdInit2)
+`, tproxyPort)
+			ts.p.runRuleCmd(cmdInit4)
 		}
 
 		// ipv6
@@ -719,12 +770,23 @@ fi
 			ts.p.runRuleCmd(cmdDocker6)
 			cmdInit21 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS -p tcp -m mark --mark %d -j RETURN
+`, ts.p.mark)
+			ts.p.runRuleCmd(cmdInit21)
+			if ts.p.allowedIPv6 != "" {
+				cmdInit22 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS -p tcp -s %s -j MARK --set-mark 3
+ip6tables -t mangle -A GOHPTS -p tcp -d %s -j MARK --set-mark 3
+ip6tables -t mangle -A GOHPTS -p tcp -m mark ! --mark 3 -j RETURN
+`, ts.p.allowedIPv6, ts.p.allowedIPv6)
+				ts.p.runRuleCmd(cmdInit22)
+			}
+			cmdInit23 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS -p tcp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1
 
 ip6tables -t mangle -A PREROUTING -p tcp -m socket -j DIVERT
 ip6tables -t mangle -A PREROUTING -p tcp -j GOHPTS
-`, ts.p.mark, tproxyPort)
-			ts.p.runRuleCmd(cmdInit21)
+`, tproxyPort)
+			ts.p.runRuleCmd(cmdInit23)
 		}
 	default:
 		ts.p.logger.Fatal().Msgf("Unreachable, unknown mode: %s", ts.p.tproxyMode)

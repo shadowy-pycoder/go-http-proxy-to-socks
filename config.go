@@ -42,6 +42,7 @@ type Config struct {
 	Auto             bool
 	Dump             bool
 	Mark             uint
+	AllowedIPs       string
 	IgnoredPorts     string
 
 	// logging
@@ -135,11 +136,12 @@ type yamlConfig struct {
 			Address string `yaml:"address"`
 			Workers int    `yaml:"workers"`
 		} `yaml:"udp"`
-		Mode         string `yaml:"mode"`
-		Auto         bool   `yaml:"auto"`
-		DumpRules    bool   `yaml:"dump_rules"`
-		IgnoredPorts []int  `yaml:"ignored_ports"`
-		Mark         int    `yaml:"mark"`
+		Mode         string   `yaml:"mode"`
+		Auto         bool     `yaml:"auto"`
+		DumpRules    bool     `yaml:"dump_rules"`
+		AllowedIPs   []string `yaml:"allowed_ips"`
+		IgnoredPorts []int    `yaml:"ignored_ports"`
+		Mark         int      `yaml:"mark"`
 	} `yaml:"transparent_proxy"`
 	Arpspoof struct {
 		Enabled  bool   `yaml:"enabled"`
@@ -207,6 +209,7 @@ func createConfigFromPath(path string) (*Config, error) {
 		conf.Mark = uint(sconf.TransparentProxy.Mark)
 		if conf.Auto {
 			conf.Dump = sconf.TransparentProxy.DumpRules
+			conf.AllowedIPs = strings.Trim(strings.Join(strings.Fields(fmt.Sprint(sconf.TransparentProxy.AllowedIPs)), ","), "[]")
 			conf.IgnoredPorts = strings.Trim(strings.Join(strings.Fields(fmt.Sprint(sconf.TransparentProxy.IgnoredPorts)), ","), "[]")
 		}
 	}
@@ -412,6 +415,10 @@ func parseConfig(conf *Config) error {
 			conf.OutNetNS = yamlConf.OutNetNS
 		}
 
+		if conf.AllowedIPs == "" {
+			conf.AllowedIPs = yamlConf.AllowedIPs
+		}
+
 		if conf.IgnoredPorts == "" {
 			conf.IgnoredPorts = yamlConf.IgnoredPorts
 		}
@@ -476,6 +483,9 @@ func parseConfig(conf *Config) error {
 		}
 		if conf.OutNetNS != "" {
 			return fmt.Errorf("option `OutNetNS` is available only on linux/android systems")
+		}
+		if conf.AllowedIPs != "" {
+			return fmt.Errorf("option `AllowedIPs` is available only on linux/android systems")
 		}
 		if conf.IgnoredPorts != "" {
 			return fmt.Errorf("option `IgnoredPorts` is available only on linux/android systems")

@@ -1326,10 +1326,21 @@ iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --sports %s -j RETURN
 			}
 			cmdInit2 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m mark --mark %d -j RETURN
-iptables -t mangle -A GOHPTS_OUT_UDP -p udp -j MARK --set-mark 2
-iptables -t mangle -A OUTPUT -p udp -j GOHPTS_OUT_UDP
 `, tsu.p.mark)
 			tsu.p.runRuleCmd(cmdInit2)
+			if tsu.p.allowedIPv4 != "" {
+				cmdInit3 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -s %s -j MARK --set-mark 3
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -d %s -j MARK --set-mark 3
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -m mark ! --mark 3 -j RETURN
+`, tsu.p.allowedIPv4, tsu.p.allowedIPv4)
+				tsu.p.runRuleCmd(cmdInit3)
+			}
+			cmdInit4 := fmt.Sprint(`
+iptables -t mangle -A GOHPTS_OUT_UDP -p udp -j MARK --set-mark 2
+iptables -t mangle -A OUTPUT -p udp -j GOHPTS_OUT_UDP
+`)
+			tsu.p.runRuleCmd(cmdInit4)
 		}
 
 		// ipv6
@@ -1378,10 +1389,21 @@ ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m multiport --sports %s -j RETURN
 			}
 			cmdInit21 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m mark --mark %d -j RETURN
-ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -j MARK --set-mark 2
-ip6tables -t mangle -A OUTPUT -p udp -j GOHPTS_OUT_UDP
 `, tsu.p.mark)
 			tsu.p.runRuleCmd(cmdInit21)
+			if tsu.p.allowedIPv6 != "" {
+				cmdInit22 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -s %s -j MARK --set-mark 3
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -d %s -j MARK --set-mark 3
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -m mark ! --mark 3 -j RETURN
+`, tsu.p.allowedIPv6, tsu.p.allowedIPv6)
+				tsu.p.runRuleCmd(cmdInit22)
+			}
+			cmdInit23 := fmt.Sprint(`
+ip6tables -t mangle -A GOHPTS_OUT_UDP -p udp -j MARK --set-mark 2
+ip6tables -t mangle -A OUTPUT -p udp -j GOHPTS_OUT_UDP
+`)
+			tsu.p.runRuleCmd(cmdInit23)
 		}
 
 		fallthrough
@@ -1437,6 +1459,14 @@ fi
 iptables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
 `, tsu.p.mark)
 			tsu.p.runRuleCmd(cmdInit00)
+			if tsu.p.allowedIPv4 != "" {
+				cmdInit002 := fmt.Sprintf(`
+iptables -t mangle -A GOHPTS_UDP -p udp -s %s -j MARK --set-mark 3
+iptables -t mangle -A GOHPTS_UDP -p udp -d %s -j MARK --set-mark 3
+iptables -t mangle -A GOHPTS_UDP -p udp -m mark ! --mark 3 -j RETURN
+`, tsu.p.allowedIPv4, tsu.p.allowedIPv4)
+				tsu.p.runRuleCmd(cmdInit002)
+			}
 			if tsu.p.prefix != nil {
 				cmdInit01 := fmt.Sprintf(`
 iptables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1
@@ -1499,6 +1529,14 @@ fi
 ip6tables -t mangle -A GOHPTS_UDP -p udp -m mark --mark %d -j RETURN
 `, tsu.p.mark)
 			tsu.p.runRuleCmd(cmdInit006)
+			if tsu.p.allowedIPv6 != "" {
+				cmdInit026 := fmt.Sprintf(`
+ip6tables -t mangle -A GOHPTS_UDP -p udp -s %s -j MARK --set-mark 3
+ip6tables -t mangle -A GOHPTS_UDP -p udp -d %s -j MARK --set-mark 3
+ip6tables -t mangle -A GOHPTS_UDP -p udp -m mark ! --mark 3 -j RETURN
+`, tsu.p.allowedIPv6, tsu.p.allowedIPv6)
+				tsu.p.runRuleCmd(cmdInit026)
+			}
 			if tsu.p.prefix6 != nil {
 				cmdInit016 := fmt.Sprintf(`
 ip6tables -t mangle -A GOHPTS_UDP -s %s -p udp -j TPROXY --on-port %s --tproxy-mark 0x1/0x1

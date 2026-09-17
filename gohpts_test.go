@@ -369,6 +369,33 @@ func TestNewProxyErr(t *testing.T) {
 			},
 			errMsg: "enable IPv4 to use dns server address 8.8.8.8",
 		},
+		{
+			name: "allowing ip addresses no auto",
+			config: &Config{
+				AddrHTTP:      "127.0.0.1:8080",
+				ServerUser:    "user",
+				ServerPass:    "secret",
+				SocksProxy:    []ProxyEntry{{Address: addrSOCKS, Username: "user", Password: "password"}},
+				Interface:     "wlan0",
+				IPv4Enabled:   true,
+				IPv6Enabled:   true,
+				TProxyMode:    "tproxy",
+				TProxy:        "0.0.0.0:8888",
+				TProxyWorkers: 1,
+				TProxyUDP:     "0.0.0.0:8889",
+				NoHTTP:        true,
+				Mark:          69,
+				AllowedIPs:    "8.8.8.8,2001:4860:4860::8888,192.168.1.0/24",
+				IgnoredPorts:  "22,443",
+				Debug:         true,
+				AddrPprof:     "127.0.0.1:6060",
+				Sniff:         true,
+				Body:          true,
+				ARPSpoof:      "targets 192.168.10.0/24;fullduplex true;debug true;interval 10s",
+				NDPSpoof:      "ra true;debug true;prefix 2001:db8:7a31:4400::/64;router_lifetime 30s;interval 10s;mtu 1500;packet HRD F2 DSDS",
+			},
+			errMsg: "allowing ip addresses is only possible in auto configuration",
+		},
 	}
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {
